@@ -17,9 +17,9 @@ if typing.TYPE_CHECKING:
     from ..tools.graph_builder import GraphBuilder
     from ..core.jobs import JobManager
 
-from .cgcignore import build_ignore_spec
+from .cgcignore import build_ignore_spec, parse_cgcignore_lines
 from ..tools.indexing.constants import DEFAULT_IGNORE_PATTERNS
-from ..cli.config_manager import get_config_value
+from ..cli.config_manager import DEFAULT_CGCIGNORE_PATTERNS, get_config_value
 from ..utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 
 
@@ -75,6 +75,9 @@ class RepositoryEventHandler(FileSystemEventHandler):
                 ignore_root=self.ignore_root,
                 default_patterns=DEFAULT_IGNORE_PATTERNS,
                 explicit_path=cgcignore_path,
+                missing_explicit_defaults=parse_cgcignore_lines(
+                    DEFAULT_CGCIGNORE_PATTERNS.splitlines()
+                ),
             )
             if resolved:
                 debug_log(f"Watcher using ignore file: {resolved}")

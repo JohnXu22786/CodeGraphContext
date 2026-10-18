@@ -25,7 +25,8 @@ from rich.progress import (
 from ..core import get_database_manager
 from ..core.jobs import JobManager
 from ..tools.code_finder import CodeFinder
-from ..tools.graph_builder import GraphBuilder
+from ..tools.graph_builder import GraphBuilder, PARSER_EXTENSIONS
+from ..tools.indexing.discovery import inspect_files_to_index
 from ..utils import graph_shapes
 from ..tools.package_resolver import get_local_package_path
 from ..utils.debug_log import info_logger, warning_logger
@@ -442,6 +443,52 @@ def index_helper(path: str, context: Optional[str] = None, no_progress: bool = F
         raise typer.Exit(code=1)
     finally:
         db_manager.close_driver()
+
+
+def dry_run_index_helper(path: str, context: Optional[str] = None) -> None:
+    """Print the exact indexing scope without opening the graph database."""
+    try:
+        path_obj = Path(path).expanduser().resolve()
+    except OSError as exc:
+        console.print(f"[red]Error resolving path: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    if not path_obj.exists():
+        console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
+        raise typer.Exit(code=1)
+
+    index_cwd = path_obj if path_obj.is_dir() else path_obj.parent
+    try:
+        ctx = resolve_context(
+            context,
+            cwd=index_cwd,
+            create_local_context=False,
+            read_only=True,
+        )
+    except ContextNotFoundError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1)
+
+    preview = inspect_files_to_index(
+        path_obj,
+        cgcignore_path=ctx.cgcignore_path,
+        supported_extensions=set(PARSER_EXTENSIONS),
+    )
+    console.print(f"[bold cyan]Index dry run for {preview.ignore_root}[/bold cyan]")
+    console.print(f"[green]Files to index ({len(preview.files)}):[/green]")
+    if preview.files:
+        for file_path in preview.files:
+            console.print(f"  + {file_path.relative_to(preview.ignore_root).as_posix()}")
+    else:
+        console.print("  (none)")
+
+    console.print(f"[yellow]Excluded files and directories ({len(preview.excluded)}):[/yellow]")
+    if preview.excluded:
+        for excluded_path, reason in preview.excluded:
+            relative_path = excluded_path.relative_to(preview.ignore_root).as_posix()
+            console.print(f"  - {relative_path}: {reason}")
+    else:
+        console.print("  (none)")
 
 
 def add_package_helper(package_name: str, language: str, context: Optional[str] = None):

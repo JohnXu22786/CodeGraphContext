@@ -11,6 +11,7 @@ from codegraphcontext.utils.path_ignore import (
 
 def test_default_config_lists_node_modules():
     assert "node_modules" in DEFAULT_CONFIG["IGNORE_DIRS"]
+    assert ".codegraphcontext" in DEFAULT_CONFIG["IGNORE_DIRS"]
 
 
 def test_cypher_fragment_contains_node_modules():

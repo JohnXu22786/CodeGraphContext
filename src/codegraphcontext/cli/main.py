@@ -39,6 +39,7 @@ from . import project_config
 # Import the new helper functions
 from .cli_helpers import (
     index_helper,
+    dry_run_index_helper,
     add_package_helper,
     list_repos_helper,
     delete_helper,
@@ -62,7 +63,7 @@ from codegraphcontext.utils.tool_limits import get_tool_result_limit
 def _configure_library_loggers():
     """Configure third-party library loggers based on config setting."""
     try:
-        log_level_str = config_manager.get_config_value('LIBRARY_LOG_LEVEL')
+        log_level_str = config_manager.get_config_value('LIBRARY_LOG_LEVEL', read_only=True)
         if log_level_str is None:
             log_level_str = 'WARNING'
         log_level_str = str(log_level_str).upper()
@@ -310,7 +311,7 @@ def context_default(
 # CREDENTIALS LOADING PRECEDENCE
 # ============================================================================
 
-def _load_credentials(cli_context_flag: Optional[str] = None):
+def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool = False):
     """
     Loads configuration and credentials from various sources into environment variables.
     Uses per-variable precedence - each variable is loaded from the highest priority source.
@@ -322,6 +323,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
 
     Duplicate loading is skipped when the local file resolves to the same path as the global file.
     Arbitrary parent directory `.env` files are not loaded—ensuring isolation.
+    ``read_only=True`` loads existing settings without initializing config state.
     """
     from dotenv import dotenv_values
     from codegraphcontext.cli.config_manager import (
@@ -330,8 +332,10 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
         normalize_config_path,
     )
     
-    # Ensure config directory exists (lazy initialization)
-    ensure_config_dir()
+    # Ensure config directory exists (lazy initialization) for commands that
+    # may initialize or update user configuration.
+    if not read_only:
+        ensure_config_dir()
     
     # Snapshot runtime environment BEFORE merging config files.
     # These values must remain highest priority.
@@ -383,7 +387,12 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
             console.print(f"[yellow]Warning: Could not load global .env: {e}[/yellow]")
     
     # 2. Local project .env (only when cwd is under HOME, or CGC_LOAD_PROJECT_ENV=1)
-    if config_manager.should_apply_project_dotenv():
+    applies_project_dotenv = (
+        config_manager.should_apply_project_dotenv(read_only=True)
+        if read_only
+        else config_manager.should_apply_project_dotenv()
+    )
+    if applies_project_dotenv:
         try:
             local_dot_env = Path.cwd() / ".env"
             if local_dot_env.exists() and local_dot_env.resolve() != global_env_path.resolve():
@@ -458,7 +467,11 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
     from codegraphcontext.cli.config_manager import resolve_context
     ctx = None
     try:
-        ctx = resolve_context(cli_context_flag)
+        ctx = (
+            resolve_context(cli_context_flag, read_only=True)
+            if read_only
+            else resolve_context(cli_context_flag)
+        )
     except Exception:
         pass
 
@@ -501,14 +514,19 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
         db_source = key_source_map["DEFAULT_DATABASE"]
     else:
         # No explicit choice — ask the factory which backend it will use
-        try:
-            from codegraphcontext.core import get_database_manager
-            _mgr = get_database_manager()
-            default_db = _mgr.get_backend_type()   # e.g. 'falkordb' / 'kuzudb'
-        except Exception:
-            # Factory failed entirely — still show a best-guess
+        if read_only:
+            # A preview only needs a label; avoid constructing a database manager.
             from codegraphcontext.core import _is_falkordb_available
             default_db = "falkordb" if _is_falkordb_available() else "kuzudb"
+        else:
+            try:
+                from codegraphcontext.core import get_database_manager
+                _mgr = get_database_manager()
+                default_db = _mgr.get_backend_type()   # e.g. 'falkordb' / 'kuzudb'
+            except Exception:
+                # Factory failed entirely — still show a best-guess
+                from codegraphcontext.core import _is_falkordb_available
+                default_db = "falkordb" if _is_falkordb_available() else "kuzudb"
         db_source = "auto-detect"
 
     # Print selection banner
@@ -1704,6 +1722,7 @@ def index(
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use (overrides mode/default)"),
     summarize: bool = typer.Option(False, "--summarize", "-s", help="Show a summary of the indexed codebase after indexing"),
     no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress rendering during indexing."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview selected and excluded paths without indexing."),
 ):
     """
     Indexes a directory or file by adding it to the code graph.
@@ -1711,12 +1730,16 @@ def index(
 
     Use --force to delete the existing index and rebuild from scratch.
     Use --summarize to display a summary after indexing.
+    Use --dry-run to preview selected and excluded paths without indexing.
     """
-    _load_credentials()
+    _load_credentials(read_only=dry_run)
     if path is None:
         path = str(Path.cwd())
 
     try:
+        if dry_run:
+            dry_run_index_helper(path, context)
+            return
         if force:
             console.print("[yellow]Force re-indexing (--force flag detected)[/yellow]")
             reindex_helper(path, context, no_progress=no_progress)
@@ -3486,12 +3509,13 @@ def index_abbrev(
     force: bool = typer.Option(False, "--force", "-f", help="Force re-index (delete existing and rebuild)"),
     summarize: bool = typer.Option(False, "--summarize", "-s", help="Display a codebase summary after indexing"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
-    no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress rendering during indexing.")
+    no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress rendering during indexing."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview selected and excluded paths without indexing."),
 ):
     """Shortcut for 'cgc index'"""
     # `summarize` must be passed explicitly: omitted, it keeps its OptionInfo
     # sentinel, which is truthy — so `cgc i` always printed the summary.
-    index(path, force=force, summarize=summarize, context=context, no_progress=no_progress)
+    index(path, force=force, summarize=summarize, context=context, no_progress=no_progress, dry_run=dry_run)
 
 @app.command("ls", rich_help_panel="Shortcuts")
 def list_abbrev(

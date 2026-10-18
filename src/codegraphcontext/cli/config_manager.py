@@ -112,7 +112,7 @@ DEFAULT_CONFIG = {
     "MAX_DEPTH": "unlimited",
     "PARALLEL_WORKERS": "4",
     "CACHE_ENABLED": "true",
-    "IGNORE_DIRS": "node_modules,venv,.venv,env,.env,dist,build,target,out,.git,.idea,.vscode,__pycache__",
+    "IGNORE_DIRS": "node_modules,venv,.venv,env,.env,dist,build,target,out,.git,.codegraphcontext,.idea,.vscode,__pycache__",
     "INDEX_SOURCE": "true",
     # SCIP indexer feature flag (default off — existing Tree-sitter behaviour unchanged)
     "SCIP_INDEXER": "false",
@@ -285,6 +285,7 @@ obj/
 .terragrunt-cache/
 *.lock.hcl
 .git/
+.codegraphcontext/
 .idea/
 .vscode/
 __pycache__/
@@ -355,7 +356,7 @@ def ensure_global_cgcignore() -> bool:
 
 
 
-def load_config() -> Dict[str, str]:
+def load_config(*, read_only: bool = False) -> Dict[str, str]:
     """
     Load configuration with priority support.
     Priority order (highest to lowest):
@@ -385,7 +386,7 @@ def load_config() -> Dict[str, str]:
     
     # Load local .env file ONLY if should_apply_project_dotenv() returns True
     # This respects context mode (per-repo vs global/named) and environment overrides
-    local_env = find_local_env()
+    local_env = find_local_env(read_only=True) if read_only else find_local_env()
     if local_env and local_env.exists():
         try:
             with open(local_env, "r", encoding="utf-8") as f:
@@ -424,7 +425,7 @@ def load_config() -> Dict[str, str]:
     return config
 
 
-def should_apply_project_dotenv() -> bool:
+def should_apply_project_dotenv(*, read_only: bool = False) -> bool:
     """True when the selected repository context's ``.env`` should merge globally.
 
     Project env is loaded only in **per-repo** context mode (or when
@@ -437,7 +438,11 @@ def should_apply_project_dotenv() -> bool:
         return False
     if os.getenv("CGC_LOAD_PROJECT_ENV", "").strip().lower() in ("1", "true", "yes"):
         return True
-    cfg = load_context_config()
+    cfg = (
+        load_context_config(create_if_missing=False)
+        if read_only
+        else load_context_config()
+    )
     if cfg.mode != "per-repo":
         return False
     try:
@@ -448,14 +453,19 @@ def should_apply_project_dotenv() -> bool:
         return True
 
 
-def find_local_env() -> Optional[Path]:
+def find_local_env(*, read_only: bool = False) -> Optional[Path]:
     """Find project configuration in the current directory only.
 
     Prefer the selected repository-context ``.env`` to ``.env``. Parent directories are
     deliberately excluded, just as they are for local context resolution:
     starting CGC in one project must not import another project's settings.
     """
-    if not should_apply_project_dotenv():
+    applies_project_dotenv = (
+        should_apply_project_dotenv(read_only=True)
+        if read_only
+        else should_apply_project_dotenv()
+    )
+    if not applies_project_dotenv:
         return None
 
     current = Path.cwd()
@@ -646,9 +656,9 @@ def validate_config_value(key: str, value: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
-def get_config_value(key: str) -> Optional[str]:
+def get_config_value(key: str, *, read_only: bool = False) -> Optional[str]:
     """Get a specific configuration value."""
-    config = load_config()
+    config = load_config(read_only=read_only)
     return config.get(key)
 
 
@@ -865,7 +875,7 @@ def _default_db_path(context_name: str, database: str) -> str:
 _LEGACY_FALKORDB_PATH = CONFIG_DIR / "global" / "falkordb.db"
 
 
-def _default_global_db_path(database: str) -> str:
+def _default_global_db_path(database: str, *, read_only: bool = False) -> str:
     """Return the canonical DB path for the global context.
 
     New layout: ``CGC_HOME/global/db/<backend>/`` (default CGC_HOME is ~/.codegraphcontext)
@@ -882,7 +892,7 @@ def _default_global_db_path(database: str) -> str:
     if env_override:
         return env_override
     if database == "falkordb":
-        custom_path = load_config().get("FALKORDB_PATH")
+        custom_path = load_config(read_only=read_only).get("FALKORDB_PATH")
         if custom_path:
             resolved = Path(custom_path).resolve()
             # Ignore paths from another profile/repo that leaked via local .env
@@ -901,20 +911,27 @@ def _migrate_legacy_config_yaml() -> None:
         console.print(f"[dim]Migrated {_LEGACY_CONTEXT_CONFIG_FILE.name} -> {CONTEXT_CONFIG_FILE.name}[/dim]")
 
 
-def load_context_config() -> ContextConfig:
+def load_context_config(*, create_if_missing: bool = True) -> ContextConfig:
     """
     Load CGC_HOME/config.yaml (default: ~/.codegraphcontext/config.yaml).
-    Returns a ContextConfig with defaults if the file does not exist.
+    Returns a ContextConfig with defaults if the file does not exist. Set
+    ``create_if_missing=False`` for callers that must not create or migrate it.
     """
-    _migrate_legacy_config_yaml()
+    if create_if_missing:
+        _migrate_legacy_config_yaml()
 
-    if not CONTEXT_CONFIG_FILE.exists():
+    config_path = CONTEXT_CONFIG_FILE
+    if not create_if_missing and not config_path.exists() and _LEGACY_CONTEXT_CONFIG_FILE.exists():
+        config_path = _LEGACY_CONTEXT_CONFIG_FILE
+
+    if not config_path.exists():
         cfg = ContextConfig()
-        save_context_config(cfg)
+        if create_if_missing:
+            save_context_config(cfg)
         return cfg
 
     try:
-        with open(CONTEXT_CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
 
         contexts: Dict[str, ContextInfo] = {}
@@ -1017,6 +1034,8 @@ class ContextNotFoundError(ValueError):
 def resolve_context(
     cli_context: Optional[str] = None,
     cwd: Optional[Path] = None,
+    create_local_context: bool = True,
+    read_only: bool = False,
 ) -> ResolvedContext:
     """
     Determine which context / DB to use.
@@ -1026,8 +1045,16 @@ def resolve_context(
       2. Local repository-context directory (default .codegraphcontext)
       3. Global config.yaml: mode + default_context
       4. Ultimate fallback: global mode, default DB
+
+    ``create_local_context=False`` resolves the per-repo paths without creating
+    the directory, database folder, config, or copied environment file.
+    ``read_only=True`` also avoids creating or migrating global config files.
     """
-    cfg = load_context_config()
+    cfg = (
+        load_context_config(create_if_missing=False)
+        if read_only
+        else load_context_config()
+    )
     cwd = cwd or Path.cwd()
 
     # --- 1. Explicit CLI flag ---
@@ -1049,33 +1076,34 @@ def resolve_context(
     # --- 2. Repository-local context directory (per-repo mode only) ---
     local_cgc = find_local_cgc_dir(cwd) if cfg.mode == "per-repo" else None
     
-    # If we are in per-repo mode and no local folder was found, create it in CWD
+    # In per-repo mode, resolve the path without creating it for read-only callers.
     if local_cgc is None and cfg.mode == "per-repo":
         local_cgc = get_repo_context_path(cwd)
-        local_cgc.mkdir(parents=True, exist_ok=True)
-        (local_cgc / "db").mkdir(exist_ok=True)
+        if create_local_context and not read_only:
+            local_cgc.mkdir(parents=True, exist_ok=True)
+            (local_cgc / "db").mkdir(exist_ok=True)
 
-        inherited_db = load_config().get("DEFAULT_DATABASE", "falkordb")
+            inherited_db = load_config().get("DEFAULT_DATABASE", "falkordb")
 
-        # Copy global .env into local context for easy per-repo tweaking.
-        # Guard against the self-copy case: when cwd is the home directory,
-        # local_cgc resolves to CONFIG_DIR itself, so `local_cgc / ".env"` is
-        # CONFIG_FILE. Copying a file onto itself raises shutil.SameFileError,
-        # which crashes resolve_context for any session started from home.
-        import shutil
-        _target_env = local_cgc / ".env"
-        if CONFIG_FILE.exists() and _target_env.resolve() != CONFIG_FILE.resolve():
-            shutil.copy2(CONFIG_FILE, _target_env)
+            # Copy global .env into local context for easy per-repo tweaking.
+            # Guard against the self-copy case: when cwd is the home directory,
+            # local_cgc resolves to CONFIG_DIR itself, so local_cgc / ".env" is
+            # CONFIG_FILE. Copying a file onto itself raises shutil.SameFileError,
+            # which crashes resolve_context for any session started from home.
+            import shutil
+            _target_env = local_cgc / ".env"
+            if CONFIG_FILE.exists() and _target_env.resolve() != CONFIG_FILE.resolve():
+                shutil.copy2(CONFIG_FILE, _target_env)
 
-        local_yaml = local_cgc / "config.yaml"
-        if not local_yaml.exists():
-            with open(local_yaml, "w", encoding="utf-8") as f:
-                yaml.safe_dump({"database": inherited_db}, f)
+            local_yaml = local_cgc / "config.yaml"
+            if not local_yaml.exists():
+                with open(local_yaml, "w", encoding="utf-8") as f:
+                    yaml.safe_dump({"database": inherited_db}, f)
 
-        console.print(
-            f"[dim]Auto-initialized per-repo context at {local_cgc} "
-            f"(Database: {inherited_db})[/dim]"
-        )
+            console.print(
+                f"[dim]Auto-initialized per-repo context at {local_cgc} "
+                f"(Database: {inherited_db})[/dim]"
+            )
 
     if local_cgc is not None:
         # Read local config.yaml if present
@@ -1083,7 +1111,9 @@ def resolve_context(
         local_db = (
             os.environ.get("CGC_RUNTIME_DB_TYPE")
             or os.environ.get("DEFAULT_DATABASE")
-            or load_config().get("DEFAULT_DATABASE", "falkordb")
+            or (load_config(read_only=True) if read_only else load_config()).get(
+                "DEFAULT_DATABASE", "falkordb"
+            )
         )
         if local_yaml.exists():
             try:
@@ -1142,12 +1172,13 @@ def resolve_context(
             )
 
     # --- 4. Global fallback ---
-    db = os.getenv("CGC_RUNTIME_DB_TYPE") or load_config().get("DEFAULT_DATABASE", "falkordb")
+    config = load_config(read_only=True) if read_only else load_config()
+    db = os.getenv("CGC_RUNTIME_DB_TYPE") or config.get("DEFAULT_DATABASE", "falkordb")
     return ResolvedContext(
         mode="global",
         context_name="",
         database=db,
-        db_path=_default_global_db_path(db),
+        db_path=_default_global_db_path(db, read_only=read_only),
         cgcignore_path=str(CONFIG_DIR / "global" / ".cgcignore"),
     )
 

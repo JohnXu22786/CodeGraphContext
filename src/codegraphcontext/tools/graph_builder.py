@@ -29,6 +29,51 @@ from .indexing.schema import create_graph_schema
 from .indexing.scip_pipeline import name_from_symbol, run_scip_index_async
 from .tree_sitter_parser import TreeSitterParser
 
+PARSER_EXTENSIONS = {
+    ".py": "python",
+    ".ipynb": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".go": "go",
+    ".ts": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
+    ".d.ts": "typescript",
+    ".tsx": "tsx",
+    ".cpp": "cpp",
+    ".h": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".rs": "rust",
+    ".c": "c",
+    ".java": "java",
+    ".rb": "ruby",
+    ".cs": "c_sharp",
+    ".php": "php",
+    ".kt": "kotlin",
+    ".scala": "scala",
+    ".sc": "scala",
+    ".swift": "swift",
+    ".hs": "haskell",
+    ".dart": "dart",
+    ".pl": "perl",
+    ".pm": "perl",
+    ".lua": "lua",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".el": "elisp",
+    ".sol": "solidity",
+    ".html": "html",
+    ".css": "css",
+    ".svelte": "svelte",
+    ".vue": "vue",
+    ".tf": "hcl",
+    ".tfvars": "hcl",
+    ".hcl": "hcl",
+}
+
 
 class GraphBuilder:
     """Build and manage the code graph.
@@ -61,50 +106,7 @@ class GraphBuilder:
         self._writer = GraphWriter(self.db_manager.get_driver(graph_name), db_manager=self.db_manager)
         self.last_call_resolution_diagnostics: list[Dict[str, Any]] = []
         self.last_index_summary: Dict[str, Any] = {}
-        self.parsers = {
-            ".py": "python",
-            ".ipynb": "python",
-            ".js": "javascript",
-            ".jsx": "javascript",
-            ".mjs": "javascript",
-            ".cjs": "javascript",
-            ".go": "go",
-            ".ts": "typescript",
-            ".mts": "typescript",
-            ".cts": "typescript",
-            ".d.ts": "typescript",
-            ".tsx": "tsx",
-            ".cpp": "cpp",
-            ".h": "cpp",
-            ".hpp": "cpp",
-            ".hh": "cpp",
-            ".rs": "rust",
-            ".c": "c",
-            ".java": "java",
-            ".rb": "ruby",
-            ".cs": "c_sharp",
-            ".php": "php",
-            ".kt": "kotlin",
-            ".scala": "scala",
-            ".sc": "scala",
-            ".swift": "swift",
-            ".hs": "haskell",
-            ".dart": "dart",
-            ".pl": "perl",
-            ".pm": "perl",
-            ".lua": "lua",
-            ".ex": "elixir",
-            ".exs": "elixir",
-            ".el": "elisp",
-            ".sol": "solidity",
-            ".html": "html",
-            ".css": "css",
-            ".svelte": "svelte",
-            ".vue": "vue",
-            ".tf": "hcl",
-            ".tfvars": "hcl",
-            ".hcl": "hcl",
-        }
+        self.parsers = dict(PARSER_EXTENSIONS)
         
         # Files that should be added to the graph as minimal File nodes, even if not parsed
         # Keep in sync with discovery._GENERIC_EXTENSIONS / _GENERIC_FILENAMES.

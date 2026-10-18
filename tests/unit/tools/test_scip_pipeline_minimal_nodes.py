@@ -48,12 +48,18 @@ class _FakeParser:
         }
 
 
-async def _run(repo: Path, writer: MagicMock, supported: set[str]) -> None:
+async def _run(
+    repo: Path,
+    writer: MagicMock,
+    supported: set[str],
+    cgcignore_path: str | None = None,
+    files_data: dict[str, dict] | None = None,
+) -> None:
     fake_mod = SimpleNamespace(
         ScipIndexer=_FakeScipIndexer,
         ScipIndexParser=_FakeScipIndexParser,
     )
-    _FakeScipIndexParser.files_data = {}
+    _FakeScipIndexParser.files_data = files_data or {}
 
     with patch(
         "codegraphcontext.tools.indexing.scip_pipeline.pre_scan_for_imports",
@@ -69,6 +75,7 @@ async def _run(repo: Path, writer: MagicMock, supported: set[str]) -> None:
             parsers_keys=supported,
             get_parser=lambda suffix: _FakeParser() if suffix in supported else None,
             scip_indexer_mod=fake_mod,
+            cgcignore_path=cgcignore_path,
         )
 
 
@@ -107,7 +114,10 @@ async def test_graph_file_count_matches_discovery(tmp_path: Path):
     Reproduces the reported shape: 32 source files, 14 non-code files, and a
     'only 32 of 46' warning that never cleared.
     """
-    from codegraphcontext.tools.indexing.discovery import discover_files_to_index
+    from codegraphcontext.tools.indexing.discovery import (
+        discover_files_to_index,
+        inspect_files_to_index,
+    )
 
     repo = tmp_path / "proj"
     repo.mkdir()
@@ -120,7 +130,9 @@ async def test_graph_file_count_matches_discovery(tmp_path: Path):
     ]:
         (repo / name).write_text("x\n", encoding="utf-8")
 
+    preview = inspect_files_to_index(repo, supported_extensions={".cs"})
     discovered, _ = discover_files_to_index(repo, supported_extensions={".cs"})
+    assert preview.files == discovered
     assert len(discovered) == 46
 
     writer = MagicMock()
@@ -133,3 +145,82 @@ async def test_graph_file_count_matches_discovery(tmp_path: Path):
         f"graph would hold {written} File nodes but discovery expects "
         f"{len(discovered)} — `cgc index` will warn on every run"
     )
+    written_paths = {
+        Path(call.args[0]["path"]).resolve()
+        for call in writer.add_file_to_graph.call_args_list
+    }
+    written_paths.update(
+        Path(call.args[0]).resolve()
+        for call in writer.add_minimal_file_node.call_args_list
+    )
+    assert written_paths == {file.resolve() for file in preview.files}
+
+
+@pytest.mark.asyncio
+async def test_scip_graph_file_set_collapses_in_repository_symlink_aliases(
+    tmp_path: Path,
+):
+    from codegraphcontext.tools.indexing.discovery import inspect_files_to_index
+
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    target = repo / "target.bin"
+    target.write_text("def main(): pass\n", encoding="utf-8")
+    alias = repo / "alias.py"
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks are unavailable on this platform: {exc}")
+
+    preview = inspect_files_to_index(repo, supported_extensions={".py"})
+    writer = MagicMock()
+    await _run(repo, writer, supported={".py"})
+
+    written_paths = {
+        Path(call.args[0]["path"]).resolve()
+        for call in writer.add_file_to_graph.call_args_list
+    }
+    assert preview.files == [target]
+    assert preview._indexing_files == [alias]
+    assert written_paths == {target.resolve()}
+    assert writer.add_file_to_graph.call_count == len(preview.files)
+
+
+@pytest.mark.asyncio
+async def test_scip_skips_global_default_ignored_paths_when_config_is_missing(
+    tmp_path: Path,
+):
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    main_file = repo / "Program.cs"
+    main_file.write_text("public class P {}\n", encoding="utf-8")
+    cached_file = repo / ".pytest_cache" / "cached.cs"
+    cached_file.parent.mkdir()
+    cached_file.write_text("public class Cached {}\n", encoding="utf-8")
+    missing_global_ignore = tmp_path / "cgc-home" / "global" / ".cgcignore"
+    writer = MagicMock()
+    files_data = {
+        str(file.resolve()): {
+            "path": str(file.resolve()),
+            "functions": [],
+            "classes": [],
+            "structs": [],
+            "traits": [],
+            "interfaces": [],
+        }
+        for file in (main_file, cached_file)
+    }
+
+    await _run(
+        repo,
+        writer,
+        supported={".cs"},
+        cgcignore_path=str(missing_global_ignore),
+        files_data=files_data,
+    )
+
+    written_paths = {
+        Path(call.args[0]["path"]).resolve()
+        for call in writer.add_file_to_graph.call_args_list
+    }
+    assert written_paths == {main_file.resolve()}
