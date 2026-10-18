@@ -398,3 +398,71 @@ def test_python_package_relative_importer_relinks_after_module_definition_is_add
             handler.stop()
         manager.close_driver()
         loop.close()
+
+
+@pytest.mark.integration
+def test_js_repository_root_importers_relink_after_module_definition_is_added(tmp_path: Path):
+    repo = tmp_path / "root-import-repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    changed = src / "api.js"
+    changed.write_text(
+        "export default function default_api() { return 1; }\n"
+        "export function existing_api() { return 2; }\n",
+        encoding="utf-8",
+    )
+    default_importer = src / "client_default.js"
+    default_importer.write_text(
+        "import default_api from '/src/api.js';\n"
+        "export function run_default() { return default_api(); }\n",
+        encoding="utf-8",
+    )
+    namespace_importer = src / "client_namespace.js"
+    namespace_importer.write_text(
+        "import * as api from '/src/api.js';\n"
+        "export function run_namespace() { return api.added_api(); }\n",
+        encoding="utf-8",
+    )
+
+    incremental_db = tmp_path / "root-incremental-db"
+    manager = KuzuDBManager(str(incremental_db))
+    driver = manager.get_driver()
+    loop = asyncio.new_event_loop()
+    builder = GraphBuilder(_DBM(driver), _JM(), loop)
+    handler = None
+    try:
+        handler = RepositoryEventHandler(builder, repo, perform_initial_scan=True)
+        changed.write_text(
+            "export default function default_api() { return 1; }\n"
+            "export function existing_api() { return 2; }\n"
+            "export function added_api() { return 3; }\n",
+            encoding="utf-8",
+        )
+
+        importer_paths = handler.graph_builder.get_importer_file_paths(
+            {"added_api"}, repo, changed
+        )
+        assert {
+            default_importer.resolve().as_posix(),
+            namespace_importer.resolve().as_posix(),
+        } <= importer_paths, (
+            "repository-root imports should select both default and namespace importers"
+        )
+
+        handler._handle_modification(str(changed))
+        actual = _graph_semantics(driver, repo)
+        manager.close_driver()
+        expected = _clean_graph_semantics(repo, tmp_path / "root-clean-db")
+        manager = KuzuDBManager(str(incremental_db))
+        driver = manager.get_driver()
+        handler.graph_builder = GraphBuilder(_DBM(driver), _JM(), loop)
+
+        assert actual == expected, (
+            "incremental graph should match a clean rebuild after changing a JS module "
+            "imported from the repository root"
+        )
+    finally:
+        if handler is not None:
+            handler.stop()
+        manager.close_driver()
+        loop.close()
