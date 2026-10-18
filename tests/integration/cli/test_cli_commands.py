@@ -843,9 +843,11 @@ def test_load_credentials_utf8_decoding_robustness(monkeypatch, tmp_path):
         db_path = "/path/to/db"
         cgcignore_path = "/path/to/cgcignore"
 
-    monkeypatch.setattr(cli_main.config_manager, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(cli_main.config_manager, "CONFIG_FILE", tmp_path / "config.json")
-    monkeypatch.setattr(cli_main.config_manager, "CONTEXT_CONFIG_FILE", tmp_path / "config.yaml")
+    global_dir = tmp_path / ".codegraphcontext"
+    global_env_path = global_dir / ".env"
+    monkeypatch.setattr(cli_main.config_manager, "CONFIG_DIR", global_dir)
+    monkeypatch.setattr(cli_main.config_manager, "CONFIG_FILE", global_env_path)
+    monkeypatch.setattr(cli_main.config_manager, "CONTEXT_CONFIG_FILE", global_dir / "config.yaml")
     monkeypatch.setattr(cli_main.config_manager, "ensure_config_dir", lambda *_args, **_kwargs: None)
     monkeypatch.chdir(tmp_path)
     
@@ -855,12 +857,10 @@ def test_load_credentials_utf8_decoding_robustness(monkeypatch, tmp_path):
     # We will write invalid UTF-8 bytes to the global .env file path
     monkeypatch.setenv("HOME", str(tmp_path))
     
-    global_dir = tmp_path / ".codegraphcontext"
     global_dir.mkdir(parents=True, exist_ok=True)
-    real_global_env = global_dir / ".env"
     
     # Write invalid UTF-8 bytes to the file (e.g. 0x97 invalid start byte)
-    real_global_env.write_bytes(b"DEFAULT_DATABASE=ladybugdb\n# invalid byte: \x97\n")
+    global_env_path.write_bytes(b"DEFAULT_DATABASE=ladybugdb\n# invalid byte: \x97\n")
     
     clean_env = {
         k: v for k, v in os.environ.items()
