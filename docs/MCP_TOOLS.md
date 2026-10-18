@@ -82,13 +82,6 @@ List repositories currently in the graph.
 - **Args:** None
 - **Returns:** Paths and metadata for each indexed repo
 
-### `list_graphs`
-
-List graphs available in the current FalkorDB instance. Backends without graph-list support return an unsupported message.
-
-- **Args:** None
-- **Returns:** Graph names available in the active database
-
 ### `delete_repository`
 
 Remove a repository from the graph.
@@ -105,10 +98,10 @@ Counts of files, functions, classes, and modules for one repo or the whole datab
 
 ### `list_graphs`
 
-List all available graphs in the FalkorDB instance. Each graph typically corresponds to an indexed repository; pass a graph name to other tools through `graph_name`.
+List graphs available in the FalkorDB instance. Backends without graph-list support return an unsupported message. Each graph typically corresponds to an indexed repository; pass a graph name to other tools through `graph_name`.
 
 - **Args:** None
-- **Returns:** Available graph names
+- **Returns:** Graph names, or an unsupported message when the backend cannot list graphs
 
 ---
 
@@ -186,28 +179,6 @@ Report repository growth trends and technical-debt hotspots using code complexit
 - **Returns:** Growth trends and technical-debt hotspots for the active database
 
 ---
-
-### `simulate_metrics`
-
-Calculate repository architecture metrics, including coupling, cohesion, circular dependencies, complexity, and maintainability.
-
-- **Args:** `repo_path` (string, optional; defaults to the current workspace), `context` (string, optional)
-- **Returns:** Architecture metrics
-
-### `simulate_architectural_change`
-
-Compare baseline and simulated architecture metrics after applying proposed graph changes.
-
-- **Args:** `changes` (array, required), `repo_path` (string, optional), `context` (string, optional)
-- **Returns:** Baseline and simulated metrics with their differences
-- **Change types:** `decompose`, `remove_dependency`, `add_dependency`, or `remove_node`
-
-### `analyze_architectural_evolution`
-
-Report repository growth trends and technical-debt hotspots using code complexity and Git commit churn.
-
-- **Args:** `repo_path` (string, optional), `commits` (integer, optional; defaults to `50`), `context` (string, optional)
-- **Returns:** Evolution metrics and hotspot analysis
 
 ---
 

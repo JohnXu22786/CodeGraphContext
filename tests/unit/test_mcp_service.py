@@ -218,6 +218,8 @@ def test_mcp_docs_match_catalog_and_keep_server_version_distinct():
         assert "distribution" in content.lower() or "package release" in content.lower()
 
     catalog = (repo_root / "docs/MCP_TOOLS.md").read_text(encoding="utf-8")
-    documented_names = set(re.findall(r"(?m)^### `([^`]+)`$", catalog))
+    documented_name_list = re.findall(r"(?m)^### `([^`]+)`$", catalog)
+    assert len(documented_name_list) == len(set(documented_name_list))
+    documented_names = set(documented_name_list)
     registered_names = set(TOOLS)
     assert documented_names == registered_names
