@@ -1,6 +1,8 @@
 # MCP Tools Reference
 
-This document describes the Model Context Protocol (MCP) tools exposed by CodeGraphContext **0.4.16**. The server registers the full catalog defined in `src/codegraphcontext/tool_definitions.py` (same tools the CLI graph operations rely on). MCP `tools/list` returns **25** tool definitions—the subsections below enumerate each one.
+This document describes the Model Context Protocol (MCP) tools exposed by CodeGraphContext. The server registers the full catalog defined in `src/codegraphcontext/tool_definitions.py` (the same tools the CLI graph operations rely on). By default, MCP `tools/list` returns **29** tool definitions; a workspace can hide tools through `mcp.json`.
+
+The Python distribution release version is managed in package metadata. MCP `initialize.serverInfo.version` is separate server metadata and is currently **0.1.0** for both stdio and HTTP transports.
 
 ## Tool categories
 
@@ -80,6 +82,13 @@ List repositories currently in the graph.
 - **Args:** None
 - **Returns:** Paths and metadata for each indexed repo
 
+### `list_graphs`
+
+List graphs available in the current FalkorDB instance. Backends without graph-list support return an unsupported message.
+
+- **Args:** None
+- **Returns:** Graph names available in the active database
+
 ### `delete_repository`
 
 Remove a repository from the graph.
@@ -147,6 +156,27 @@ Rank functions by cyclomatic complexity.
 
 - **Args:** `limit` (integer), `repo_path` (string, optional)
 - **Returns:** Ordered list of functions
+
+### `simulate_metrics`
+
+Calculate repository architecture metrics, including coupling, cohesion, circular dependencies, complexity, and maintainability.
+
+- **Args:** `repo_path` (string, optional), `context` (string, optional; accepted by the input schema but does not select a server context)
+- **Returns:** Architecture metric values for the active database
+
+### `simulate_architectural_change`
+
+Compare baseline and simulated architecture metrics after applying proposed graph changes.
+
+- **Args:** `repo_path` (string, optional), `changes` (array, required; steps use `decompose`, `remove_dependency`, `add_dependency`, or `remove_node`), `context` (string, optional; accepted by the input schema but does not select a server context)
+- **Returns:** Baseline and simulated architecture metrics
+
+### `analyze_architectural_evolution`
+
+Report repository growth trends and technical-debt hotspots using code complexity and Git commit churn.
+
+- **Args:** `repo_path` (string, optional), `commits` (integer, optional, default `50`), `context` (string, optional; accepted by the input schema but does not select a server context)
+- **Returns:** Growth trends and technical-debt hotspots for the active database
 
 ---
 

@@ -8,6 +8,7 @@ uses. The old two-endpoint HTTP+SSE transport (/api/v1/mcp/sse,
 configs (see docs/INTEGRATION_GUIDE.md); tests below cover both.
 """
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import patch
 
@@ -277,7 +278,12 @@ async def test_legacy_streamable_http_initialize_handshake():
 
     assert resp.status_code == 200
     assert resp.headers.get("mcp-session-id")
-    assert '"protocolVersion":"2025-06-18"' in resp.text
+    data = next(line.removeprefix("data: ") for line in resp.text.splitlines() if line.startswith("data: "))
+    body = json.loads(data)
+    assert body["result"]["protocolVersion"] == "2025-06-18"
+    from codegraphcontext.mcp_service import MCP_SERVER_VERSION
+
+    assert body["result"]["serverInfo"]["version"] == MCP_SERVER_VERSION
 
 
 @pytest.mark.asyncio
