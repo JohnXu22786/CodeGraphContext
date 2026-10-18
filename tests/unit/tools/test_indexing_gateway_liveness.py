@@ -51,7 +51,10 @@ async def assert_health_during(task, phase):
 
 @pytest.fixture(autouse=True)
 def disable_optional_indexing(monkeypatch):
-    monkeypatch.setattr("codegraphcontext.cli.config_manager.get_config_value", lambda key: "false")
+    monkeypatch.setattr(
+        "codegraphcontext.cli.config_manager.get_config_value",
+        lambda key, **_kwargs: "false",
+    )
 
 
 @pytest.mark.asyncio

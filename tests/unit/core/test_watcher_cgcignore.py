@@ -2,6 +2,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from codegraphcontext.core.watcher import RepositoryEventHandler
 
 
@@ -50,6 +52,27 @@ def test_watcher_skips_ignored_modified_event(tmp_path: Path):
 
         handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(generic_file)))
         assert debounce.call_count == 3, "editing an indexed generic file should queue an update"
+
+
+def test_watcher_rejects_supported_file_symlink_events_outside_repository(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.py"
+    secret.write_text("pass\n", encoding="utf-8")
+    alias = repo / "external.py"
+    try:
+        alias.symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks are unavailable on this platform: {exc}")
+
+    handler = RepositoryEventHandler(_graph_builder(), repo, perform_initial_scan=False)
+    with patch.object(handler, "_debounce") as debounce:
+        handler.on_created(SimpleNamespace(is_directory=False, src_path=str(alias)))
+        handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(alias)))
+
+    debounce.assert_not_called()
 
 
 def test_watcher_filters_large_ignored_deletion_batch_before_queueing(tmp_path: Path):

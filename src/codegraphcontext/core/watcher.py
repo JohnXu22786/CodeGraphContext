@@ -17,9 +17,9 @@ if typing.TYPE_CHECKING:
     from pathspec import PathSpec
     from ..tools.graph_builder import GraphBuilder
 
-from .cgcignore import build_ignore_spec
+from .cgcignore import build_ignore_spec, parse_cgcignore_lines
 from ..tools.indexing.constants import DEFAULT_IGNORE_PATTERNS
-from ..cli.config_manager import get_config_value
+from ..cli.config_manager import DEFAULT_CGCIGNORE_PATTERNS, get_config_value
 from ..utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 
 
@@ -86,6 +86,9 @@ class RepositoryEventHandler(FileSystemEventHandler):
                 ignore_root=self.ignore_root,
                 default_patterns=DEFAULT_IGNORE_PATTERNS,
                 explicit_path=cgcignore_path,
+                missing_explicit_defaults=parse_cgcignore_lines(
+                    DEFAULT_CGCIGNORE_PATTERNS.splitlines()
+                ),
             )
             if resolved:
                 debug_log(f"Watcher using ignore file: {resolved}")
@@ -129,6 +132,11 @@ class RepositoryEventHandler(FileSystemEventHandler):
     def _is_supported_event_path(self, path: str | Path) -> bool:
         """Check a watch event's path without requiring it to still exist."""
         path_obj = Path(path)
+        try:
+            path_obj.resolve().relative_to(self.repo_path)
+        except (OSError, RuntimeError, ValueError):
+            return False
+
         is_indexable = (
             path_obj.suffix in self.graph_builder.parsers
             or path_obj.suffix in getattr(self.graph_builder, "generic_extensions", ())

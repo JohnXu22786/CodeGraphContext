@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ...core.cgcignore import build_ignore_spec
+from ...core.cgcignore import build_ignore_spec, parse_cgcignore_lines
 from ...core.jobs import JobManager, JobStatus
 from ...utils.debug_log import debug_log, error_logger, info_logger, warning_logger
 from ...utils.path_ignore import file_path_has_ignore_dir_segment
@@ -101,10 +101,15 @@ def _run_scip_index(
 
     ignore_spec = None
     try:
+        from ...cli.config_manager import DEFAULT_CGCIGNORE_PATTERNS
+
         ignore_spec, resolved_cgcignore = build_ignore_spec(
             ignore_root=index_root,
             default_patterns=DEFAULT_IGNORE_PATTERNS,
             explicit_path=cgcignore_path,
+            missing_explicit_defaults=parse_cgcignore_lines(
+                DEFAULT_CGCIGNORE_PATTERNS.splitlines()
+            ),
         )
         if resolved_cgcignore:
             debug_log(

@@ -20,7 +20,7 @@ def _get_config_value(key, default):
     """Helper to get config value with fallback"""
     try:
         from codegraphcontext.cli.config_manager import get_config_value
-        value = get_config_value(key)
+        value = get_config_value(key, read_only=True)
         if value is None:
             return default
         # Convert string boolean to actual boolean

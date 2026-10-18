@@ -28,6 +28,7 @@ DEFAULT_IGNORE_PATTERNS = [
     # Class per stack.
     "*.lock.hcl",
     ".git/",
+    ".codegraphcontext/",
     "__pycache__/",
     "*.png",
     "*.jpg",
