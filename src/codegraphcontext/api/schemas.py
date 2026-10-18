@@ -8,6 +8,11 @@ class IndexRequest(BaseModel):
     branch: str = "main"
     force: bool = False
 
+class LocalUpdateRequest(BaseModel):
+    """Loopback-only update submitted by a CLI sharing this gateway's DB."""
+    path: str
+    cgcignore_path: Optional[str] = None
+
 class QueryRequest(BaseModel):
     query: str = Field(..., description="Cypher query to execute")
     params: Dict[str, Any] = Field(default_factory=dict, description="Parameters for the query")

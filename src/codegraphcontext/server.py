@@ -40,6 +40,7 @@ from .mcp_service import MCP_SERVER_VERSION, dispatch_tool_call, encode_tool_pay
 
 # Import Tool Definitions and Handlers
 from .tool_definitions import TOOLS
+from .core.database_ownership import DatabaseOwnershipLease
 from .tools.handlers import (
     analysis_handlers,
     indexing_handlers,
@@ -71,7 +72,12 @@ class MCPServer:
     - The main JSON-RPC communication loop for interacting with an AI assistant.
     """
 
-    def __init__(self, loop=None, cwd: Path | None = None):
+    def __init__(
+        self,
+        loop=None,
+        cwd: Path | None = None,
+        initialize_database: bool = True,
+    ):
         """
         Initializes the MCP server and its components. 
         
@@ -79,6 +85,9 @@ class MCPServer:
             loop: The asyncio event loop to use. If not provided, it gets the current
                   running loop or creates a new one.
             cwd: Working directory used for context resolution. Defaults to Path.cwd().
+            initialize_database: Whether to connect to the selected database during
+                construction. API lifespan startup defers remote connectivity so
+                liveness can remain available during a remote outage.
         """
         self.cwd = (cwd or Path.cwd()).resolve()
         self.discovered_child_contexts: List[dict] = []
@@ -92,8 +101,10 @@ class MCPServer:
             if ctx.database and not os.environ.get('CGC_RUNTIME_DB_TYPE'):
                 os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
 
-            self.db_manager = get_database_manager(db_path=ctx.db_path)
-            self.db_manager.get_driver()
+            runtime_db_path = os.environ.get('CGC_RUNTIME_DB_PATH')
+            self.db_manager = get_database_manager(db_path=runtime_db_path or ctx.db_path)
+            if initialize_database:
+                self.db_manager.get_driver()
 
             if not ctx.is_local:
                 try:
@@ -118,13 +129,39 @@ class MCPServer:
                 asyncio.set_event_loop(loop)
         self.loop = loop
 
-        # Initialize all the tool handlers, passing them the necessary managers and the event loop.
-        self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, loop)
+        # Keep the usual MCP process eager while allowing API lifespan startup
+        # to defer remote connectivity until a database-backed route runs.
+        self._graph_builder = None
         self.code_finder = CodeFinder(self.db_manager)
-        self.code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
+        self._code_watcher = None
+        if initialize_database:
+            self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, loop)
+            self.code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
         
         # Define the tool manifest that will be exposed to the AI assistant.
         self._init_tools()
+
+    @property
+    def graph_builder(self):
+        if self._graph_builder is None:
+            self._graph_builder = GraphBuilder(
+                self.db_manager, self.job_manager, self.loop
+            )
+        return self._graph_builder
+
+    @graph_builder.setter
+    def graph_builder(self, value):
+        self._graph_builder = value
+
+    @property
+    def code_watcher(self):
+        if self._code_watcher is None:
+            self._code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
+        return self._code_watcher
+
+    @code_watcher.setter
+    def code_watcher(self, value):
+        self._code_watcher = value
 
     def _init_tools(self):
         """
@@ -426,6 +463,28 @@ class MCPServer:
         except Exception as exc:
             warning_logger(f"Failed to start new code watcher after context switch: {exc}")
 
+    def _close_db_manager_for_context_switch(
+        self, watcher_was_running: bool
+    ) -> Optional[Dict[str, Any]]:
+        """Close the current DB before replacement, retaining it if its lease survives."""
+        manager = self.db_manager
+        try:
+            _teardown_db_manager(manager)
+        except Exception as exc:
+            warning_logger(f"Failed to tear down old DB manager during context switch: {exc}")
+
+        lease = getattr(manager, "_ownership_lease", None)
+        if isinstance(lease, DatabaseOwnershipLease) and lease.is_acquired:
+            self._start_watcher_if(watcher_was_running)
+            return {
+                "error": (
+                    "Cannot switch context because the current embedded database "
+                    "could not be closed. Its ownership lease remains held; retry "
+                    "after close succeeds or restart the process."
+                )
+            }
+        return None
+
     def _active_jobs_block_context_switch(self) -> Optional[Dict[str, Any]]:
         """Refuse context switches while indexing jobs still hold the current DB (#1536)."""
         active = self.job_manager.list_active_jobs()
@@ -459,10 +518,11 @@ class MCPServer:
                 return blocked
             try:
                 watcher_was_running = self._stop_current_watcher()
-                try:
-                    _teardown_db_manager(self.db_manager)
-                except Exception as exc:
-                    warning_logger(f"Failed to tear down old DB manager during context switch: {exc}")
+                close_error = self._close_db_manager_for_context_switch(
+                    watcher_was_running
+                )
+                if close_error:
+                    return close_error
 
                 # Resolve global DB path directly — do NOT use resolve_context()
                 # because that checks CWD for a local repository context and may
@@ -533,10 +593,11 @@ class MCPServer:
         try:
             watcher_was_running = self._stop_current_watcher()
             # Tear down old connection
-            try:
-                _teardown_db_manager(self.db_manager)
-            except Exception as exc:
-                warning_logger(f"Failed to tear down old DB manager during context switch: {exc}")
+            close_error = self._close_db_manager_for_context_switch(
+                watcher_was_running
+            )
+            if close_error:
+                return close_error
 
             os.environ['CGC_RUNTIME_DB_TYPE'] = local_db
             new_manager = get_database_manager(db_path=new_db_path)
@@ -777,5 +838,6 @@ class MCPServer:
     def shutdown(self):
         """Gracefully shuts down the server and its components."""
         debug_logger("Shutting down server...")
-        self.code_watcher.stop()
+        if self._code_watcher is not None:
+            self._code_watcher.stop()
         _teardown_db_manager(self.db_manager)

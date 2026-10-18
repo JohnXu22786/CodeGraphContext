@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List, ClassVar
 
 from codegraphcontext.core.graph_query import GraphQueryInterface
+from codegraphcontext.core.database_ownership import (
+    DatabaseOwnershipLease,
+    register_configured_gateway,
+)
 from ..utils.cypher_ddl import is_schema_ddl
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 from codegraphcontext.runtime_paths import get_cgc_home
@@ -201,7 +205,32 @@ class EmbeddedGraphManager(GraphQueryInterface):
         self.name = spec.backend_id
         self.db_path = new_db_path
         os.makedirs(Path(self.db_path).parent, exist_ok=True)
+        if not hasattr(self, "_ownership_lease"):
+            self._ownership_lease = None
         self._initialized = True
+
+    def _close_database(self) -> None:
+        """Close the native database, retaining its handle if closure fails."""
+        if self._db is None:
+            return
+        try:
+            # kuzu exposes is_closed as a METHOD on some builds and a bool
+            # ATTRIBUTE on others (0.11.x).
+            closed = self._db.is_closed
+            if callable(closed):
+                closed = closed()
+            if not closed:
+                self._db.close()
+                info_logger(
+                    f"{self.BACKEND_SPEC.display_name} database closed successfully"
+                )
+        except Exception as e:
+            warning_logger(
+                f"Error closing {self.BACKEND_SPEC.display_name} database: {e}"
+            )
+            return
+        self._db = None
+        gc.collect()
 
     def get_driver(self, graph_name: str = None):
         """
@@ -213,64 +242,100 @@ class EmbeddedGraphManager(GraphQueryInterface):
         ignored.
         """
         spec = self.BACKEND_SPEC
+        if self._db is not None and self._pool is None:
+            raise RuntimeError(
+                f"The {spec.display_name} database could not be closed; its "
+                "ownership lease is retained. Retry close_driver or restart "
+                "the process before reusing it."
+            )
         if self._db is None:
             with self._lock:
                 if self._db is None:
-                    backend = importlib.import_module(spec.python_module)
-                    max_retries = 5
-                    for attempt in range(max_retries):
-                        try:
-                            buffer_pool_size = resolve_embedded_buffer_pool_size()
-                            if buffer_pool_size == 0:
-                                pool_msg = "library default (~80% of system memory)"
-                            else:
-                                pool_msg = f"{buffer_pool_size} bytes"
-                            info_logger(
-                                f"Initializing {spec.display_name} at {self.db_path} "
-                                f"(buffer_pool_size={pool_msg})"
-                            )
-                            if buffer_pool_size == 0:
-                                # 0 means "library default": omit the kwarg
-                                # rather than trusting every backend to treat
-                                # a literal 0 that way.
-                                self._db = backend.Database(self.db_path)
-                            else:
-                                self._db = backend.Database(
-                                    self.db_path, buffer_pool_size=buffer_pool_size
-                                )
-
-                            # Initialise connection pool
-                            self._pool = queue.Queue()
-                            # Start with 10 connections in the pool
-                            for _ in range(10):
-                                self._pool.put(backend.Connection(self._db))
-                            
-                            # Use one connection from the pool to initialise schema
-                            temp_conn = self._pool.get()
+                    if self._ownership_lease is None or not self._ownership_lease.is_acquired:
+                        self._ownership_lease = DatabaseOwnershipLease(
+                            self.db_path, spec.backend_id
+                        ).acquire()
+                    try:
+                        backend = importlib.import_module(spec.python_module)
+                        max_retries = 5
+                        for attempt in range(max_retries):
                             try:
-                                self._conn = temp_conn # Temporary assignment for _initialize_schema
-                                self._initialize_schema()
-                                self._conn = None
-                            finally:
-                                self._pool.put(temp_conn)
-
-                            info_logger(f"{spec.display_name} connection established and schema verified")
-                            break
-                        except ImportError:
-                            error_logger(f"{spec.display_name} is not installed. {spec.install_hint}")
-                            raise ValueError(f"{spec.display_name} core missing.")
-                        except Exception as e:
-                            if "lock" in str(e).lower() and attempt < max_retries - 1:
-                                wait = 0.5 * (2 ** attempt)
-                                warning_logger(
-                                    f"{spec.display_name} lock contention, retrying in {wait:.1f}s "
-                                    f"({attempt+1}/{max_retries})..."
+                                buffer_pool_size = resolve_embedded_buffer_pool_size()
+                                if buffer_pool_size == 0:
+                                    pool_msg = "library default (~80% of system memory)"
+                                else:
+                                    pool_msg = f"{buffer_pool_size} bytes"
+                                info_logger(
+                                    f"Initializing {spec.display_name} at {self.db_path} "
+                                    f"(buffer_pool_size={pool_msg})"
                                 )
-                                self._db = None
-                                time.sleep(wait)
-                            else:
-                                error_logger(f"Failed to initialize {spec.display_name}: {e}")
-                                raise
+                                if buffer_pool_size == 0:
+                                    # 0 means "library default": omit the kwarg
+                                    # rather than trusting every backend to treat
+                                    # a literal 0 that way.
+                                    self._db = backend.Database(self.db_path)
+                                else:
+                                    self._db = backend.Database(
+                                        self.db_path, buffer_pool_size=buffer_pool_size
+                                    )
+
+                                # Initialise connection pool
+                                self._pool = queue.Queue()
+                                # Start with 10 connections in the pool
+                                for _ in range(10):
+                                    self._pool.put(backend.Connection(self._db))
+
+                                # Use one connection from the pool to initialise schema
+                                temp_conn = self._pool.get()
+                                try:
+                                    self._conn = temp_conn # Temporary assignment for _initialize_schema
+                                    self._initialize_schema()
+                                    self._conn = None
+                                finally:
+                                    self._pool.put(temp_conn)
+
+                                info_logger(f"{spec.display_name} connection established and schema verified")
+                                if self._ownership_lease is not None:
+                                    register_configured_gateway(self._ownership_lease)
+                                break
+                            except ImportError:
+                                error_logger(f"{spec.display_name} is not installed. {spec.install_hint}")
+                                raise ValueError(f"{spec.display_name} core missing.")
+                            except Exception as e:
+                                if "lock" in str(e).lower() and attempt < max_retries - 1:
+                                    wait = 0.5 * (2 ** attempt)
+                                    warning_logger(
+                                        f"{spec.display_name} lock contention, retrying in {wait:.1f}s "
+                                        f"({attempt+1}/{max_retries})..."
+                                    )
+                                    while self._pool is not None and not self._pool.empty():
+                                        self._pool.get_nowait().close()
+                                    self._pool = None
+                                    self._conn = None
+                                    self._close_database()
+                                    if self._db is not None:
+                                        raise RuntimeError(
+                                            f"Could not close {spec.display_name} after lock contention; "
+                                            "retaining its ownership lease to prevent another writer."
+                                        ) from e
+                                    time.sleep(wait)
+                                else:
+                                    error_logger(f"Failed to initialize {spec.display_name}: {e}")
+                                    raise
+                    except BaseException:
+                        while self._pool is not None and not self._pool.empty():
+                            try:
+                                self._pool.get_nowait().close()
+                            except Exception:
+                                pass
+                        self._pool = None
+                        if self._db is not None:
+                            self._close_database()
+                        self._conn = None
+                        if self._ownership_lease is not None and self._db is None:
+                            self._ownership_lease.release()
+                            self._ownership_lease = None
+                        raise
 
         return EmbeddedDriverWrapper(
             self._db,
@@ -616,10 +681,8 @@ class EmbeddedGraphManager(GraphQueryInterface):
 
     def close_driver(self):
         """Closes the connection pool and releases database resources."""
-        if self._db is not None:
-            with self._lock:
-                if self._db is None:
-                    return
+        with self._lock:
+            if self._db is not None:
                 info_logger(f"Closing {self.BACKEND_SPEC.display_name} connection pool")
                 # Clear and close all connections in the pool
                 while self._pool is not None and not self._pool.empty():
@@ -632,26 +695,10 @@ class EmbeddedGraphManager(GraphQueryInterface):
                     except Exception:
                         pass
                 self._pool = None
-                # Explicitly close the Database object — kuzu.Database has no
-                # __del__, so Python GC alone cannot release the C++ resources.
-                # Without this call the process hangs on exit because the
-                # embedded Kùzu engine keeps background threads alive.
-                try:
-                    # kuzu exposes is_closed as a METHOD on some builds and a
-                    # bool ATTRIBUTE on others (0.11.x). Calling the attribute
-                    # raised "'bool' object is not callable" — which this
-                    # except swallowed, so the close NEVER ran and the
-                    # background threads it exists to stop stayed alive.
-                    closed = self._db.is_closed
-                    if callable(closed):
-                        closed = closed()
-                    if not closed:
-                        self._db.close()
-                        info_logger(f"{self.BACKEND_SPEC.display_name} database closed successfully")
-                except Exception as e:
-                    warning_logger(f"Error closing {self.BACKEND_SPEC.display_name} database: {e}")
-                self._db = None
-                gc.collect()
+                self._close_database()
+            if self._ownership_lease is not None and self._db is None:
+                self._ownership_lease.release()
+                self._ownership_lease = None
 
     def is_connected(self) -> bool:
         """Checks if the database connection is currently active."""

@@ -1,9 +1,15 @@
 # src/codegraphcontext/api/app.py
 from contextlib import asynccontextmanager
+import asyncio
 from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from .router import router
+from .router import (
+    get_server_for_gateway_startup,
+    local_router,
+    router,
+    shutdown_server,
+)
 import logging
 
 from .auth import (
@@ -20,6 +26,12 @@ from .auth import (
 from .mcp_sse import handle_messages, handle_sse, mcp_server
 from mcp.server.transport_security import TransportSecuritySettings
 from codegraphcontext.runtime_paths import get_instance_name
+from codegraphcontext.core.database_ownership import (
+    DatabaseOwnershipLease,
+    restore_process_gateway_endpoint,
+    set_process_gateway_endpoint,
+)
+import uvicorn
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +124,57 @@ def _combine_lifespans(outer_lifespan, mcp_app):
     return combined
 
 
+@asynccontextmanager
+async def _gateway_lifespan(app):
+    """Start an early-discoverable local control endpoint for embedded DBs."""
+    owner_server = None
+    owner_task = None
+    previous_endpoint = None
+    endpoint_registered = False
+    try:
+        server = await get_server_for_gateway_startup()
+        lease = getattr(getattr(server, "db_manager", None), "_ownership_lease", None)
+        owner_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+        owner_app.include_router(local_router, prefix="/api/v1/local")
+        owner_server = uvicorn.Server(
+            uvicorn.Config(
+                owner_app,
+                host="127.0.0.1",
+                port=0,
+                lifespan="off",
+                log_config=None,
+                access_log=False,
+            )
+        )
+        owner_task = asyncio.create_task(owner_server.serve())
+        while not owner_server.started:
+            if owner_task.done():
+                await owner_task
+            await asyncio.sleep(0)
+
+        sockets = owner_server.servers or []
+        if not sockets or not sockets[0].sockets:
+            raise RuntimeError("The local database owner endpoint failed to bind")
+        port = int(sockets[0].sockets[0].getsockname()[1])
+        endpoint = f"http://127.0.0.1:{port}"
+        previous_endpoint = set_process_gateway_endpoint(endpoint, port=port)
+        endpoint_registered = True
+        if isinstance(lease, DatabaseOwnershipLease) and lease.is_acquired:
+            lease.register_gateway(f"http://127.0.0.1:{port}", port=port)
+        yield
+    finally:
+        try:
+            if owner_server is not None and owner_task is not None:
+                owner_server.should_exit = True
+                await owner_task
+        finally:
+            try:
+                if endpoint_registered:
+                    restore_process_gateway_endpoint(previous_endpoint)
+            finally:
+                shutdown_server()
+
+
 def create_app() -> FastAPI:
     # Log whether API-key auth is active. Emits a prominent security warning
     # when the gateway is running unauthenticated (CGC_API_KEY unset).
@@ -120,7 +183,8 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=f"{get_instance_name()} Gateway",
         description=f"HTTP API gateway for {get_instance_name()} MCP server. Enables integration with ChatGPT Actions, Claude, and web frontends.",
-        version="0.1.0"
+        version="0.1.0",
+        lifespan=_gateway_lifespan,
     )
 
     # Enable CORS for the website/frontend
