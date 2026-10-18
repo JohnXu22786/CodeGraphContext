@@ -41,6 +41,29 @@ def _ignore_reason(spec: Any, path: str, explain: bool = True) -> Optional[str]:
     return None
 
 
+def root_file_symlink_exclusion_reason(path: Path) -> Optional[str]:
+    """Explain why a requested file symlink cannot be used as a scan root."""
+    path = Path(path)
+    if not path.is_symlink():
+        return None
+
+    try:
+        target = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return "broken or inaccessible symbolic link"
+
+    if target.is_dir():
+        return None
+
+    try:
+        target.relative_to(path.parent.resolve())
+    except ValueError:
+        return "symbolic-link target is outside the repository root"
+    except (OSError, RuntimeError):
+        return "broken or inaccessible symbolic link"
+    return None
+
+
 def safe_walk(
     path: Path,
     spec: Optional[Any] = None,
@@ -145,7 +168,24 @@ def inspect_files_to_index(
     patterns are used without creating that file. Indexing passes
     ``create_default_cgcignore=True`` to preserve its existing initialization.
     """
-    path = Path(path).expanduser().resolve()
+    requested_path = Path(path).expanduser()
+    root_symlink_reason = root_file_symlink_exclusion_reason(requested_path)
+    if root_symlink_reason:
+        ignore_root = requested_path.parent.resolve()
+        excluded_path = ignore_root / requested_path.name
+        excluded = (
+            [(excluded_path, root_symlink_reason)]
+            if collect_exclusions
+            else []
+        )
+        return FileDiscoveryPreview(
+            files=[],
+            excluded=excluded,
+            ignore_root=ignore_root,
+            _indexing_files=[],
+        )
+
+    path = requested_path.resolve()
     ignore_root = path.resolve() if path.is_dir() else path.resolve().parent
 
     spec = None
@@ -165,6 +205,19 @@ def inspect_files_to_index(
             debug_log(f"Using .cgcignore at {resolved_cgcignore} (filtering relative to {ignore_root})")
     except OSError as e:
         warning_logger(f"Could not load/create .cgcignore: {e}")
+        if create_default_cgcignore:
+            try:
+                spec, resolved_cgcignore = build_ignore_spec(
+                    ignore_root=ignore_root,
+                    default_patterns=DEFAULT_IGNORE_PATTERNS,
+                    explicit_path=cgcignore_path,
+                    create_default_cgcignore=False,
+                    missing_explicit_defaults=parse_cgcignore_lines(
+                        DEFAULT_CGCIGNORE_PATTERNS.splitlines()
+                    ),
+                )
+            except OSError as fallback_error:
+                warning_logger(f"Could not load .cgcignore in read-only mode: {fallback_error}")
 
     ignore_dirs_str = get_config_value("IGNORE_DIRS", read_only=True) or ""
     ignore_dirs = set()
@@ -257,6 +310,12 @@ def inspect_files_to_index(
             and (file_path == graph_path or file_path.as_posix() < current_source.as_posix())
         ):
             indexing_files_by_graph_path[graph_path] = file_path
+
+    # A canonical path can still be indexed through a supported symlink alias
+    # even when its direct filename has no handler. Don't report that same
+    # selected graph path as excluded as well.
+    selected_paths = indexing_files_by_graph_path.keys()
+    excluded = [item for item in excluded if item[0] not in selected_paths]
 
     files = sorted(indexing_files_by_graph_path, key=lambda file: file.as_posix())
     indexing_files = [indexing_files_by_graph_path[file] for file in files]

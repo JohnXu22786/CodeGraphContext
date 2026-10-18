@@ -132,6 +132,11 @@ class RepositoryEventHandler(FileSystemEventHandler):
     def _is_supported_event_path(self, path: str | Path) -> bool:
         """Check a watch event's path without requiring it to still exist."""
         path_obj = Path(path)
+        try:
+            path_obj.resolve().relative_to(self.repo_path)
+        except (OSError, RuntimeError, ValueError):
+            return False
+
         is_indexable = (
             path_obj.suffix in self.graph_builder.parsers
             or path_obj.suffix in getattr(self.graph_builder, "generic_extensions", ())

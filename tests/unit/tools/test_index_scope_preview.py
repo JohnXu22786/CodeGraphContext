@@ -305,6 +305,102 @@ def test_preview_does_not_follow_symlinks_outside_the_repository(tmp_path: Path)
     assert secret not in preview.files
 
 
+def test_single_file_external_symlink_is_excluded_before_cli_initialization(
+    tmp_path: Path, monkeypatch, capsys
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.py"
+    secret.write_text("secret\n", encoding="utf-8")
+    alias = repo / "external.py"
+    try:
+        alias.symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks are unavailable on this platform: {exc}")
+
+    preview = inspect_files_to_index(alias, supported_extensions={".py"})
+    indexed, _ = discover_files_to_index(alias, supported_extensions={".py"})
+
+    assert preview.ignore_root == repo
+    assert preview.files == indexed == []
+    assert preview.excluded == [
+        (alias, "symbolic-link target is outside the repository root")
+    ]
+
+    monkeypatch.setenv("IGNORE_DIRS", "")
+    with patch.object(
+        cli_helpers,
+        "resolve_context",
+        return_value=SimpleNamespace(cgcignore_path=None),
+    ):
+        cli_helpers.dry_run_index_helper(str(alias))
+    output = capsys.readouterr().out
+    assert "Files to index (0)" in output
+    assert "external.py: symbolic-link target is outside the repository root" in output
+    assert "secret.py" not in output
+
+    for helper in (cli_helpers.index_helper, cli_helpers.reindex_helper):
+        with patch.object(cli_helpers, "_initialize_services") as initialize_mock:
+            with pytest.raises(cli_helpers.typer.Exit):
+                helper(str(alias))
+        initialize_mock.assert_not_called()
+
+
+def test_dry_run_external_symlink_through_symlinked_parent_reports_exclusion(
+    tmp_path: Path, monkeypatch, capsys
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_alias = tmp_path / "repo-alias"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.py"
+    secret.write_text("secret\n", encoding="utf-8")
+    link = repo / "external.py"
+    try:
+        repo_alias.symlink_to(repo, target_is_directory=True)
+        link.symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks are unavailable on this platform: {exc}")
+    requested_path = repo_alias / "external.py"
+
+    preview = inspect_files_to_index(requested_path, supported_extensions={".py"})
+    assert preview.ignore_root == repo
+    assert preview.files == []
+    assert preview.excluded == [
+        (repo / "external.py", "symbolic-link target is outside the repository root")
+    ]
+
+    monkeypatch.setenv("IGNORE_DIRS", "")
+    with patch.object(
+        cli_helpers,
+        "resolve_context",
+        return_value=SimpleNamespace(cgcignore_path=None),
+    ):
+        cli_helpers.dry_run_index_helper(str(requested_path))
+
+    output = capsys.readouterr().out
+    assert "external.py: symbolic-link target is outside the repository root" in output
+    assert "secret.py" not in output
+
+
+def test_index_and_reindex_reject_missing_root_before_service_initialization(
+    tmp_path: Path,
+):
+    missing = tmp_path / "missing-repository"
+    for helper in (cli_helpers.index_helper, cli_helpers.reindex_helper):
+        with patch.object(
+            cli_helpers,
+            "_initialize_services",
+            return_value=(None, None, None, None),
+        ) as initialize_mock:
+            with pytest.raises(cli_helpers.typer.Exit):
+                helper(str(missing))
+        initialize_mock.assert_not_called()
+
+
 def test_preview_collapses_in_repository_file_symlink_aliases(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -320,6 +416,104 @@ def test_preview_collapses_in_repository_file_symlink_aliases(tmp_path: Path):
     indexed, _ = discover_files_to_index(repo, supported_extensions={".py"})
 
     assert preview.files == indexed == [target]
+
+
+def test_preview_does_not_exclude_target_indexed_through_supported_alias(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "target.bin"
+    target.write_bytes(b"data")
+    alias = repo / "alias.py"
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks are unavailable on this platform: {exc}")
+
+    preview = inspect_files_to_index(repo, supported_extensions={".py"})
+    indexed, _ = discover_files_to_index(repo, supported_extensions={".py"})
+    excluded_paths = {path for path, _reason in preview.excluded}
+
+    assert preview.files == [target]
+    assert indexed == [alias]
+    assert target not in excluded_paths
+
+
+def test_index_discovery_keeps_ignore_rules_when_default_file_cannot_be_created(
+    tmp_path: Path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    (repo / "main.py").write_text("pass\n", encoding="utf-8")
+    ignored = repo / "ignored" / "generated.py"
+    ignored.parent.mkdir()
+    ignored.write_text("pass\n", encoding="utf-8")
+    cached = repo / ".pytest_cache" / "cached.py"
+    cached.parent.mkdir()
+    cached.write_text("pass\n", encoding="utf-8")
+
+    def fail_default_creation(_path, _patterns):
+        raise PermissionError("repository is read-only")
+
+    monkeypatch.setattr(
+        "codegraphcontext.core.cgcignore.ensure_default_cgcignore",
+        fail_default_creation,
+    )
+    global_ignore = tmp_path / "global" / ".cgcignore"
+    preview = inspect_files_to_index(
+        repo, cgcignore_path=str(global_ignore), supported_extensions={".py"}
+    )
+    indexed, _ = discover_files_to_index(
+        repo, cgcignore_path=str(global_ignore), supported_extensions={".py"}
+    )
+
+    assert preview.files == [repo / ".gitignore", repo / "main.py"]
+    assert indexed == preview._indexing_files
+    assert not (repo / ".cgcignore").exists()
+
+
+def test_dry_run_quoted_tilde_path_matches_index_path(
+    tmp_path: Path, monkeypatch, capsys
+):
+    workdir = tmp_path / "work"
+    literal_repo = workdir / "~" / "repo"
+    literal_repo.mkdir(parents=True)
+    (literal_repo / "literal.py").write_text("pass\n", encoding="utf-8")
+    home = tmp_path / "home"
+    home_repo = home / "repo"
+    home_repo.mkdir(parents=True)
+    (home_repo / "home.py").write_text("pass\n", encoding="utf-8")
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("IGNORE_DIRS", "")
+
+    with patch.object(
+        cli_helpers,
+        "resolve_context",
+        return_value=SimpleNamespace(cgcignore_path=None),
+    ) as resolve_context_mock:
+        cli_helpers.dry_run_index_helper("~/repo")
+
+    assert "literal.py" in capsys.readouterr().out
+    resolve_context_mock.assert_called_once_with(
+        None,
+        cwd=literal_repo,
+        create_local_context=False,
+        read_only=True,
+    )
+    with (
+        patch.object(cli_helpers, "_initialize_services", return_value=(None, None, None, None))
+        as initialize_mock,
+        patch.object(
+            cli_helpers,
+            "_fail_services_init",
+            side_effect=cli_helpers.typer.Exit(code=1),
+        ),
+    ):
+        with pytest.raises(cli_helpers.typer.Exit):
+            cli_helpers.index_helper("~/repo")
+
+    initialize_mock.assert_called_once_with(None, cwd=literal_repo)
 
 
 @pytest.mark.parametrize(
