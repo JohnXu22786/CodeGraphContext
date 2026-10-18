@@ -27,19 +27,17 @@ def test_root_version_uses_fork_distribution_metadata(monkeypatch):
     assert distributions == ["codegraphcontext-fork"]
 
 
-def test_mcp_server_version_uses_fork_distribution_metadata(monkeypatch):
-    server_module = importlib.import_module("codegraphcontext.server")
-    distributions = []
+def test_mcp_server_info_version_is_separate_from_fork_distribution_metadata():
+    from codegraphcontext.mcp_service import MCP_SERVER_VERSION
 
-    def fake_version(distribution):
-        distributions.append(distribution)
-        return "0.7.0"
+    project = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    project_metadata = project.read_text(encoding="utf-8").split("[project]", 1)[1].split("\n[", 1)[0]
+    version_match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project_metadata)
 
-    monkeypatch.setattr(importlib.metadata, "version", fake_version)
-    server = object.__new__(server_module.MCPServer)
-
-    assert server._get_version() == "0.7.0"
-    assert distributions == ["codegraphcontext-fork"]
+    assert version_match, "the Python distribution version should come from project metadata"
+    distribution_version = version_match.group(1)
+    assert distribution_version == "0.7.0"
+    assert distribution_version != MCP_SERVER_VERSION
 
 
 def test_bundle_generator_records_fork_distribution_version(tmp_path, monkeypatch):

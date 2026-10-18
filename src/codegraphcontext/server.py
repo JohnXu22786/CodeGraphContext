@@ -2,7 +2,6 @@
 import urllib.parse
 import asyncio
 import json
-import importlib
 import stdlibs
 import sys
 import traceback
@@ -13,8 +12,6 @@ from pathlib import Path
 from dataclasses import asdict
 
 from typing import Any, Dict, Coroutine, Optional, List, Set
-
-from .utils.gcf_encoder import encode_response
 
 from .prompts import LLM_SYSTEM_PROMPT, build_system_prompt
 from .core import get_database_manager
@@ -39,6 +36,7 @@ from .runtime_paths import (
     get_repo_context_dir_name,
     get_repo_context_path,
 )
+from .mcp_service import MCP_SERVER_VERSION, dispatch_tool_call, encode_tool_payload
 
 # Import Tool Definitions and Handlers
 from .tool_definitions import TOOLS
@@ -53,135 +51,12 @@ from .tools.handlers import (
 DEFAULT_EDIT_DISTANCE = 2
 DEFAULT_FUZZY_SEARCH = False
 
-WORKSPACE_PREFIX = "/workspace/"
-
-
 def _teardown_db_manager(db_manager) -> None:
     """Release DB resources; stop FalkorDB Lite worker when switching contexts."""
     if getattr(db_manager, "get_backend_type", lambda: "")() == "falkordb":
         db_manager.close_driver(teardown=True)
     else:
         db_manager.close_driver()
-
-
-def _is_path_key(key: str) -> bool:
-    """Check if a dict key represents a file path field.
-
-    Matches keys like 'path', 'clone_path', 'caller_file_path', and also
-    Cypher-aliased keys like 'f.path', 'n.caller_file_path'.
-    """
-    # Strip Cypher alias prefix (e.g. "f.path" -> "path")
-    bare = key.rsplit(".", 1)[-1] if "." in key else key
-    return bare == "path" or bare.endswith("_path")
-
-
-def _strip_path_value(value):
-    """Strip /workspace/ prefix from a single string value."""
-    if isinstance(value, str) and value.startswith(WORKSPACE_PREFIX):
-        return value[len(WORKSPACE_PREFIX):]
-    return value
-
-
-def _strip_workspace_prefix(obj):
-    """Recursively strip /workspace/ prefix from path values in results."""
-    if isinstance(obj, dict):
-        return {
-            k: _strip_path_value(v) if _is_path_key(k) else _strip_workspace_prefix(v)
-            for k, v in obj.items()
-        }
-    elif isinstance(obj, list):
-        return [_strip_workspace_prefix(item) for item in obj]
-    return obj
-
-
-# Approximate chars-per-token used for budget conversion.
-# GPT-family tokenizers average ~4 chars/token; using 4 is a safe conservative estimate.
-_CHARS_PER_TOKEN = 4
-
-
-def _effective_char_limit(max_tokens: int, max_chars_direct: int) -> int:
-    """Return the effective character budget from both config knobs.
-
-    Picks the stricter (smallest) non-zero value.  Returns 0 when both
-    are zero, meaning no limit is active.
-    """
-    candidates = [c for c in (max_tokens * _CHARS_PER_TOKEN, max_chars_direct) if c > 0]
-    return min(candidates) if candidates else 0
-
-
-def _limit_source_label(max_tokens: int, max_chars_direct: int, effective: int) -> str:
-    """Human-readable description of which config key produced *effective*."""
-    token_chars = max_tokens * _CHARS_PER_TOKEN
-    both_active = token_chars > 0 and max_chars_direct > 0
-    if both_active:
-        winner = "MAX_TOOL_RESPONSE_TOKENS" if token_chars <= max_chars_direct else "MAX_PROMPT_CHARS"
-        return f"{winner} ({effective} chars)"
-    if token_chars > 0:
-        return f"MAX_TOOL_RESPONSE_TOKENS ({max_tokens} tokens → {effective} chars)"
-    return f"MAX_PROMPT_CHARS ({effective} chars)"
-
-
-def _apply_response_token_limit(tool_name: str, text: str) -> str:
-    """Truncate *text* to the configured budget and append a visible notice.
-
-    Reads two independent config knobs at call time so live changes are
-    respected without a server restart:
-
-    * ``MAX_TOOL_RESPONSE_TOKENS`` — token-based cap (4 chars/token)
-    * ``MAX_PROMPT_CHARS``         — direct character cap
-
-    The stricter non-zero value wins.  When both are 0 the text is returned
-    unchanged.  A structured warning is printed to stdout whenever truncation
-    fires so operators can trace oversized payloads.
-    """
-    from .cli.config_manager import get_config_value
-
-    raw_tokens = get_config_value("MAX_TOOL_RESPONSE_TOKENS") or "0"
-    try:
-        max_tokens = int(raw_tokens)
-    except ValueError:
-        max_tokens = 0
-
-    raw_chars = get_config_value("MAX_PROMPT_CHARS") or "0"
-    try:
-        max_chars_direct = int(raw_chars)
-    except ValueError:
-        max_chars_direct = 0
-
-    max_chars = _effective_char_limit(max_tokens, max_chars_direct)
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-
-    label = _limit_source_label(max_tokens, max_chars_direct, max_chars)
-    notice = (
-        f"[CGC] Response truncated: output exceeded {label} "
-        f"for tool '{tool_name}'. "
-        "Increase the limit or narrow your query for full results."
-    )
-
-    print(
-        f"[CGC WARNING] Truncation fired | tool={tool_name} | "
-        f"original_chars={len(text)} | truncated_chars={max_chars} | "
-        f"limit={label}",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    budget = max(0, max_chars - 200)
-    try:
-        payload = json.loads(text)
-        preview = json.dumps(payload, indent=2)
-        if len(preview) <= budget:
-            return preview
-        return json.dumps(
-            {"truncated": True, "preview": preview[:budget], "notice": notice},
-            indent=2,
-        )
-    except json.JSONDecodeError:
-        return json.dumps(
-            {"truncated": True, "preview": text[:budget], "notice": notice},
-            indent=2,
-        )
 
 
 class MCPServer:
@@ -320,13 +195,6 @@ class MCPServer:
             )
 
         return normalized_disabled
-
-    def _get_version(self) -> str:
-        try:
-            from importlib.metadata import version
-            return version("codegraphcontext-fork")
-        except Exception:
-            return "0.0.0-dev"
 
     def get_database_status(self) -> dict:
         """Returns the current connection status of the Neo4j database."""
@@ -836,7 +704,7 @@ class MCPServer:
                             "protocolVersion": "2025-03-26",
                             "serverInfo": {
                                 "name": get_instance_name(),
-                                "version": self._get_version(),
+                                "version": MCP_SERVER_VERSION,
                                 "systemPrompt": system_prompt,
                                 "instructionsAvailable": True,
                             },
@@ -854,17 +722,20 @@ class MCPServer:
                     # Execute a tool call and return the result.
                     tool_name = params.get('name')
                     args = params.get('arguments', {})
-                    result = await self.handle_tool_call(tool_name, args)
-                    result = _strip_workspace_prefix(result)
+                    result = await dispatch_tool_call(self, tool_name, args)
 
-                    if "error" in result:
+                    if result.error_kind == "tool":
                         response = {
                             "jsonrpc": "2.0", "id": request_id,
-                            "error": {"code": -32000, "message": "Tool execution error", "data": result}
+                            "error": {"code": -32000, "message": "Tool execution error", "data": result.payload}
+                        }
+                    elif result.error_kind == "invalid_params":
+                        response = {
+                            "jsonrpc": "2.0", "id": request_id,
+                            "error": {"code": -32602, "message": result.error_message}
                         }
                     else:
-                        response_text = encode_response(result)
-                        response_text = _apply_response_token_limit(tool_name, response_text)
+                        response_text = encode_tool_payload(tool_name, result.payload)
                         response = {
                             "jsonrpc": "2.0", "id": request_id,
                             "result": {"content": [{"type": "text", "text": response_text}]}

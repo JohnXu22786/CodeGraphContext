@@ -21,8 +21,8 @@ from unittest.mock import patch
 
 import pytest
 
-from codegraphcontext.server import (
-    _apply_response_token_limit,
+from codegraphcontext.mcp_service import (
+    apply_response_token_limit as _apply_response_token_limit,
     _effective_char_limit,
     _limit_source_label,
 )

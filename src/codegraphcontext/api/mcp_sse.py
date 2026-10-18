@@ -9,7 +9,7 @@ from mcp.server.sse import SseServerTransport
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from codegraphcontext.api.router import get_server
-from codegraphcontext.server import _strip_workspace_prefix, _apply_response_token_limit
+from codegraphcontext.mcp_service import MCP_SERVER_VERSION, dispatch_tool_call, encode_tool_payload
 from codegraphcontext.runtime_paths import get_instance_name
 
 logger = logging.getLogger(__name__)
@@ -31,27 +31,22 @@ async def handle_list_tools(ctx, params) -> ListToolsResult:
 async def handle_call_tool(ctx, params) -> CallToolResult:
     """Handle tool execution."""
     server = await get_server()
-    args = params.arguments or {}
+    result = await dispatch_tool_call(server, params.name, params.arguments)
 
-
-    result = await server.handle_tool_call(params.name, args)
-    result = _strip_workspace_prefix(result)
-
-    if "error" in result:
+    if result.is_error:
         return CallToolResult(
-            content=[TextContent(type="text", text=f"Error: {result['error']}")],
+            content=[TextContent(type="text", text=f"Error: {result.error_message}")],
             isError=True,
         )
 
-    response_text = json.dumps(result, indent=2)
-    response_text = _apply_response_token_limit(params.name, response_text)
+    response_text = encode_tool_payload(params.name, result.payload)
     return CallToolResult(content=[TextContent(type="text", text=response_text)])
 
 
 # Streamable HTTP server (spec 2026-07-28), mounted at /api/v1/mcp in app.py.
 mcp_server = Server(
     get_instance_name(),
-    version="0.1.0",
+    version=MCP_SERVER_VERSION,
     on_list_tools=handle_list_tools,
     on_call_tool=handle_call_tool,
 )
