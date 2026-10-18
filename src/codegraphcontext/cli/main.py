@@ -14,7 +14,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich import box
-from typing import Optional
+from typing import Annotated, Optional
 import asyncio
 import logging
 import json
@@ -1733,7 +1733,9 @@ def index(
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use (overrides mode/default)"),
     summarize: bool = typer.Option(False, "--summarize", "-s", help="Show a summary of the indexed codebase after indexing"),
     no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress rendering during indexing."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview selected and excluded paths without indexing."),
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Preview selected and excluded paths without indexing.")
+    ] = False,
 ):
     """
     Indexes a directory or file by adding it to the code graph.
