@@ -325,3 +325,76 @@ def test_incremental_graph_matches_clean_rebuild_after_file_and_branch_batches(t
             handler.stop()
         manager.close_driver()
         loop.close()
+
+
+@pytest.mark.integration
+def test_python_package_relative_importer_relinks_after_module_definition_is_added(tmp_path: Path):
+    repo = tmp_path / "relative-import-repo"
+    package = repo / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    importer = package / "client.py"
+    # Keep the imported name outside foo.py's definitions to exercise relative module-path matching.
+    importer.write_text(
+        "from .foo import unrelated_api\n\n"
+        "def run():\n"
+        "    return added_api()\n",
+        encoding="utf-8",
+    )
+    changed = package / "foo.py"
+    changed.write_text("def existing_api():\n    return 1\n", encoding="utf-8")
+
+    manager = KuzuDBManager(str(tmp_path / "relative-incremental-db"))
+    driver = manager.get_driver()
+    loop = asyncio.new_event_loop()
+    builder = GraphBuilder(_DBM(driver), _JM(), loop)
+    handler = None
+    try:
+        handler = RepositoryEventHandler(builder, repo, perform_initial_scan=True)
+        changed.write_text(
+            "def existing_api():\n    return 1\n\n"
+            "def added_api():\n    return 2\n",
+            encoding="utf-8",
+        )
+        handler._handle_modification(str(changed))
+
+        importer_path = importer.resolve().as_posix()
+        changed_path = changed.resolve().as_posix()
+        selected_importers = handler.graph_builder.get_importer_file_paths(
+            {"added_api"}, repo, changed
+        )
+        assert importer_path in selected_importers, (
+            "Python package-relative imports should select the unchanged importer"
+        )
+        actual = _graph_semantics(driver, repo)
+        manager.close_driver()
+        expected = _clean_graph_semantics(repo, tmp_path / "relative-clean-db")
+        manager = KuzuDBManager(str(tmp_path / "relative-incremental-db"))
+        driver = manager.get_driver()
+        handler.graph_builder = GraphBuilder(_DBM(driver), _JM(), loop)
+
+        def has_expected_call(graph):
+            return any(
+                call[0] == importer_path
+                and call[1] == "run"
+                and call[3] in {"CALLS", "HEURISTIC_CALLS"}
+                and call[4] == changed_path
+                and call[5] == "added_api"
+                for call in graph["calls"]
+            )
+
+        assert has_expected_call(expected), (
+            "the package fixture should resolve the call from a clean rebuild"
+        )
+        assert has_expected_call(actual), (
+            "adding a package-relative import target should relink the unchanged caller"
+        )
+        assert actual == expected, (
+            "incremental graph should match a clean rebuild after adding a definition "
+            "to a package-relative import target"
+        )
+    finally:
+        if handler is not None:
+            handler.stop()
+        manager.close_driver()
+        loop.close()

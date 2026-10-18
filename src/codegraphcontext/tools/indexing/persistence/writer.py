@@ -100,13 +100,32 @@ def _normalize_prefix(p) -> str:
 
 
 def _module_specifier_matches_path(importer_path: str, specifier: str, target_path: Path) -> bool:
-    """Resolve a relative JS/TS module specifier to a changed source file."""
+    """Match a Python or JS/TS relative module specifier to a changed source file."""
     if not specifier or not (specifier.startswith(".") or specifier.startswith("/")):
         return False
 
+    importer = Path(importer_path)
+    if importer.suffix == ".py" and specifier.startswith("."):
+        # Python encodes package levels with leading dots, not path segments.
+        level = len(specifier) - len(specifier.lstrip("."))
+        module_name = specifier[level:]
+        if "/" not in module_name and "\\" not in module_name:
+            package_dir = importer.parent
+            for _ in range(level - 1):
+                package_dir = package_dir.parent
+
+            module_parts = module_name.split(".") if module_name else []
+            module_path = package_dir.joinpath(*module_parts).resolve()
+            target = Path(target_path).resolve()
+            python_paths = {module_path / "__init__.py"}
+            if module_parts:
+                python_paths.add(Path(f"{module_path}.py"))
+            if target in python_paths:
+                return True
+
     specifier_path = Path(specifier)
     if not specifier_path.is_absolute():
-        specifier_path = Path(importer_path).parent / specifier_path
+        specifier_path = importer.parent / specifier_path
     resolved_specifier = specifier_path.resolve()
     resolved_target = Path(target_path).resolve()
     if resolved_specifier == resolved_target:
