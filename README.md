@@ -12,47 +12,47 @@
 - 🇮🇳 [தமிழ்](docs/translations/README.ta.md)
 - 🇪🇸 Español (Soon)
 
-🌍 **Help translate CodeGraphContext to your language by raising an issue & PR on [GitHub Issues](https://github.com/CodeGraphContext/CodeGraphContext/issues)!**
+🌍 **Help translate CodeGraphContext to your language by raising an issue & PR on [GitHub Issues](https://github.com/JohnXu22786/CodeGraphContext/issues)!**
 
 <p align="center">
   <br>
   <b>Bridge the gap between deep code graphs and AI context.</b>
   <br><br>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/v/codegraphcontext?style=flat-square&logo=pypi" alt="PyPI Version">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/v/codegraphcontext-fork?style=flat-square&logo=pypi" alt="PyPI Version">
   </a>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/dm/codegraphcontext?style=flat-square" alt="PyPI Downloads">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/dm/codegraphcontext-fork?style=flat-square" alt="PyPI Downloads">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/CodeGraphContext/CodeGraphContext?style=flat-square" alt="License">
+    <img src="https://img.shields.io/github/license/JohnXu22786/CodeGraphContext?style=flat-square" alt="License">
   </a>
   <img src="https://img.shields.io/badge/MCP-Compatible-green?style=flat-square" alt="MCP Compatible">
   <a href="https://discord.gg/VCwUdCnn">
     <img src="https://img.shields.io/discord/1421769154507309150?label=Discord&logo=discord&logoColor=white&style=flat-square">
   </a>
   <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/stargazers">
-    <img src="https://img.shields.io/github/stars/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Stars">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/stargazers">
+    <img src="https://img.shields.io/github/stars/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Stars">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/network/members">
-    <img src="https://img.shields.io/github/forks/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Forks">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/network/members">
+    <img src="https://img.shields.io/github/forks/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Forks">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/issues">
-    <img src="https://img.shields.io/github/issues-raw/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/issues">
+    <img src="https://img.shields.io/github/issues-raw/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/pulls">
-    <img src="https://img.shields.io/github/issues-pr/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="PRs">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/pulls">
+    <img src="https://img.shields.io/github/issues-pr/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="PRs">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Contributors">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Contributors">
   </a>
 <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="Tests">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="Tests">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E Tests">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E Tests">
   </a>
   <a href="http://codegraphcontext.vercel.app/">
     <img src="https://img.shields.io/badge/website-up-brightgreen?style=flat-square" alt="Website">
@@ -87,16 +87,16 @@ A powerful **MCP server** and **CLI toolkit** that indexes local code into a gra
 
 ### 👨🏻‍💻 Installation and CLI
 > Install in seconds with pip and unlock a powerful CLI for code graph analysis.
-![Install and unlock the CLI instantly](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/install&cli.gif)
+![Install and unlock the CLI instantly](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/install&cli.gif)
 
 
 ### 🛠️ Indexing in Seconds
 > The CLI intelligently parses your tree-sitter nodes to build the graph.
-![Indexing using an MCP client](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Indexing.gif)
+![Indexing using an MCP client](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Indexing.gif)
 
 ### 🤖 Powering your AI Assistant
 > Use natural language to query complex call-chains via MCP.
-![Using the MCP server](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Usecase.gif)
+![Using the MCP server](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Usecase.gif)
 
 ---
 
@@ -138,7 +138,7 @@ flowchart LR
 ---
 
 ## Project Details
-- **Version:** 0.5.1
+- **Version:** 0.7.0
 - **Authors:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **License:** MIT License (See [LICENSE](LICENSE) for details)
 - **Website:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
@@ -159,12 +159,12 @@ flowchart LR
 ---
 
 ## Star History
-[Star History Chart ↗](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date)
+[Star History Chart ↗](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date)
 <!-- The inline chart image is temporarily removed: api.star-history.com currently
      renders "GitHub restricted access to star data" instead of the chart
      (GitHub-side restriction, see PR #1642). Restore the image once the
      official service recovers:
-     [![Star History Chart](https://api.star-history.com/svg?repos=CodeGraphContext/CodeGraphContext&type=Date)](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date) -->
+     [![Star History Chart](https://api.star-history.com/svg?repos=JohnXu22786/CodeGraphContext&type=Date)](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date) -->
 
 ---
 
@@ -306,16 +306,21 @@ _If you’re using CodeGraphContext in your project, feel free to open a PR and 
 
 ### 🚀 Installation & Quick Start
 
+> Install this fork in a dedicated Python virtual environment. The upstream `codegraphcontext` distribution and this fork’s `codegraphcontext-fork` distribution both install the `codegraphcontext` import package, so do not install them into the same environment. The CLI commands remain `cgc` and `codegraphcontext`.
+
+The `codegraphcontext-fork` package is not published on PyPI yet. The install command below will work after the 0.7.0 publication.
+
+The commands below use Bash on macOS/Linux. In PowerShell, activate the environment with `.\.venv\Scripts\Activate.ps1`; in Command Prompt, use `.venv\Scripts\activate.bat`.
+
 1.  **Install the toolkit:**
     ```bash
-    pip install codegraphcontext
+    python -m venv .venv
+    source .venv/bin/activate
+    python -m pip install codegraphcontext-fork
     ```
 
 2.  **Troubleshooting (Command not found):**
-    If the `codegraphcontext` command is not found, run this one-line fix:
-    ```bash
-    curl -sSL https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-    ```
+    If the `codegraphcontext` command is not found, reactivate `.venv` in this shell using the activation command above. On Windows, use the PowerShell or Command Prompt activation command shown above.
 
 3.  **Database Setup (Automatic):**
     CodeGraphContext uses an embedded graph database by default.
@@ -328,7 +333,7 @@ _If you’re using CodeGraphContext in your project, feel free to open a PR and 
 If you want to run CodeGraphContext from a local clone and contribute changes, use an editable install:
 
 ```bash
-git clone https://github.com/CodeGraphContext/CodeGraphContext.git
+git clone https://github.com/JohnXu22786/CodeGraphContext.git
 cd CodeGraphContext
 python -m venv .venv
 source .venv/bin/activate
@@ -351,7 +356,7 @@ cgc mcp setup
 cgc mcp start
 ```
 
-If you are only installing the published package, `pip install codegraphcontext` is enough. If you are developing parser-heavy features and want the optional parsing extras too, install with `pip install -e ".[dev,parsing]"`.
+After the 0.7.0 release is published, `pip install codegraphcontext-fork` will install the package. If you are developing parser-heavy features and want the optional parsing extras too, install with `pip install -e ".[dev,parsing]"`.
 
 ---
 
@@ -359,28 +364,30 @@ If you are only installing the published package, `pip install codegraphcontext`
 
 Run CodeGraphContext without installing Python — pull the image and start indexing:
 
+The fork-owned GHCR package is not published yet. As part of the first image publication, the owner will set the package visibility to Public; anonymous pulls will be available after that change takes effect.
+
 ### Quick Start
 ```bash
 # Pull the latest image
-docker pull codegraphcontext/codegraphcontext:latest
+docker pull ghcr.io/johnxu22786/codegraphcontext:latest
 
 # Index your current directory
-docker run --rm -v "$(pwd):/workspace" codegraphcontext/codegraphcontext cgc index .
+docker run --rm -v "$(pwd):/workspace" ghcr.io/johnxu22786/codegraphcontext cgc index .
 
 # List indexed repos
 docker run --rm -v cgc-data:/home/cgc/.codegraphcontext \
-    codegraphcontext/codegraphcontext cgc list
+    ghcr.io/johnxu22786/codegraphcontext cgc list
 
 # Interactive shell
 docker run -it --rm -v "$(pwd):/workspace" \
     -v cgc-data:/home/cgc/.codegraphcontext \
-    codegraphcontext/codegraphcontext bash
+    ghcr.io/johnxu22786/codegraphcontext bash
 ```
 
 ### Docker Compose
 ```bash
 # Clone the repo and start with Docker Compose
-git clone https://github.com/CodeGraphContext/CodeGraphContext.git
+git clone https://github.com/JohnXu22786/CodeGraphContext.git
 cd CodeGraphContext
 
 # Start with embedded DB
@@ -399,8 +406,7 @@ docker compose --profile viz up -d
 |---|---|
 | `latest` | Latest stable release |
 | `edge` | Latest from `main` branch (may be unstable) |
-| `0.4.19` | Specific version |
-| `0.4` | Latest patch in 0.4.x |
+| `0.7.0` | Fork release tag (available after publication) |
 
 For more advanced Docker usage, including running the MCP Server or connecting external databases, see our [Comprehensive Docker Guide](docs/DOCKER.md).
 
@@ -426,8 +432,12 @@ python --version
 
 ### Step 1: Install CodeGraphContext
 
+The `codegraphcontext-fork` package is not published on PyPI yet. Use the install command below after the 0.7.0 publication.
+
 ```bash
-pip install codegraphcontext  # Installs CodeGraphContext and required dependencies
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install codegraphcontext-fork  # Installs CodeGraphContext and required dependencies
 ```
 
 This command installs CodeGraphContext and all required dependencies.
@@ -595,7 +605,7 @@ You can tell CodeGraphContext to ignore specific files and directories by creati
 
 ## MCP Client Configuration
 
-The `codegraphcontext mcp setup` command attempts to automatically configure your IDE/CLI. If you choose not to use the automatic setup, or if your tool is not supported, you can configure it manually.
+The `codegraphcontext mcp setup` command attempts to automatically configure your IDE/CLI. If you choose not to use the automatic setup, or if your tool is not supported, you can configure it manually. Desktop clients do not inherit the active virtual environment from your terminal. Before publication, use the absolute path to `cgc` in your dedicated virtual environment. The `pipx` example below works after the 0.7.0 PyPI publication and requires `pipx` on the client's own `PATH`.
 
 Add the following server configuration to your client's settings file (e.g., VS Code's `settings.json` or `.claude.json`):
 
@@ -603,32 +613,11 @@ Add the following server configuration to your client's settings file (e.g., VS 
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": [
-        "mcp",
-        "start"
-      ],
-      "disabled": false,
-      "alwaysAllow": []
-    }
-  }
-}
-```
-
-#### OpenCode Configuration
-
-For instructions on installing and configuring MCP servers with OpenCode, see the [OpenCode MCP Guide](https://opencode.ai/docs/ko/mcp-servers/#_top).
-
-#### If installed via pipx
-
-If you installed CodeGraphContext using `pipx`, use the following configuration instead:
-```json
-{
-  "mcpServers": {
-    "CodeGraphContext": {
       "command": "pipx",
       "args": [
         "run",
+        "--spec",
+        "codegraphcontext-fork",
         "codegraphcontext",
         "mcp",
         "start"
@@ -645,6 +634,10 @@ If you installed CodeGraphContext using `pipx`, use the following configuration 
 }
 ```
 
+#### OpenCode Configuration
+
+For instructions on installing and configuring MCP servers with OpenCode, see the [OpenCode MCP Guide](https://opencode.ai/docs/ko/mcp-servers/#_top).
+
 ---
 
 ## Token-Optimized Output (GCF)
@@ -658,12 +651,21 @@ CGC_OUTPUT_FORMAT=gcf codegraphcontext mcp start
 
 Or add it to your MCP client config:
 
+The `pipx` example below works after the 0.7.0 PyPI publication.
+
 ```json
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": ["mcp", "start"],
+      "command": "pipx",
+      "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
+        "mcp",
+        "start"
+      ],
       "env": {
         "CGC_OUTPUT_FORMAT": "gcf"
       }
@@ -750,6 +752,6 @@ real reported issue to its fix or workaround.
 
 Contributions are welcome! 🎉  
 Please see our [CONTRIBUTING.md](.github/CONTRIBUTING.md) for detailed guidelines.
-If you have ideas for new features, integrations, or improvements, open an [issue](https://github.com/CodeGraphContext/CodeGraphContext/issues) or submit a Pull Request.
+If you have ideas for new features, integrations, or improvements, open an [issue](https://github.com/JohnXu22786/CodeGraphContext/issues) or submit a Pull Request.
 
 Join discussions and help shape the future of CodeGraphContext.

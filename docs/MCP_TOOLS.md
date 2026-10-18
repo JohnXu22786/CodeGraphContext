@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-This document describes the Model Context Protocol (MCP) tools exposed by CodeGraphContext **0.4.16**. The server registers the full catalog defined in `src/codegraphcontext/tool_definitions.py` (same tools the CLI graph operations rely on). MCP `tools/list` returns **25** tool definitions—the subsections below enumerate each one.
+This document describes the Model Context Protocol (MCP) tools exposed by CodeGraphContext **0.7.0**. The server registers the full catalog defined in `src/codegraphcontext/tool_definitions.py` (same tools the CLI graph operations rely on). MCP `tools/list` returns **29** tool definitions—the subsections below enumerate each one.
 
 ## Tool categories
 
@@ -94,6 +94,13 @@ Counts of files, functions, classes, and modules for one repo or the whole datab
 - **Args:** `repo_path` (string, optional)
 - **Returns:** Statistics object
 
+### `list_graphs`
+
+List all available graphs in the FalkorDB instance. Each graph typically corresponds to an indexed repository; pass a graph name to other tools through `graph_name`.
+
+- **Args:** None
+- **Returns:** Available graph names
+
 ---
 
 ## Code search
@@ -147,6 +154,30 @@ Rank functions by cyclomatic complexity.
 
 - **Args:** `limit` (integer), `repo_path` (string, optional)
 - **Returns:** Ordered list of functions
+
+---
+
+### `simulate_metrics`
+
+Calculate repository architecture metrics, including coupling, cohesion, circular dependencies, complexity, and maintainability.
+
+- **Args:** `repo_path` (string, optional; defaults to the current workspace), `context` (string, optional)
+- **Returns:** Architecture metrics
+
+### `simulate_architectural_change`
+
+Compare baseline and simulated architecture metrics after applying proposed graph changes.
+
+- **Args:** `changes` (array, required), `repo_path` (string, optional), `context` (string, optional)
+- **Returns:** Baseline and simulated metrics with their differences
+- **Change types:** `decompose`, `remove_dependency`, `add_dependency`, or `remove_node`
+
+### `analyze_architectural_evolution`
+
+Report repository growth trends and technical-debt hotspots using code complexity and Git commit churn.
+
+- **Args:** `repo_path` (string, optional), `commits` (integer, optional; defaults to `50`), `context` (string, optional)
+- **Returns:** Evolution metrics and hotspot analysis
 
 ---
 

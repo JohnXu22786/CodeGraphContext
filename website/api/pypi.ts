@@ -1,16 +1,16 @@
 // api/pypi.ts — proxy to pypistats.org for download counters
 
 function pypiApiPath(reqUrl: string | undefined): string {
-  if (!reqUrl) return "/packages/codegraphcontext/recent";
+  if (!reqUrl) return "/packages/codegraphcontext-fork/recent";
 
   try {
     const pathname = reqUrl.startsWith("http")
       ? new URL(reqUrl).pathname
       : reqUrl.split("?")[0];
-    const stripped = pathname.replace(/^\/api\/pypi/, "") || "/packages/codegraphcontext/recent";
+    const stripped = pathname.replace(/^\/api\/pypi/, "") || "/packages/codegraphcontext-fork/recent";
     return stripped.startsWith("/") ? stripped : `/${stripped}`;
   } catch {
-    return "/packages/codegraphcontext/recent";
+    return "/packages/codegraphcontext-fork/recent";
   }
 }
 
@@ -31,8 +31,8 @@ export default async function handler(req: any, res: any) {
       console.warn(`[pypi proxy] upstream ${response.status} for ${upstream}`);
       return res.status(200).json({
         type: "fallback",
-        package: "codegraphcontext",
-        data: { last_day: 1200, last_week: 8400, last_month: 36000 },
+        package: "codegraphcontext-fork",
+        data: null,
         error: `PyPI stats unavailable (${response.status})`,
       });
     }
@@ -43,8 +43,8 @@ export default async function handler(req: any, res: any) {
     } catch {
       return res.status(200).json({
         type: "fallback",
-        package: "codegraphcontext",
-        data: { last_day: 1200, last_week: 8400, last_month: 36000 },
+        package: "codegraphcontext-fork",
+        data: null,
         error: "PyPI stats returned non-JSON response",
       });
     }
@@ -55,8 +55,8 @@ export default async function handler(req: any, res: any) {
     console.error("[pypi proxy] fetch failed:", message);
     return res.status(200).json({
       type: "fallback",
-      package: "codegraphcontext",
-      data: { last_day: 1200, last_week: 8400, last_month: 36000 },
+      package: "codegraphcontext-fork",
+      data: null,
       error: "Failed to fetch PyPI stats",
     });
   }

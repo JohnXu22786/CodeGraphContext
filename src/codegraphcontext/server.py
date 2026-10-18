@@ -324,7 +324,7 @@ class MCPServer:
     def _get_version(self) -> str:
         try:
             from importlib.metadata import version
-            return version("codegraphcontext")
+            return version("codegraphcontext-fork")
         except Exception:
             return "0.0.0-dev"
 

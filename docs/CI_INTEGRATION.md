@@ -3,12 +3,19 @@
 `cgc analyze complexity` can act as a quality gate in CI (#1333): it has
 machine-readable output on a clean stdout and an opt-in non-zero exit code.
 
+The `codegraphcontext-fork` package is not published on PyPI yet. The install step below will work after the 0.7.0 publication.
+
 ## GitHub Actions example
+
+Because upstream and fork distributions share the `codegraphcontext` import and CLI files, install the fork in a dedicated virtual environment.
 
 ```yaml
 - name: Enforce complexity threshold
+  shell: bash
   run: |
-    pip install codegraphcontext
+    python -m venv .venv
+    source .venv/bin/activate
+    python -m pip install codegraphcontext-fork
     cgc index .
     cgc analyze complexity --threshold 10 --format json --fail-on-violations \
       | tee complexity-report.json

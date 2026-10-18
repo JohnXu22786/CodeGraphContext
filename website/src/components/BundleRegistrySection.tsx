@@ -292,7 +292,9 @@ const BundleRegistrySection = () => {
                             <div className="space-y-4 py-4">
                                 <div className="space-y-2">
                                     <h4 className="font-bold text-xs uppercase tracking-widest">1. Install the CLI</h4>
-                                    <pre className="bg-white/5 border border-white/10 p-3 rounded-2xl text-[10px] font-mono overflow-x-auto text-white">pip install codegraphcontext</pre>
+                                    <pre className="bg-white/5 border border-white/10 p-3 rounded-2xl text-[10px] font-mono overflow-x-auto text-white">pip install codegraphcontext-fork</pre>
+                                    <p className="text-[10px] font-mono text-gray-500">The PyPI package is not published yet; install after the 0.7.0 publication.</p>
+                                    <p className="text-[10px] font-mono text-gray-500">Use a dedicated virtual environment. The upstream and fork distributions share the <code>codegraphcontext</code> import namespace and CLI entry points, so installing both in one environment can overwrite them. See the <a href="#installation" className="text-purple-400 underline">installation instructions</a>.</p>
                                 </div>
                                 <div className="space-y-2">
                                     <h4 className="font-bold text-xs uppercase tracking-widest">2. Download and Load a Bundle</h4>

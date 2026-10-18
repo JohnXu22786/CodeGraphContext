@@ -11,47 +11,47 @@
 - 🇯🇵 [日本語](README.ja.md)
 - 🇪🇸 Español (準備中)
 
-🌍 **CodeGraphContext をあなたの言語に翻訳することにご協力ください！ https://github.com/CodeGraphContext/CodeGraphContext/issues で Issue と PR を作成してください！**
+🌍 **CodeGraphContext をあなたの言語に翻訳することにご協力ください！ https://github.com/JohnXu22786/CodeGraphContext/issues で Issue と PR を作成してください！**
 
 <p align="center">
   <br>
   <b>深いコードグラフと AI のコンテキストの橋渡しを行います。</b>
   <br><br>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/v/codegraphcontext?style=flat-square&logo=pypi" alt="PyPI バージョン">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/v/codegraphcontext-fork?style=flat-square&logo=pypi" alt="PyPI バージョン">
   </a>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/dm/codegraphcontext?style=flat-square" alt="PyPI ダウンロード数">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/dm/codegraphcontext-fork?style=flat-square" alt="PyPI ダウンロード数">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/CodeGraphContext/CodeGraphContext?style=flat-square" alt="ライセンス">
+    <img src="https://img.shields.io/github/license/JohnXu22786/CodeGraphContext?style=flat-square" alt="ライセンス">
   </a>
   <img src="https://img.shields.io/badge/MCP-Compatible-green?style=flat-square" alt="MCP 互換">
   <a href="https://discord.gg/VCwUdCnn">
     <img src="https://img.shields.io/discord/1421769154507309150?label=Discord&logo=discord&logoColor=white&style=flat-square">
   </a>
   <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/stargazers">
-    <img src="https://img.shields.io/github/stars/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Stars">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/stargazers">
+    <img src="https://img.shields.io/github/stars/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Stars">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/network/members">
-    <img src="https://img.shields.io/github/forks/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Forks">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/network/members">
+    <img src="https://img.shields.io/github/forks/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Forks">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/issues">
-    <img src="https://img.shields.io/github/issues-raw/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/issues">
+    <img src="https://img.shields.io/github/issues-raw/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/pulls">
-    <img src="https://img.shields.io/github/issues-pr/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="PRs">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/pulls">
+    <img src="https://img.shields.io/github/issues-pr/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="PRs">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="コントリビューター">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="コントリビューター">
   </a>
 <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="テスト">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="テスト">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E テスト">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E テスト">
   </a>
   <a href="http://codegraphcontext.vercel.app/">
     <img src="https://img.shields.io/badge/website-up-brightgreen?style=flat-square" alt="ウェブサイト">
@@ -84,21 +84,21 @@
 
 ### 👨🏻‍💻 インストールと CLI
 > pip を使えば数秒でインストールでき、強力なコードグラフ解析 CLI を利用できます。
-![インストールして CLI をすぐに使う](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/install&cli.gif)
+![インストールして CLI をすぐに使う](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/install&cli.gif)
 
 
 ### 🛠️ 数秒でインデックス
 > CLI が tree-sitter のノードを賢く解析し、グラフを構築します。
-![MCP クライアントを使ったインデックス処理](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Indexing.gif)
+![MCP クライアントを使ったインデックス処理](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Indexing.gif)
 
 ### 🤖 AI アシスタントの強化
 > MCP を通じて、自然言語で複雑な呼び出しチェーンを問い合わせできます。
-![MCP サーバーの利用例](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Usecase.gif)
+![MCP サーバーの利用例](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Usecase.gif)
 
 ---
 
 ## プロジェクト概要
-- **バージョン:** 0.4.16
+- **バージョン:** 0.7.0
 - **作者:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **ライセンス:** MIT License（詳細は [LICENSE](LICENSE) を参照）
 - **ウェブサイト:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
@@ -119,12 +119,12 @@
 ---
 
 ## Star History
-[Star History Chart ↗](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date)
+[Star History Chart ↗](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date)
 <!-- The inline chart image is temporarily removed: api.star-history.com currently
      renders "GitHub restricted access to star data" instead of the chart
      (GitHub-side restriction, see PR #1642). Restore the image once the
      official service recovers:
-     [![Star History Chart](https://api.star-history.com/svg?repos=CodeGraphContext/CodeGraphContext&type=Date)](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date) -->
+     [![Star History Chart](https://api.star-history.com/svg?repos=JohnXu22786/CodeGraphContext&type=Date)](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date) -->
 
 ---
 
@@ -226,16 +226,21 @@ _あなたのプロジェクトで CodeGraphContext を使用している場合�
 
 ### 🚀 インストール & クイックスタート
 
+> 注意：上流版の配布名 `codegraphcontext` と、このフォークの `codegraphcontext-fork` は同じ `codegraphcontext` インポート名前空間にファイルをインストールします。必ず専用の Python 仮想環境にインストールし、同じ環境には両方を入れないでください。CLI コマンドは `cgc` と `codegraphcontext` のままです。
+
+PyPI の `codegraphcontext-fork` はまだ公開されていません。以下のインストールコマンドは 0.7.0 の公開後に利用できます。
+
+以下のコマンドは macOS/Linux の Bash 用です。PowerShell では `.\.venv\Scripts\Activate.ps1`、コマンド プロンプトでは `.venv\Scripts\activate.bat` を実行して仮想環境を有効にします。
+
 1.  **ツールキットをインストール:**
     ```bash
-    pip install codegraphcontext
+    python -m venv .venv
+    source .venv/bin/activate
+    python -m pip install codegraphcontext-fork
     ```
 
 2.  **トラブルシューティング（コマンドが見つからない場合）:**
-    `codegraphcontext` コマンドが見つからない場合は、次のワンライナーで修正できます。
-    ```bash
-    curl -sSL https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-    ```
+    `codegraphcontext` コマンドが見つからない場合は、上記のコマンドで `.venv` をこのシェルで再度有効にしてください。Windows では、上記の PowerShell またはコマンド プロンプト用コマンドを使用してください。
 
 3.  **データベースのセットアップ（自動）:**
     CodeGraphContext はデフォルトで組み込み型のグラフデータベースを使用します。
@@ -353,7 +358,7 @@ codegraphcontext find pattern "Auth" --viz
 
 ## MCP クライアントの設定
 
-`codegraphcontext mcp setup` コマンドは IDE / CLI の自動設定を試みます。自動セットアップを使わない場合や、対応していないツールを使う場合は、手動で設定できます。
+`codegraphcontext mcp setup` コマンドは IDE / CLI の自動設定を試みます。自動セットアップを使わない場合や、対応していないツールを使う場合は、手動で設定できます。デスクトップクライアントは有効化した仮想環境を引き継がないため、端末で `.venv` を有効にしても、そのコマンドをクライアントから実行できるとは限りません。以下の `pipx` 設定は 0.7.0 の PyPI 公開後に利用できます。公開までは、専用仮想環境にある `cgc` 実行ファイルの絶対パスを指定してください。クライアント自身の `PATH` から `pipx` を見つけられる必要があります。
 
 クライアントの設定ファイル（VS Code の `settings.json` や `.claude.json` など）に、次のサーバー設定を追加してください。
 
@@ -361,33 +366,11 @@ codegraphcontext find pattern "Auth" --viz
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": [
-        "mcp",
-        "start"
-      ],
-      "env": {
-        "NEO4J_URI": "YOUR_NEO4J_URI",
-        "NEO4J_USERNAME": "YOUR_NEO4J_USERNAME",
-        "NEO4J_PASSWORD": "YOUR_NEO4J_PASSWORD"
-      },
-      "disabled": false,
-      "alwaysAllow": []
-    }
-  }
-}
-```
-
-#### pipx でインストールした場合
-
-`pipx` で CodeGraphContext をインストールした場合は、代わりに次の設定を使用してください。
-```json
-{
-  "mcpServers": {
-    "CodeGraphContext": {
       "command": "pipx",
       "args": [
         "run",
+        "--spec",
+        "codegraphcontext-fork",
         "codegraphcontext",
         "mcp",
         "start"
@@ -472,6 +455,6 @@ codegraphcontext find pattern "Auth" --viz
 
 コントリビューションを歓迎します！🎉  
 詳細なガイドラインについては [CONTRIBUTING.md](CONTRIBUTING.md)（日本語版: [CONTRIBUTING.ja.md](CONTRIBUTING.ja.md)）を参照してください。
-新機能、連携、改善のアイデアがあれば、[Issue を作成](https://github.com/CodeGraphContext/CodeGraphContext/issues)するか、Pull Request を送ってください。
+新機能、連携、改善のアイデアがあれば、[Issue を作成](https://github.com/JohnXu22786/CodeGraphContext/issues)するか、Pull Request を送ってください。
 
 ぜひディスカッションに参加し、CodeGraphContext の未来を一緒に作っていきましょう。

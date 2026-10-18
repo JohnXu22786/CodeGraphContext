@@ -22,6 +22,8 @@ The wizard will locate configuration files for Claude Desktop, Cursor, and other
 
 If you prefer to configure your workspace manually, refer to the client configurations below.
 
+MCP clients start the configured executable directly and do not inherit an activated virtual environment from your terminal. The `pipx` examples below will work after `codegraphcontext-fork` 0.7.0 is published to PyPI. Until then, install the checkout in a dedicated virtual environment and use the absolute path to its `cgc` executable in the client configuration. The client must be able to find `pipx` on its own `PATH` after publication.
+
 ### Claude Desktop
 
 To configure Claude Desktop to run the local CGC server, add a configuration entry to the `claude_desktop_config.json` file.
@@ -38,14 +40,21 @@ Add the following key under the `mcpServers` object:
 {
   "mcpServers": {
     "codegraphcontext": {
-      "command": "cgc",
-      "args": ["mcp", "start"]
+      "command": "pipx",
+      "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
+        "mcp",
+        "start"
+      ]
     }
   }
 }
 ```
 
-*Note: If you are running CGC in an isolated virtual environment or using `uvx`, adjust the command accordingly (e.g., using `uvx codegraphcontext mcp start`).*
+*Note: The `codegraphcontext-fork` PyPI package is currently unpublished. Use the absolute path to the `cgc` executable in your dedicated virtual environment until the 0.7.0 publication.*
 
 ---
 
@@ -58,7 +67,8 @@ Cursor supports local MCP servers via direct process execution:
 3. Fill in the fields:
    - **Name**: `CodeGraphContext`
    - **Type**: `command`
-   - **Command**: `cgc mcp start`
+   - **Command**: `pipx`
+   - **Arguments**: `run --spec codegraphcontext-fork codegraphcontext mcp start`
 4. Click **Save**.
 
 ---
@@ -69,8 +79,8 @@ OpenCode manages MCP in its own UI. Follow the vendor's guide at [OpenCode MCP s
 
 Use the following configuration details:
 - **Type**: `stdio`
-- **Command**: `cgc`
-- **Arguments**: `mcp start`
+- **Command**: `pipx`
+- **Arguments**: `run --spec codegraphcontext-fork codegraphcontext mcp start`
 
 *Note: Ensure your database credentials and configurations match what `cgc mcp setup` generated (in `CGC_HOME/.env`, default `~/.codegraphcontext/.env`).*
 
@@ -87,8 +97,15 @@ If you use VS Code with the [Continue.dev](https://continue.dev) plugin:
 {
   "mcp": {
     "codegraphcontext": {
-      "command": "cgc",
-      "args": ["mcp", "start"]
+      "command": "pipx",
+      "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
+        "mcp",
+        "start"
+      ]
     }
   }
 }
@@ -98,7 +115,7 @@ If you use VS Code with the [Continue.dev](https://continue.dev) plugin:
 
 ## 3. Verifying Tool Connectivity
 
-After restarting your IDE or Claude Desktop app, verify that the 21 MCP tools are active. You should see commands like:
+After restarting your IDE or Claude Desktop app, verify that the 29 MCP tools are active. You should see commands like:
 
 - `find_code` (Keyword search across symbols and file contents)
 - `analyze_code_relationships` (Lookup callers, callees, and inheritance paths)
@@ -112,6 +129,6 @@ You can verify it by prompting the assistant:
 ## 4. Connection Troubleshooting
 
 If the tools do not load:
-1. **Command Resolution**: Verify that the `cgc` command is present in your system's global `PATH`. If you installed via a virtual environment, use the absolute path to the executable (e.g., `/usr/local/bin/cgc` or `/home/user/.local/bin/cgc`).
-2. **Process Integrity**: Test starting the server manually in your shell by running `cgc mcp start`. It should listen on standard input/output (stdin/stdout) for JSON-RPC messages and not exit immediately.
+1. **Command Resolution**: The client does not inherit your terminal's active `.venv`. Use an absolute path to the executable in that environment (for example, `/path/to/project/.venv/bin/cgc` or `C:\\path\\to\\project\\.venv\\Scripts\\cgc.exe`). After 0.7.0 is published, you can use the `pipx` configurations above if `pipx` is on the client's own `PATH`.
+2. **Process Integrity**: Test the configured command and arguments from the client's environment. It should listen on standard input/output (stdin/stdout) for JSON-RPC messages and not exit immediately.
 3. **Database Selection**: Ensure your default database is configured and has indexed data. Run `cgc doctor` to verify configuration.

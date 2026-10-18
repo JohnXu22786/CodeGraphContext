@@ -16,7 +16,7 @@ description: >-
 
 ## Core workflow
 
-1. **Install**: `pip install codegraphcontext` (or `pipx install codegraphcontext`). With **uv**, `uv tool install codegraphcontext` or `uvx codegraphcontext …` is supported; if a parser fails with `ModuleNotFoundError: tree_sitter_c_sharp`, run with an explicit extra package, e.g. `uvx --with tree-sitter-c-sharp codegraphcontext …`.
+1. **Install**: use a dedicated Python environment for the fork because upstream `codegraphcontext` and fork `codegraphcontext-fork` share the `codegraphcontext` import namespace. After 0.7.0 is published on PyPI, install with `pip install codegraphcontext-fork` or `pipx install codegraphcontext-fork`. With **uv**, use `uv tool install codegraphcontext-fork` or `uvx --from codegraphcontext-fork codegraphcontext …`; if a parser fails with `ModuleNotFoundError: tree_sitter_c_sharp`, run with an explicit extra package, e.g. `uvx --from codegraphcontext-fork --with tree-sitter-c-sharp codegraphcontext …`.
 2. **Configure**: Optional `~/.codegraphcontext/.env` for `DEFAULT_DATABASE`, Neo4j URI, or Kùzu path. Run `cgc doctor` if connections fail.
 3. **Index**: From the repo root, `cgc index .` (or `cgc index --force .` to rebuild). Ensure CLI and MCP use the same config so they see the same graph.
 4. **Query**: CLI (`cgc find`, `cgc query`, …) or MCP tools after `cgc mcp setup` / `cgc mcp start` in the client config.
