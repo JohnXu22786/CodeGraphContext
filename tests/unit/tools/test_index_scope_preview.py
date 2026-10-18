@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from codegraphcontext.cli import cli_helpers, config_manager
+from codegraphcontext.cli import cli_helpers, config_manager, main as cli_main
 from codegraphcontext.cli.main import app
 from codegraphcontext.tools.handlers.indexing_handlers import add_code_to_graph
 from codegraphcontext.tools.indexing.discovery import (
@@ -630,6 +630,25 @@ def test_cli_dry_run_prints_scope_without_initializing_database(tmp_path: Path, 
     resolve_context_mock.assert_called_once_with(
         None, cwd=repo, create_local_context=False, read_only=True
     )
+
+
+def test_direct_index_call_defaults_to_real_indexing(tmp_path: Path):
+    with (
+        patch.object(cli_main, "_load_credentials") as load_credentials_mock,
+        patch.object(cli_main, "index_helper") as index_helper_mock,
+        patch.object(cli_main, "dry_run_index_helper") as dry_run_helper_mock,
+    ):
+        cli_main.index(
+            str(tmp_path),
+            force=False,
+            context=None,
+            summarize=False,
+            no_progress=False,
+        )
+
+    load_credentials_mock.assert_called_once_with(read_only=False)
+    index_helper_mock.assert_called_once_with(str(tmp_path), None, no_progress=False)
+    dry_run_helper_mock.assert_not_called()
 
 
 def test_cli_dry_run_without_database_setting_skips_database_manager(
