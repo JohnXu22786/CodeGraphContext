@@ -7,7 +7,7 @@
 #   ./scripts/docker-run.sh shell
 #   ./scripts/docker-run.sh viz
 
-IMAGE="${CGC_DOCKER_IMAGE:-codegraphcontext/codegraphcontext:latest}"
+IMAGE="${CGC_DOCKER_IMAGE:-ghcr.io/johnxu22786/codegraphcontext:latest}"
 
 case "$1" in
     shell)

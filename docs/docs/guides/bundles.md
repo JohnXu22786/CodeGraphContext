@@ -402,8 +402,8 @@ cgc load large-bundle.cgc
 # Check your CGC version
 cgc --version
 
-# Update if needed
-pip install --upgrade codegraphcontext
+# After the 0.7.0 PyPI publication, update if needed
+pip install --upgrade codegraphcontext-fork
 
 # Check bundle version
 unzip -p bundle.cgc metadata.json | jq .cgc_version

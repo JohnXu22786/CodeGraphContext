@@ -148,10 +148,10 @@ else
     else
         if [[ "$OS" == "Windows_NT" ]]; then
             echo "❌ cgc not found in expected Windows locations. Please reinstall:"
-            echo "   pip install codegraphcontext"
+            echo "   pip install codegraphcontext-fork (after 0.7.0 is published on PyPI)"
         else
             echo "❌ cgc not found in ~/.local/bin. Please reinstall:"
-            echo "   pip install codegraphcontext"
+            echo "   pip install codegraphcontext-fork (after 0.7.0 is published on PyPI)"
         fi
     fi
 fi

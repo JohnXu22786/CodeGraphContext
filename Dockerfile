@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy project files
-COPY pyproject.toml README.md LICENSE MANIFEST.in ./
+COPY pyproject.toml README.md LICENSE MANIFEST.in CHANGELOG.md UPSTREAM.md ./
 COPY src/ ./src/
 
 # Install Python dependencies
@@ -36,11 +36,11 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 FROM python:3.12-slim
 
 # OCI Annotations
-ARG CGC_VERSION=0.4.19
+ARG CGC_VERSION=0.7.0
 LABEL org.opencontainers.image.title="CodeGraphContext"
 LABEL org.opencontainers.image.description="Turn code repositories into a queryable graph for AI agents"
-LABEL org.opencontainers.image.url="https://github.com/CodeGraphContext/CodeGraphContext"
-LABEL org.opencontainers.image.source="https://github.com/CodeGraphContext/CodeGraphContext"
+LABEL org.opencontainers.image.url="https://github.com/JohnXu22786/CodeGraphContext"
+LABEL org.opencontainers.image.source="https://github.com/JohnXu22786/CodeGraphContext"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.version="${CGC_VERSION}"
 

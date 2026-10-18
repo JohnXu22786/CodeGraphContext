@@ -1,4 +1,7 @@
 prune website
 prune images
+include LICENSE
+include UPSTREAM.md
+include CHANGELOG.md
 recursive-include src/codegraphcontext/viz/dist *
 recursive-include vscode-extension *

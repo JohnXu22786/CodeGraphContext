@@ -76,7 +76,7 @@ const InstallationSection = () => {
             Get Started in Minutes
           </h2>
           <p className="text-sm font-mono text-gray-500 uppercase tracking-widest max-w-2xl mx-auto">
-            Install CodeGraphContext globally and configure it for your workflow.
+            Install CodeGraphContext in a dedicated environment and configure it for your workflow.
           </p>
         </div>
         
@@ -87,13 +87,19 @@ const InstallationSection = () => {
               <div className="bg-background rounded-full w-12 h-12 flex items-center justify-center text-xl font-bold text-white">1</div>
             </div>
             
-            <h3 className="text-lg font-black uppercase tracking-widest text-white mb-4 mt-4">Global Installation</h3>
+            <h3 className="text-lg font-black uppercase tracking-widest text-white mb-4 mt-4">Dedicated Python Environment</h3>
             <p className="text-xs font-mono text-gray-400 mb-8 max-w-xl mx-auto uppercase tracking-wide">
-              Install the package globally via pip to access the <code className="bg-purple-600 text-white px-1.5 py-0.5 rounded text-xs font-bold">cgc</code> command everywhere.
+              Install the fork distribution in a dedicated Python environment to use the <code className="bg-purple-600 text-white px-1.5 py-0.5 rounded text-xs font-bold">cgc</code> command.
             </p>
             
             <div className="max-w-2xl mx-auto">
-              <CommandBlock>$ pip install codegraphcontext</CommandBlock>
+              <CommandBlock>$ pip install codegraphcontext-fork</CommandBlock>
+              <p className="text-xs font-mono text-gray-400 mt-4 max-w-xl mx-auto">
+                Use a dedicated virtual environment: upstream and fork distributions share the <code>codegraphcontext</code> import namespace.
+              </p>
+              <p className="text-xs font-mono text-gray-400 mt-2 max-w-xl mx-auto">
+                The PyPI package is not published yet; this install command will work after the 0.7.0 publication.
+              </p>
             </div>
           </GlassCard>
         </div>

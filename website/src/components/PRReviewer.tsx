@@ -2061,7 +2061,7 @@ export default function PRReviewer({ data: rawData, onClose }: { data: any, onCl
             </div>
 
             <a
-              href="https://github.com/CodeGraphContext/CodeGraphContext"
+              href="https://github.com/JohnXu22786/CodeGraphContext"
               target="_blank"
               rel="noopener noreferrer"
               className={`flex items-center gap-2 text-[11px] uppercase tracking-widest font-bold px-4 py-2 border rounded-full transition-all backdrop-blur-md shadow-2xl ${isDark ? 'bg-black/40 hover:bg-purple-500/20 text-white border-white/10' : 'bg-white/80 hover:bg-white text-gray-800 border-black/10'}`}
@@ -2152,7 +2152,7 @@ export default function PRReviewer({ data: rawData, onClose }: { data: any, onCl
                 {/* Mobile Star */}
                 <div className="border-t border-white/5 my-0.5" />
                 <a
-                  href="https://github.com/CodeGraphContext/CodeGraphContext"
+                  href="https://github.com/JohnXu22786/CodeGraphContext"
                   target="_blank"
                   rel="noopener noreferrer"
                   className={`flex items-center gap-2 text-[11px] uppercase tracking-widest font-bold px-4 py-2 border rounded-xl transition-all ${isDark ? 'hover:bg-purple-500/10 border-white/5 text-white' : 'hover:bg-black/5 border-black/5 text-gray-850'}`}

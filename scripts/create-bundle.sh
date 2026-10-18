@@ -38,7 +38,7 @@ check_requirements() {
     fi
     
     if ! command -v cgc &> /dev/null; then
-        print_error "cgc is not installed. Install with: pip install codegraphcontext"
+        print_error "cgc is not installed. After the 0.7.0 PyPI publication, install with: pip install codegraphcontext-fork"
         exit 1
     fi
     

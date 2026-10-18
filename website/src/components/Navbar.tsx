@@ -146,7 +146,7 @@ const Navbar: React.FC = () => {
           {isLandingPage ? (
             <>
               <a
-                href="https://github.com/CodeGraphContext/CodeGraphContext"
+                href="https://github.com/JohnXu22786/CodeGraphContext"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 hidden sm:flex text-gray-500 hover:text-white transition-colors duration-200"

@@ -1,8 +1,8 @@
 # Run the fork beside upstream
 
-The fork currently uses the same public package and Python import names as upstream. Until a distinct package, import, and CLI identity is selected, install each checkout into a separate Python environment. Installing both into one environment would overwrite the `codegraphcontext` module and the `cgc` / `codegraphcontext` commands.
+The fork distribution is named `codegraphcontext-fork`; upstream uses `codegraphcontext`. Both distributions install the same Python import package and expose the same `cgc` and `codegraphcontext` commands. Install the fork into a dedicated Python environment. Installing both into one environment would overwrite the `codegraphcontext` module and those commands.
 
-The project metadata currently declares distribution `codegraphcontext` version `0.6.13`, imports from `codegraphcontext`, and exposes `cgc` and `codegraphcontext` entry points (`pyproject.toml`). This guide isolates runtime state and client registrations; it does not rename those public identities.
+The project metadata declares distribution `codegraphcontext-fork` version `0.7.0`, imports from `codegraphcontext`, and exposes `cgc` and `codegraphcontext` entry points (`pyproject.toml`). This guide covers runtime state and client registration isolation.
 
 ## Use a separate Python environment
 
@@ -64,7 +64,7 @@ CGC_INSTANCE_NAME="CodeGraphContext Fork" \
 
 The HTTP API title and MCP server identity use `CGC_INSTANCE_NAME`; the port remains controlled by `cgc api start --port`.
 
-The checked-in Docker and Kubernetes examples still use upstream image, resource, and volume names. For parallel deployments, use separate Docker volumes and a separate Kubernetes namespace; no container image or release identity is being changed by this runtime-path work.
+The checked-in Docker and Kubernetes examples use the fork-owned GHCR image `ghcr.io/johnxu22786/codegraphcontext`. For parallel deployments, use separate Docker volumes and a separate Kubernetes namespace.
 
 ## Existing settings and graph data
 

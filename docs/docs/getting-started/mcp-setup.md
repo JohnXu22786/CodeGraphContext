@@ -45,7 +45,7 @@ Add the following key under the `mcpServers` object:
 }
 ```
 
-*Note: If you are running CGC in an isolated virtual environment or using `uvx`, adjust the command accordingly (e.g., using `uvx codegraphcontext mcp start`).*
+*Note: The `codegraphcontext-fork` PyPI package is not published yet; this `uvx` example will work after the 0.7.0 publication. If you are running CGC in an isolated virtual environment or using `uvx`, adjust the command accordingly (e.g., using `uvx --from codegraphcontext-fork codegraphcontext mcp start`).*
 
 ---
 
@@ -98,7 +98,7 @@ If you use VS Code with the [Continue.dev](https://continue.dev) plugin:
 
 ## 3. Verifying Tool Connectivity
 
-After restarting your IDE or Claude Desktop app, verify that the 21 MCP tools are active. You should see commands like:
+After restarting your IDE or Claude Desktop app, verify that the 29 MCP tools are active. You should see commands like:
 
 - `find_code` (Keyword search across symbols and file contents)
 - `analyze_code_relationships` (Lookup callers, callees, and inheritance paths)

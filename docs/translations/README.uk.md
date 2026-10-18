@@ -11,52 +11,52 @@
 - 🇯🇵 [日本語](README.ja.md)
 - 🇪🇸 Español (Незабаром)
 
-🌍 **Допоможіть перекласти CodeGraphContext вашою мовою, створивши issue та PR на https://github.com/CodeGraphContext/CodeGraphContext/issues!**
+🌍 **Допоможіть перекласти CodeGraphContext вашою мовою, створивши issue та PR на https://github.com/JohnXu22786/CodeGraphContext/issues!**
 
 <p align="center">
   <br>
   <b>Усуньте розрив між глибокими графами коду та AI-контекстом.</b>
   <br><br>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/v/codegraphcontext?style=flat-square&logo=pypi" alt="Версія PyPI">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/v/codegraphcontext-fork?style=flat-square&logo=pypi" alt="Версія PyPI">
   </a>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/dm/codegraphcontext?style=flat-square" alt="Завантаження з PyPI">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/dm/codegraphcontext-fork?style=flat-square" alt="Завантаження з PyPI">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/CodeGraphContext/CodeGraphContext?style=flat-square" alt="Ліцензія">
+    <img src="https://img.shields.io/github/license/JohnXu22786/CodeGraphContext?style=flat-square" alt="Ліцензія">
   </a>
   <img src="https://img.shields.io/badge/MCP-Compatible-green?style=flat-square" alt="Сумісно з MCP">
   <a href="https://discord.gg/VCwUdCnn">
     <img src="https://img.shields.io/discord/1421769154507309150?label=Discord&logo=discord&logoColor=white&style=flat-square">
   </a>
   <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/stargazers">
-    <img src="https://img.shields.io/github/stars/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Зірки">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/stargazers">
+    <img src="https://img.shields.io/github/stars/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Зірки">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/network/members">
-    <img src="https://img.shields.io/github/forks/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Форки">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/network/members">
+    <img src="https://img.shields.io/github/forks/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Форки">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/issues">
-    <img src="https://img.shields.io/github/issues-raw/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/issues">
+    <img src="https://img.shields.io/github/issues-raw/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/pulls">
-    <img src="https://img.shields.io/github/issues-pr/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="PR">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/pulls">
+    <img src="https://img.shields.io/github/issues-pr/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="PR">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Учасники">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Учасники">
   </a>
 <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="Тести">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="Тести">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E тести">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E тести">
   </a>
   <a href="http://codegraphcontext.vercel.app/">
     <img src="https://img.shields.io/badge/website-up-brightgreen?style=flat-square" alt="Вебсайт">
   </a>
-  <a href="https://CodeGraphContext.github.io/CodeGraphContext/">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/tree/main/docs/">
     <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue?style=flat-square" alt="Документація">
   </a>
   <a href="https://youtu.be/KYYSdxhg1xU">
@@ -83,21 +83,21 @@
 
 ### 👨🏻‍💻 Встановлення та CLI
 > Встановіть за секунди через pip і отримайте потужний CLI для аналізу графа коду.
-![Миттєво встановіть і відкрийте CLI](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/install&cli.gif)
+![Миттєво встановіть і відкрийте CLI](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/install&cli.gif)
 
 
 ### 🛠️ Індексація за секунди
 > CLI інтелектуально розбирає вузли tree-sitter, щоб побудувати граф.
-![Індексація через MCP-клієнт](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Indexing.gif)
+![Індексація через MCP-клієнт](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Indexing.gif)
 
 ### 🤖 Підсилення вашого AI-асистента
 > Використовуйте природну мову, щоб запитувати складні ланцюжки викликів через MCP.
-![Використання MCP-сервера](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Usecase.gif)
+![Використання MCP-сервера](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Usecase.gif)
 
 ---
 
 ## Деталі проєкту
-- **Версія:** 0.4.16
+- **Версія:** 0.7.0
 - **Автори:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **Ліцензія:** MIT License (див. [LICENSE](LICENSE) для деталей)
 - **Вебсайт:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
@@ -118,12 +118,12 @@
 ---
 
 ## Історія зірок
-[Star History Chart ↗](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date)
+[Star History Chart ↗](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date)
 <!-- The inline chart image is temporarily removed: api.star-history.com currently
      renders "GitHub restricted access to star data" instead of the chart
      (GitHub-side restriction, see PR #1642). Restore the image once the
      official service recovers:
-     [![Star History Chart](https://api.star-history.com/svg?repos=CodeGraphContext/CodeGraphContext&type=Date)](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date) -->
+     [![Star History Chart](https://api.star-history.com/svg?repos=JohnXu22786/CodeGraphContext&type=Date)](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date) -->
 
 ---
 
@@ -204,14 +204,22 @@ _Якщо ви використовуєте CodeGraphContext у своєму п�
 ---
 
 ## Швидкий старт
+
+> Увага: дистрибутив upstream `codegraphcontext` і цей форк `codegraphcontext-fork` встановлюють файли в один простір імпорту Python `codegraphcontext`. Встановлюйте форк в окреме віртуальне середовище Python і не встановлюйте обидва дистрибутиви в одну середу. Команди CLI залишаються `cgc` і `codegraphcontext`.
+
+Пакет `codegraphcontext-fork` ще не опубліковано в PyPI. Наведені команди встановлення стануть доступні після публікації версії 0.7.0.
+
+Наведені нижче команди призначені для Bash у macOS/Linux. У PowerShell активуйте середовище командою `.\.venv\Scripts\Activate.ps1`, а в командному рядку Windows — `.venv\Scripts\activate.bat`.
 ### Встановіть базовий інструментарій
 ```
-pip install codegraphcontext
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install codegraphcontext-fork
 ```
 
 ### Якщо команду `cgc` не знайдено, запустіть наш однорядковий фікс:
 ```
-curl -sSL https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/scripts/post_install_fix.sh | bash
+curl -sSL https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh | bash
 ```
 
 ---
@@ -239,7 +247,7 @@ CodeGraphContext працює у **двох режимах**, і ви может
 
 ### Встановлення (для обох режимів)
 
-1. **Встановіть:** `pip install codegraphcontext`
+1. **Встановіть (після публікації 0.7.0 у PyPI):** `pip install codegraphcontext-fork`
    <details>
    <summary>⚙️ Усунення проблем: якщо команду <code>cgc</code> не знайдено</summary>
 
@@ -248,7 +256,7 @@ CodeGraphContext працює у **двох режимах**, і ви может
    **Linux/Mac:**
    ```bash
    # Завантажити скрипт виправлення
-   curl -O https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/scripts/post_install_fix.sh
+   curl -O https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh
 
    # Зробити його виконуваним
    chmod +x post_install_fix.sh
@@ -263,7 +271,7 @@ CodeGraphContext працює у **двох режимах**, і ви может
    **Windows (PowerShell):**
    ```powershell
    # Завантажити скрипт виправлення
-   curl -O https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/scripts/post_install_fix.sh
+   curl -O https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh
 
    # Запустити через bash (потрібен Git Bash або WSL)
    bash post_install_fix.sh
@@ -481,6 +489,6 @@ cgc find pattern "Auth" --viz
 
 Внески вітаються! 🎉
 Будь ласка, перегляньте [CONTRIBUTING.md](CONTRIBUTING.md) для детальних правил.
-Якщо у вас є ідеї щодо нових можливостей, інтеграцій чи покращень, відкрийте [issue](https://github.com/CodeGraphContext/CodeGraphContext/issues) або надішліть Pull Request.
+Якщо у вас є ідеї щодо нових можливостей, інтеграцій чи покращень, відкрийте [issue](https://github.com/JohnXu22786/CodeGraphContext/issues) або надішліть Pull Request.
 
 Долучайтеся до обговорень і допомагайте формувати майбутнє CodeGraphContext.

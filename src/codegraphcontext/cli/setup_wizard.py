@@ -79,7 +79,7 @@ def _mcp_server_command() -> tuple[str, list[str]]:
     if cgc_path:
         return cgc_path, ["mcp", "start"]
     if pipx_path:
-        return pipx_path, ["run", "codegraphcontext", "mcp", "start"]
+        return pipx_path, ["run", "--spec", "codegraphcontext-fork", "codegraphcontext", "mcp", "start"]
     return sys.executable, ["-m", "codegraphcontext", "mcp", "start"]
 
 

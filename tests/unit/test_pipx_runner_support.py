@@ -85,8 +85,8 @@ class TestTC01_CgcAvailable:
 
 # ---------------------------------------------------------------------------
 # TC-02: cgc is absent but pipx is available in system PATH
-# When cgc is not found but pipx is, the MCP config should use pipx run
-# so that codegraphcontext is executed from its pipx isolated environment.
+# When cgc is not found but pipx is, the MCP config should use pipx run --spec
+# so the fork distribution provides the preserved codegraphcontext command.
 # ---------------------------------------------------------------------------
 
 class TestTC02_PipxAvailable:
@@ -103,7 +103,7 @@ class TestTC02_PipxAvailable:
         server = _get_server_block(config)
         assert server["command"] == "/usr/bin/pipx", \
             f"Expected pipx path, got: {server['command']}"
-        assert server["args"] == ["run", "codegraphcontext", "mcp", "start"], \
+        assert server["args"] == ["run", "--spec", "codegraphcontext-fork", "codegraphcontext", "mcp", "start"], \
             f"Expected pipx run args, got: {server['args']}"
 
     def test_pipx_args_contain_codegraphcontext_package(self):
@@ -111,8 +111,10 @@ class TestTC02_PipxAvailable:
             lambda name: None if name == "cgc" else "/usr/bin/pipx"
         )
         server = _get_server_block(config)
-        assert "codegraphcontext" in server["args"], \
-            "Package name 'codegraphcontext' must be in args for pipx run"
+        assert "codegraphcontext-fork" in server["args"], \
+            "Distribution name 'codegraphcontext-fork' must be selected for pipx run"
+        assert server["args"][-3:] == ["codegraphcontext", "mcp", "start"], \
+            "pipx must invoke the preserved codegraphcontext console command"
         assert server["args"][0] == "run", \
             "First arg must be 'run' for pipx"
 
@@ -207,7 +209,7 @@ class TestTC04_KuzuSetupBlock:
 # ---------------------------------------------------------------------------
 # TC-05: README.md must document pipx installation and config example
 # Users who install via pipx need clear instructions. README must mention
-# pipx, codegraphcontext package name, and mcp start args in that section.
+# pipx, codegraphcontext-fork distribution, and mcp start args in that section.
 # ---------------------------------------------------------------------------
 
 class TestTC05_ReadmeDocumentation:
@@ -238,8 +240,32 @@ class TestTC05_ReadmeDocumentation:
         if not self.README_PATH.exists():
             pytest.skip("README.md not found")
         content = self.README_PATH.read_text(encoding="utf-8").lower()
-        assert "pipx" in content and "codegraphcontext" in content, \
-            "README.md must contain both 'pipx' and 'codegraphcontext'"
+        assert "pipx" in content and "codegraphcontext-fork" in content, \
+            "README.md must select the codegraphcontext-fork distribution for pipx"
+
+    def test_translated_readmes_select_fork_distribution_for_pipx(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        translated_readmes = (
+            "README.ja.md",
+            "README.ta.md",
+            "README.zh-CN.md",
+        )
+        expected = [
+            "run",
+            "--spec",
+            "codegraphcontext-fork",
+            "codegraphcontext",
+            "mcp",
+            "start",
+        ]
+
+        for filename in translated_readmes:
+            content = (repo_root / "docs" / "translations" / filename).read_text(encoding="utf-8")
+            pipx_section = content.split('"command": "pipx"', 1)[1]
+            args_start = pipx_section.index('"args":')
+            list_start = pipx_section.index("[", args_start)
+            list_end = pipx_section.index("]", list_start) + 1
+            assert json.loads(pipx_section[list_start:list_end]) == expected, filename
 
     def test_readme_pipx_config_has_mcp_start(self):
         if not self.README_PATH.exists():
@@ -269,8 +295,8 @@ class TestTC06_McpJsonFileOutput:
         assert server["command"] == "/usr/bin/pipx", \
             f"command should be pipx, got: {server['command']}"
         assert server["args"][0] == "run", "args[0] should be 'run'"
-        assert "codegraphcontext" in server["args"], \
-            "args must contain 'codegraphcontext'"
+        assert server["args"] == ["run", "--spec", "codegraphcontext-fork", "codegraphcontext", "mcp", "start"], \
+            "pipx must select the fork distribution and execute its preserved command"
 
     def test_mcp_json_structure_valid(self):
         config = _run_generate_mcp_json(
@@ -286,8 +312,8 @@ class TestTC06_McpJsonFileOutput:
 
 # ---------------------------------------------------------------------------
 # TC-07: pipx uses "run" keyword which tells pipx to execute the package
-# inside its own isolated virtual environment. Without "run" as first arg,
-# pipx will not create or use the isolated env for codegraphcontext.
+# inside its own isolated virtual environment. The explicit spec must select
+# this fork while the final command remains the preserved executable name.
 # ---------------------------------------------------------------------------
 
 class TestTC07_PipxIsolatedEnvArgs:
@@ -300,8 +326,8 @@ class TestTC07_PipxIsolatedEnvArgs:
         server = _get_server_block(config)
         assert server["args"][0] == "run", \
             "'run' must be first arg — this tells pipx to use isolated environment"
-        assert "codegraphcontext" in server["args"], \
-            "package name must be present so pipx fetches it in its own isolated venv"
+        assert "codegraphcontext-fork" in server["args"], \
+            "fork distribution must be present so pipx fetches it in its isolated venv"
 
 
 # ---------------------------------------------------------------------------

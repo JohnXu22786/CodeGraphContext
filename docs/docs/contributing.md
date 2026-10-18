@@ -17,7 +17,7 @@ Thank you for your interest in contributing to CodeGraphContext (CGC). We welcom
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/CodeGraphContext/CodeGraphContext.git
+   git clone https://github.com/JohnXu22786/CodeGraphContext.git
    cd CodeGraphContext
    ```
 

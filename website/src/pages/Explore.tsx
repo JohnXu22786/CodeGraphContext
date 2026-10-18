@@ -945,7 +945,7 @@ const Explore = () => {
 
           {/* Star GitHub CTA */}
           <motion.a
-            href="https://github.com/CodeGraphContext/CodeGraphContext"
+            href="https://github.com/JohnXu22786/CodeGraphContext"
             target="_blank"
             rel="noopener noreferrer"
             initial={{ opacity: 0, y: 20 }}

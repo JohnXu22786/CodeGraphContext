@@ -18,41 +18,41 @@
   <br>
   <b>ஆழமான குறியீட் வரைபடங்களுக்கும் AI சூழலுக்கும் இடையிலான வெளியை குறைக்கவும்.</b>
   <br><br>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/v/codegraphcontext?style=flat-square&logo=pypi" alt="PyPI பதிப்பு">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/v/codegraphcontext-fork?style=flat-square&logo=pypi" alt="PyPI பதிப்பு">
   </a>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/dm/codegraphcontext?style=flat-square" alt="PyPI பதிவிறக்கங்கள்">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/dm/codegraphcontext-fork?style=flat-square" alt="PyPI பதிவிறக்கங்கள்">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/CodeGraphContext/CodeGraphContext?style=flat-square" alt="உரிமம்">
+    <img src="https://img.shields.io/github/license/JohnXu22786/CodeGraphContext?style=flat-square" alt="உரிமம்">
   </a>
   <img src="https://img.shields.io/badge/MCP-Compatible-green?style=flat-square" alt="MCP இணக்கமான">
   <a href="https://discord.gg/VCwUdCnn">
     <img src="https://img.shields.io/discord/1421769154507309150?label=Discord&logo=discord&logoColor=white&style=flat-square">
   </a>
   <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/stargazers">
-    <img src="https://img.shields.io/github/stars/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="நட்சத்திரங்கள்">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/stargazers">
+    <img src="https://img.shields.io/github/stars/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="நட்சத்திரங்கள்">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/network/members">
-    <img src="https://img.shields.io/github/forks/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="கிளைகள்">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/network/members">
+    <img src="https://img.shields.io/github/forks/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="கிளைகள்">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/issues">
-    <img src="https://img.shields.io/github/issues-raw/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="சிக்கல்கள்">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/issues">
+    <img src="https://img.shields.io/github/issues-raw/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="சிக்கல்கள்">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/pulls">
-    <img src="https://img.shields.io/github/issues-pr/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="இழுப்பு கோரிக்கைகள்">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/pulls">
+    <img src="https://img.shields.io/github/issues-pr/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="இழுப்பு கோரிக்கைகள்">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="பங்களிப்பாளர்கள்">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="பங்களிப்பாளர்கள்">
   </a>
 <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="சோதனைகள்">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="சோதனைகள்">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E சோதனைகள்">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E சோதனைகள்">
   </a>
   <a href="http://codegraphcontext.vercel.app/">
     <img src="https://img.shields.io/badge/website-up-brightgreen?style=flat-square" alt="இணையதளம்">
@@ -87,21 +87,21 @@
 
 ### 👨🏻‍💻 நிறுவல் மற்றும் CLI
 > pip மூலம் சில நொடிகளில் நிறுவி, குறியீட் வரைபட பகுப்பாய்வுக்கான சக்திशाली CLI ஐ திறக்கவும்.
-![CLI ஐ உடனடியாக நிறுவி திறக்கவும்](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/install&cli.gif)
+![CLI ஐ உடனடியாக நிறுவி திறக்கவும்](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/install&cli.gif)
 
 
 ### 🛠️ நொடிகளில் அட்டவணைப்படுத்தல்
 > CLI உங்கள் tree-sitter முனைகளை புத்திமான்திலாக பாகுபடுத்தி வரைபடத்தை உருவாக்குகிறது.
-![MCP கிளையன்ட் ஐப் பயன்படுத்தி அட்டவணைப்படுத்தல்](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Indexing.gif)
+![MCP கிளையன்ட் ஐப் பயன்படுத்தி அட்டவணைப்படுத்தல்](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Indexing.gif)
 
 ### 🤖 உங்கள் AI உதவியாளரைக் குறிப்பிடவும்
 > MCP மூலம் சிக்கலான அழைப்பு-சங்கிலிகளைப் பூர்ண நிலையில் கேட்கவும்.
-![MCP சேவயளியைப் பயன்படுத்தி](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Usecase.gif)
+![MCP சேவயளியைப் பயன்படுத்தி](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Usecase.gif)
 
 ---
 
 ## தொகுதி விவரங்கள்
-- **பதிப்பு:** 0.5.1
+- **பதிப்பு:** 0.7.0
 - **ஆசிரியர்கள்:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **உரிமம்:** MIT உரிமம் (விவரங்களுக்கு [LICENSE](LICENSE) பார்க்கவும்)
 - **இணையதளம்:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
@@ -122,12 +122,12 @@
 ---
 
 ## நட்சத்திர வரலாறு
-[Star History Chart ↗](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date)
+[Star History Chart ↗](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date)
 <!-- The inline chart image is temporarily removed: api.star-history.com currently
      renders "GitHub restricted access to star data" instead of the chart
      (GitHub-side restriction, see PR #1642). Restore the image once the
      official service recovers:
-     [![Star History Chart](https://api.star-history.com/svg?repos=CodeGraphContext/CodeGraphContext&type=Date)](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date) -->
+     [![Star History Chart](https://api.star-history.com/svg?repos=JohnXu22786/CodeGraphContext&type=Date)](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date) -->
 
 ---
 
@@ -230,15 +230,23 @@ _உங்கள் தொகுதியில் CodeGraphContext ஐ பய�
 
 ### 🚀 நிறுவல் & விரைவு தொடக்கம்
 
+> குறிப்பு: upstream விநியோகம் `codegraphcontext` மற்றும் இந்த fork விநியோகம் `codegraphcontext-fork` இரண்டும் `codegraphcontext` Python import namespace-இல் கோப்புகளை நிறுவுகின்றன. இந்த fork-ஐ தனி Python virtual environment-இல் நிறுவுங்கள்; இரண்டையும் ஒரே சூழலில் நிறுவ வேண்டாம். CLI கட்டளைகள் `cgc` மற்றும் `codegraphcontext` ஆகவே இருக்கும்.
+
+`codegraphcontext-fork` தொகுப்பு இன்னும் PyPI-இல் வெளியிடப்படவில்லை. கீழே உள்ள நிறுவல் கட்டளைகள் 0.7.0 வெளியான பிறகு கிடைக்கும்.
+
+கீழே உள்ள கட்டளைகள் macOS/Linux Bash-க்கானவை. PowerShell-இல் சூழலைச் செயல்படுத்த `.\.venv\Scripts\Activate.ps1` கட்டளையையும், Windows Command Prompt-இல் `.venv\Scripts\activate.bat` கட்டளையையும் இயக்கவும்.
+
 1.  **கருவிக்கட்டை நிறுவுங்கள்:**
     ```bash
-    pip install codegraphcontext
+    python -m venv .venv
+    source .venv/bin/activate
+    python -m pip install codegraphcontext-fork
     ```
 
 2.  **பிழையிலிருந்து விடுபடுங்கள் (கட்டளை கண்டுபிடிக்கப்படவில்லை):**
     `codegraphcontext` கட்டளை கண்டுபிடிக்கப்படவில்லை என்றால், இந்த ஒற்றை-வரி பிரளயத்தை இயக்கவும்:
     ```bash
-    curl -sSL https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/scripts/post_install_fix.sh | bash
+    curl -sSL https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh | bash
     ```
 
 3.  **தரவுத்தள அமைப்பு (தானாக):**
@@ -269,8 +277,12 @@ python --version
 
 ### படி 1: CodeGraphContext நிறுவுங்கள்
 
+இந்த நிறுவல் கட்டளை `codegraphcontext-fork` பதிப்பு 0.7.0 PyPI-இல் வெளியிடப்பட்ட பிறகு மட்டுமே கிடைக்கும்.
+
 ```bash
-pip install codegraphcontext
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install codegraphcontext-fork
 ```
 
 இந்த கட்டளை CodeGraphContext மற்றும் அனைத்து தேவைப்பட்ட சார்பியங்களை நிறுவும்.
@@ -470,6 +482,9 @@ OpenCode உடன் MCP சேவயளிகளை நிறுவி கட�
 #### pipx மூலம் நிறுவப்பட்ட என்றால்
 
 CodeGraphContext ஐ `pipx` ஐ பயன்படுத்தி நிறுவினால், பதிலாக பின்வரும் கட்டமைப்பு பயன்படுத்தவும்:
+
+இந்த pipx run --spec கட்டமைப்பு, 0.7.0 PyPI-இல் வெளியிடப்பட்ட பிறகு கிடைக்கும்.
+
 ```json
 {
   "mcpServers": {
@@ -477,6 +492,8 @@ CodeGraphContext ஐ `pipx` ஐ பயன்படுத்தி நிறு�
       "command": "pipx",
       "args": [
         "run",
+        "--spec",
+        "codegraphcontext-fork",
         "codegraphcontext",
         "mcp",
         "start"
@@ -561,6 +578,6 @@ CodeGraphContext ஐ `pipx` ஐ பயன்படுத்தி நிறு�
 
 பங்களிப்புக்கள் வரவேற்கப்படுகின்றன! 🎉  
 விபரணை வழிமுறைகளுக்கு [CONTRIBUTING.md](.github/CONTRIBUTING.md) பார்க்கவும்.
-உங்களிடம் புதிய பண்புக்கூறு, ஒருங்கிணைப்புக்கள் அல்லது சுधार கருதுவ தோல்வி இருந்தால், [சிக்கல்](https://github.com/CodeGraphContext/CodeGraphContext/issues) திறந்து அல்லது இழுப்பு கோரிக்கை சமர்ப்பிக்கவும்.
+உங்களிடம் புதிய பண்புக்கூறு, ஒருங்கிணைப்புக்கள் அல்லது சுधार கருதுவ தோல்வி இருந்தால், [சிக்கல்](https://github.com/JohnXu22786/CodeGraphContext/issues) திறந்து அல்லது இழுப்பு கோரிக்கை சமர்ப்பிக்கவும்.
 
 விவாதங்களில் பங்கு பெறவும் மற்றும் CodeGraphContext இன் ভவிஷ்யத்தை வடிவமைக்க உதவ பெறவும்.

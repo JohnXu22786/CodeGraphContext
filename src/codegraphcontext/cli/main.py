@@ -116,7 +116,7 @@ def get_version() -> str:
     Fallback to a dev version if not installed.
     """
     try:
-        return pkg_version("codegraphcontext")  # must match [project].name in pyproject.toml
+        return pkg_version("codegraphcontext-fork")  # must match [project].name in pyproject.toml
     except PackageNotFoundError:
         return "0.0.0 (dev)"
 
@@ -1705,7 +1705,10 @@ def doctor():
         console.print("[bold yellow]⚠️  Some issues detected. Please review the output above.[/bold yellow]")
         console.print("\n[cyan]Common fixes:[/cyan]")
         console.print("  • For Neo4j issues: Run 'cgc neo4j setup'")
-        console.print("  • For missing packages: pip install codegraphcontext")
+        console.print(
+            "  • For missing packages, after 0.7.0 is published on PyPI run: "
+            "pip install codegraphcontext-fork"
+        )
         console.print("  • For config issues: Run 'cgc config reset'")
         raise typer.Exit(code=1)
     console.print("=" * 60 + "\n")

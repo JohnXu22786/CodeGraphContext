@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 
-const LAST_MONTH_KEY = "cgc_last_month_downloads";
+const LAST_MONTH_KEY = "cgc_codegraphcontext_fork_last_month_downloads";
 type PypiStats = {
   data: {
     last_day: number;
     last_month: number;
     last_week: number;
-  };
+  } | null;
   package: string;
   type: string;
 };
@@ -18,7 +18,7 @@ export default function ShowDownloads() {
   useEffect(() => {
    async function fetchStats() {
   try {
-    const res = await fetch("/api/pypi/packages/codegraphcontext/recent");
+    const res = await fetch("/api/pypi/packages/codegraphcontext-fork/recent");
 
     if (!res.ok) {
       throw new Error(`API error: ${res.status}`);
@@ -46,7 +46,7 @@ export default function ShowDownloads() {
           last_week: 0,
           last_month: Number(savedLastMonth),
         },
-        package: "codegraphcontext",
+        package: "codegraphcontext-fork",
         type: "fallback",
       });
     } else {

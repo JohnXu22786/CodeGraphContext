@@ -32,7 +32,8 @@ def _missing_tree_sitter_error(import_error: ImportError) -> ImportError:
     """Return an actionable error for optional tree-sitter dependencies."""
     return ImportError(
         "tree-sitter and tree-sitter-language-pack are required for code parsing. "
-        "Install them with: pip install codegraphcontext[parsing]"
+        "Install them after 0.7.0 is published on PyPI with: "
+        "pip install codegraphcontext-fork[parsing]"
     )
 
 

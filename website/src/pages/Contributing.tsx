@@ -4,8 +4,8 @@ import { Code2, GitBranch, CheckCircle, Zap, Users } from "lucide-react";
 import { Loader2 } from "lucide-react";
 import Footer from "../components/Footer";
 
-const CONTRIBUTING_SOURCE_URL = "https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/.github/CONTRIBUTING.md";
-const CONTRIBUTING_PAGE_URL = "https://github.com/CodeGraphContext/CodeGraphContext/blob/main/.github/CONTRIBUTING.md";
+const CONTRIBUTING_SOURCE_URL = "https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/.github/CONTRIBUTING.md";
+const CONTRIBUTING_PAGE_URL = "https://github.com/JohnXu22786/CodeGraphContext/blob/main/.github/CONTRIBUTING.md";
 
 const Contributing: React.FC = () => {
   const [content, setContent] = useState<string>("");
@@ -214,7 +214,7 @@ const Contributing: React.FC = () => {
                 Follow the guidelines above and submit your pull request to help improve CodeGraphContext. We look forward to your contribution!
               </p>
               <a
-                href="https://github.com/CodeGraphContext/CodeGraphContext"
+                href="https://github.com/JohnXu22786/CodeGraphContext"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-bold rounded-full transition-all duration-300"
