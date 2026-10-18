@@ -199,8 +199,8 @@ def unused_python_routine():
 
         _index_and_seed(server, repo, context)
 
-        # The optional Spring query shape is currently not supported by
-        # Kùzu's binder. Exercise its successful path against FalkorDB Lite.
+        # Kùzu now supports the Spring stereotype query shape. Build a
+        # FalkorDB Lite fixture too when available for cross-backend coverage.
         if is_falkordb_usable():
             (context / "config.yaml").write_text("database: falkordb\n", encoding="utf-8")
             os.environ["CGC_RUNTIME_DB_TYPE"] = "falkordb"
@@ -309,7 +309,7 @@ def _seed_redis_datasource(server: MCPServer) -> None:
 def _falkor_server(mcp_graph) -> MCPServer:
     server = mcp_graph["falkor_server"]
     if server is None:
-        pytest.skip("FalkorDB Lite is unavailable; Kùzu reports the documented binder limitation")
+        pytest.skip("FalkorDB Lite is unavailable; cross-backend assertions cannot run")
     return server
 
 
