@@ -35,6 +35,7 @@ import subprocess
 
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 from codegraphcontext.utils.git_utils import get_repo_commit_hash, get_repo_branch_name
+from codegraphcontext.runtime_paths import get_cgc_home
 
 
 class _BundleEncoder(json.JSONEncoder):
@@ -101,10 +102,10 @@ def _default_bundle_install_root(
     metadata: Optional[Dict[str, Any]] = None,
     destination_root: Optional[Path] = None,
 ) -> str:
-    """Absolute posix dest root for one imported bundle: ~/.codegraphcontext/bundles/<slug>."""
+    """Absolute posix destination under CGC_HOME/bundles/<slug>."""
     slug = _sanitize_bundle_repo_slug((metadata or {}).get("repo"))
     base = Path(destination_root) if destination_root is not None else (
-        Path.home() / ".codegraphcontext" / "bundles"
+        get_cgc_home() / "bundles"
     )
     return (base / slug).resolve().as_posix()
 
@@ -350,7 +351,7 @@ class CGCBundle:
             verify_key: Optional HMAC key to verify a signed bundle
             destination_root: Optional base directory used to re-absolutize
                 repo-scoped relative paths ('.' / './…'). Defaults to
-                ~/.codegraphcontext/bundles/<sanitized repo>.
+                CGC_HOME/bundles/<sanitized repo>.
             
         Returns:
             Tuple[bool, str]: (success, message)

@@ -22,6 +22,16 @@ import os
 from pathlib import Path
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 
+from codegraphcontext.runtime_paths import (
+    bootstrap_instance_environment,
+    get_instance_mcp_config,
+    get_instance_name,
+    get_repo_context_dir_name,
+)
+
+# MCP registration env must be available before config_manager snapshots CGC_HOME.
+bootstrap_instance_environment(Path.cwd() / "mcp.json")
+
 from codegraphcontext.server import MCPServer
 from .setup_wizard import run_neo4j_setup_wizard, configure_mcp_client
 from . import config_manager
@@ -47,7 +57,6 @@ from .cli_helpers import (
 )
 from .hook_manager import HookError, get_hook_status, install_hooks, uninstall_hooks
 from codegraphcontext.utils.tool_limits import get_tool_result_limit
-
 # Set the log level for the noisy neo4j, asyncio, and urllib3 loggers to keep the output clean.
 # Get the log level from config, defaulting to WARNING
 def _configure_library_loggers():
@@ -267,7 +276,7 @@ def context_list():
 def context_create(
     name: str = typer.Argument(..., help="Name of the new context"),
     database: str = typer.Option(None, "--database", "--db", "-db", "-d", help=config_manager.DATABASE_CLI_HELP),
-    db_path: str = typer.Option(None, "--db-path", help="Explicit path for the DB (defaults to ~/.codegraphcontext/contexts/<name>/db)"),
+    db_path: str = typer.Option(None, "--db-path", help="Explicit path for the DB (defaults under CGC_HOME/contexts/<name>/db)"),
 ):
     """Create a new logical context."""
     if database is None:
@@ -307,8 +316,8 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
     Uses per-variable precedence - each variable is loaded from the highest priority source.
     Priority order (highest to lowest):
     1. Runtime environment variables (shell/CI)
-    2. Local `.codegraphcontext/.env` and `.env` in the current project directory (per-repo mode only)
-    3. Global `~/.codegraphcontext/.env` (user defaults, including `cgc config set`)
+    2. Local `CGC_REPO_CONTEXT_DIR/.env` and `.env` in the current project directory (per-repo mode only)
+    3. Global `CGC_HOME/.env` (default `~/.codegraphcontext/.env`; user defaults, including `cgc config set`)
     4. Local `mcp.json` env vars (project defaults)
 
     Duplicate loading is skipped when the local file resolves to the same path as the global file.
@@ -351,7 +360,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
         try:
             with open(mcp_file_path, "r", encoding="utf-8", errors="replace") as f:
                 mcp_config = json.load(f)
-            server_env = mcp_config.get("mcpServers", {}).get("CodeGraphContext", {}).get("env", {})
+            server_env = get_instance_mcp_config(mcp_config).get("env", {})
             if isinstance(server_env, dict):
                 normalized_env = {}
                 for env_key, env_value in server_env.items():
@@ -365,7 +374,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
             console.print(f"[yellow]Warning: Could not load mcp.json: {e}[/yellow]")
     
     # 3. Global .env file (user defaults)
-    global_env_path = Path.home() / ".codegraphcontext" / ".env"
+    global_env_path = config_manager.CONFIG_FILE
     if global_env_path.exists():
         try:
             with open(global_env_path, "r", encoding="utf-8", errors="replace") as f:
@@ -383,7 +392,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
         except Exception as e:
             console.print(f"[yellow]Warning: Could not load .env from current directory: {e}[/yellow]")
 
-        # <cwd>/.codegraphcontext/.env only (overrides global when distinct)
+        # The selected <cwd>/<CGC_REPO_CONTEXT_DIR>/.env only (overrides global when distinct).
         try:
             local_cgc_env = codegraphcontext_dotenv_at_cwd(Path.cwd())
             if local_cgc_env and local_cgc_env.resolve() != global_env_path.resolve():
@@ -392,7 +401,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
                     _append_source(str(local_cgc_env), vals)
         except Exception as e:
             console.print(
-                f"[yellow]Warning: Could not load .codegraphcontext/.env at cwd: {e}[/yellow]"
+                f"[yellow]Warning: Could not load {get_repo_context_dir_name()}/.env at cwd: {e}[/yellow]"
             )
     
     # Merge all configs with proper precedence (later sources override earlier ones)
@@ -404,7 +413,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None):
     # Apply merged config to environment.
     # IMPORTANT: DB-selection keys set in the shell must win over .env defaults.
     # E.g. `DEFAULT_DATABASE=falkordb cgc index …` must not be overridden by
-    # DEFAULT_DATABASE=neo4j sitting in ~/.codegraphcontext/.env
+    # DEFAULT_DATABASE=neo4j sitting in CGC_HOME/.env
     for key, value in merged_config.items():
         if value is not None:  # Only set non-None values
             if key in runtime_env:

@@ -19,6 +19,7 @@ from .auth import (
 )
 from .mcp_sse import handle_messages, handle_sse, mcp_server
 from mcp.server.transport_security import TransportSecuritySettings
+from codegraphcontext.runtime_paths import get_instance_name
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +118,8 @@ def create_app() -> FastAPI:
     log_auth_status()
 
     app = FastAPI(
-        title="CodeGraphContext Gateway",
-        description="HTTP API gateway for CodeGraphContext MCP server. Enables integration with ChatGPT Actions, Claude, and web frontends.",
+        title=f"{get_instance_name()} Gateway",
+        description=f"HTTP API gateway for {get_instance_name()} MCP server. Enables integration with ChatGPT Actions, Claude, and web frontends.",
         version="0.1.0"
     )
 

@@ -12,7 +12,9 @@ import sys
 import shutil
 import yaml 
 from codegraphcontext.core.database import DatabaseManager
+from codegraphcontext.cli import config_manager
 from codegraphcontext.cli.config_manager import normalize_config_path
+from codegraphcontext.runtime_paths import get_instance_name, get_isolation_environment
 
 console = Console()
 
@@ -66,6 +68,45 @@ def _check_write_access(path: Path) -> bool:
 
     return os.access(target, os.W_OK)
 
+
+def _mcp_server_command() -> tuple[str, list[str]]:
+    """Select this installation when an isolated runtime was explicitly configured."""
+    if get_isolation_environment():
+        return sys.executable, ["-m", "codegraphcontext", "mcp", "start"]
+
+    cgc_path = shutil.which("cgc")
+    pipx_path = shutil.which("pipx")
+    if cgc_path:
+        return cgc_path, ["mcp", "start"]
+    if pipx_path:
+        return pipx_path, ["run", "codegraphcontext", "mcp", "start"]
+    return sys.executable, ["-m", "codegraphcontext", "mcp", "start"]
+
+
+def _merge_project_mcp_config(path: Path, generated: dict) -> dict | None:
+    """Merge this server into a valid project MCP config without replacing peers."""
+    if not path.exists():
+        return generated
+
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        console.print(f"[yellow]Could not update {path}; existing MCP configuration was left unchanged: {exc}[/yellow]")
+        return None
+
+    if not isinstance(existing, dict):
+        console.print(f"[yellow]Could not update {path}; expected a JSON object. Existing file was left unchanged.[/yellow]")
+        return None
+    existing_servers = existing.get("mcpServers", {})
+    generated_servers = generated.get("mcpServers", {})
+    if not isinstance(existing_servers, dict) or not isinstance(generated_servers, dict):
+        console.print(f"[yellow]Could not update {path}; mcpServers must be a JSON object. Existing file was left unchanged.[/yellow]")
+        return None
+
+    merged = dict(existing)
+    merged["mcpServers"] = {**existing_servers, **generated_servers}
+    return merged
+
 # Constants for Docker Neo4j setup
 DEFAULT_NEO4J_URI = "neo4j://localhost:7687"
 DEFAULT_NEO4J_USERNAME = "neo4j"
@@ -77,7 +118,7 @@ def _save_neo4j_credentials(creds):
     Save Neo4j credentials to .env file (database setup only).
     Does NOT generate MCP config or configure IDE.
     """
-    from codegraphcontext.cli.config_manager import load_config, save_config, ensure_config_dir
+    from codegraphcontext.cli.config_manager import CONFIG_FILE, load_config, save_config, ensure_config_dir
     
     ensure_config_dir()
     
@@ -96,7 +137,7 @@ def _save_neo4j_credentials(creds):
     save_config(config, preserve_db_credentials=False)
     
     console.print("\n[bold green]✅ Neo4j setup complete![/bold green]")
-    console.print(f"[cyan]📝 Credentials saved to ~/.codegraphcontext/.env[/cyan]")
+    console.print(f"[cyan]📝 Credentials saved to {CONFIG_FILE}[/cyan]")
     console.print(f"[cyan]🔧 Default database set to 'neo4j'[/cyan]")
     console.print("\n[dim]You can now use cgc commands with Neo4j:[/dim]")
     console.print("[dim]  • cgc index .          - Index your code[/dim]")
@@ -138,29 +179,21 @@ def _validate_neo4j_credentials(creds):
 
 def _generate_mcp_json(creds):
     """Generates and prints the MCP JSON configuration."""
-    cgc_path = shutil.which("cgc")
-    pipx_path = shutil.which("pipx")
-
-    if cgc_path:
-        command = cgc_path
-        args = ["mcp", "start"]
-    elif pipx_path:
-        command = pipx_path
-        args = ["run", "codegraphcontext", "mcp", "start"]
-    else:
-        command = sys.executable
-        args = ["-m", "codegraphcontext", "mcp", "start"]
+    command, args = _mcp_server_command()
+    server_name = get_instance_name()
+    server_env = {
+        "NEO4J_URI": creds.get("uri", ""),
+        "NEO4J_USERNAME": creds.get("username", "neo4j"),
+        "NEO4J_PASSWORD": creds.get("password", ""),
+    }
+    server_env.update(get_isolation_environment())
 
     mcp_config = {
         "mcpServers": {
-            "CodeGraphContext": {
+            server_name: {
                 "command": command,
                 "args": args,
-                "env": {
-                    "NEO4J_URI": creds.get("uri", ""),
-                    "NEO4J_USERNAME": creds.get("username", "neo4j"),
-                    "NEO4J_PASSWORD": creds.get("password", "")
-                },
+                "env": server_env,
                 "tools": {
                     "alwaysAllow": [
                         "add_code_to_graph", "add_package_to_graph",
@@ -196,15 +229,17 @@ def _generate_mcp_json(creds):
         )
         return
 
-    try:
-        with open(mcp_file, "w") as f:
-            json.dump(mcp_config, f, indent=2)
-    except PermissionError:
-        console.print(
-            f"[bold red]Permission denied while writing:[/bold red] {mcp_file}"
-        )
-        return
-    console.print(f"\n[cyan]For your convenience, the configuration has also been saved to: {mcp_file}[/cyan]")
+    merged_mcp_config = _merge_project_mcp_config(mcp_file, mcp_config)
+    if merged_mcp_config is not None:
+        try:
+            with open(mcp_file, "w", encoding="utf-8") as f:
+                json.dump(merged_mcp_config, f, indent=2)
+        except PermissionError:
+            console.print(
+                f"[bold red]Permission denied while writing:[/bold red] {mcp_file}"
+            )
+            return
+        console.print(f"\n[cyan]For your convenience, the configuration has also been saved to: {mcp_file}[/cyan]")
 
     # Also save credentials to .env using the proper function
     _save_neo4j_credentials(creds)
@@ -337,8 +372,9 @@ def _configure_goose(mcp_config):
             config["extensions"] = {}
             
         # Transform mcp_config to Goose format
-        if "mcpServers" in mcp_config and "CodeGraphContext" in mcp_config["mcpServers"]:
-            cgc_config = mcp_config["mcpServers"]["CodeGraphContext"]
+        server_name = get_instance_name()
+        if "mcpServers" in mcp_config and server_name in mcp_config["mcpServers"]:
+            cgc_config = mcp_config["mcpServers"][server_name]
             
             # Ensure args are in list format before writing Goose configuration
             cmd = cgc_config.get("command", "cgc")
@@ -357,14 +393,15 @@ def _configure_goose(mcp_config):
             
             goose_ext = {
                 "enabled": True,
-                "name": "CodeGraphContext",
+                "name": server_name,
                 "type": "stdio",
                 "cmd": cmd,
                 "args": args,
                 "envs": cgc_config.get("env", {})
             }
             
-            config["extensions"]["codegraphcontext"] = goose_ext
+            extension_key = re.sub(r"[^a-z0-9]+", "_", server_name.casefold()).strip("_")
+            config["extensions"][extension_key or "codegraphcontext"] = goose_ext
             
             if not _check_write_access(target_path):
                 console.print(
@@ -674,8 +711,7 @@ def configure_mcp_client():
     
     # Load current configuration (includes project-local .env if present)
     try:
-        from codegraphcontext.cli.config_manager import load_config
-        config = load_config()
+        config = config_manager.load_config()
     except Exception as e:
         console.print(f"[yellow]Warning: Could not load configuration: {e}[/yellow]")
         config = {}
@@ -684,7 +720,7 @@ def configure_mcp_client():
     env_vars = {}
     
     # Add database credentials if they exist
-    env_file = Path.home() / ".codegraphcontext" / ".env"
+    env_file = config_manager.CONFIG_FILE
     if env_file.exists():
         try:
             with open(env_file, "r") as f:
@@ -711,23 +747,14 @@ def configure_mcp_client():
         env_vars[key] = value
     
     # Generate MCP configuration
-    cgc_path = shutil.which("cgc")
-    pipx_path = shutil.which("pipx")
-
-    if cgc_path:
-        command = cgc_path
-        args = ["mcp", "start"]
-    elif pipx_path:
-        command = pipx_path
-        args = ["run", "codegraphcontext", "mcp", "start"]
-    else:
-        command = sys.executable
-        args = ["-m", "codegraphcontext", "mcp", "start"]
+    command, args = _mcp_server_command()
+    server_name = get_instance_name()
+    env_vars.update(get_isolation_environment())
 
     # Create MCP config with complete env section
     mcp_config = {
         "mcpServers": {
-            "CodeGraphContext": {
+            server_name: {
                 "command": command,
                 "args": args,
                 "env": env_vars,
@@ -763,15 +790,17 @@ def configure_mcp_client():
         )
         return
 
-    try:
-        with open(mcp_file, "w") as f:
-            json.dump(mcp_config, f, indent=2)
-    except PermissionError:
-        console.print(
-            f"[bold red]Permission denied while writing:[/bold red] {mcp_file}"
-        )
-        return
-    console.print(f"\n[cyan]Configuration saved to: {mcp_file}[/cyan]")
+    merged_mcp_config = _merge_project_mcp_config(mcp_file, mcp_config)
+    if merged_mcp_config is not None:
+        try:
+            with open(mcp_file, "w", encoding="utf-8") as f:
+                json.dump(merged_mcp_config, f, indent=2)
+        except PermissionError:
+            console.print(
+                f"[bold red]Permission denied while writing:[/bold red] {mcp_file}"
+            )
+            return
+        console.print(f"\n[cyan]Configuration saved to: {mcp_file}[/cyan]")
     
     # Configure IDE automatically
     _configure_ide(mcp_config)

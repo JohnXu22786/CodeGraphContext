@@ -33,6 +33,12 @@ from .cli.config_manager import (
     CONFIG_DIR,
     load_config,
 )
+from .runtime_paths import (
+    get_instance_mcp_config,
+    get_instance_name,
+    get_repo_context_dir_name,
+    get_repo_context_path,
+)
 
 # Import Tool Definitions and Handlers
 from .tool_definitions import TOOLS
@@ -287,13 +293,8 @@ class MCPServer:
             warning_logger(f"Failed to read {mcp_file}: {exc}")
             return set()
 
-        disabled_tools = (
-            mcp_config
-            .get("mcpServers", {})
-            .get("CodeGraphContext", {})
-            .get("tools", {})
-            .get("disabledTools", [])
-        )
+        disabled_tools = get_instance_mcp_config(mcp_config).get("tools", {})
+        disabled_tools = disabled_tools.get("disabledTools", []) if isinstance(disabled_tools, dict) else []
 
         if not isinstance(disabled_tools, list):
             warning_logger("mcp.json tools.disabledTools must be a list; ignoring invalid value.")
@@ -525,7 +526,7 @@ class MCPServer:
             if not children:
                 return {
                     "status": "no_contexts_found",
-                    "message": f"No .codegraphcontext folders found under {scan_path} (depth={max_depth}).",
+                    "message": f"No repository context folders found under {scan_path} (depth={max_depth}).",
                     "contexts": [],
                 }
             return {
@@ -596,7 +597,7 @@ class MCPServer:
                     warning_logger(f"Failed to tear down old DB manager during context switch: {exc}")
 
                 # Resolve global DB path directly — do NOT use resolve_context()
-                # because that checks CWD for local .codegraphcontext/ and may
+                # because that checks CWD for a local repository context and may
                 # return per-repo instead of global.
                 db = os.getenv("CGC_RUNTIME_DB_TYPE") or load_config().get("DEFAULT_DATABASE", "falkordb")
                 global_db_path = _default_global_db_path(db)
@@ -635,14 +636,14 @@ class MCPServer:
         target = Path(raw_path).resolve()
         if not is_path_allowed(target):
             return {"error": f"Context path '{target}' is outside allowed roots."}
-        # Accept either the repo dir or the .codegraphcontext dir directly
-        if target.name == ".codegraphcontext":
+        # Accept either the repo directory or its selected context directory.
+        if target.name == get_repo_context_dir_name():
             cgc_dir = target
         else:
-            cgc_dir = target / ".codegraphcontext"
+            cgc_dir = get_repo_context_path(target)
 
         if not cgc_dir.exists() or not cgc_dir.is_dir():
-            return {"error": f"No .codegraphcontext directory found at {cgc_dir}."}
+            return {"error": f"No repository context directory found at {cgc_dir}."}
 
         blocked = self._active_jobs_block_context_switch()
         if blocked:
@@ -768,7 +769,7 @@ class MCPServer:
             ):
                 names = [c["repo_name"] for c in self.discovered_child_contexts]
                 note = (
-                    "NOTE: No CodeGraphContext database was found at the current workspace root. "
+                    f"NOTE: No {get_instance_name()} database was found at the current workspace root. "
                     f"However, the following child directories have indexed databases: {names}. "
                     "Use the `switch_context` tool to connect to one, or "
                     "`discover_codegraph_contexts` for a deeper scan."
@@ -834,7 +835,7 @@ class MCPServer:
                         "result": {
                             "protocolVersion": "2025-03-26",
                             "serverInfo": {
-                                "name": "CodeGraphContext",
+                                "name": get_instance_name(),
                                 "version": self._get_version(),
                                 "systemPrompt": system_prompt,
                                 "instructionsAvailable": True,

@@ -31,6 +31,15 @@ def test_validate_config_value_accepts_tilde_path_without_relative_tilde_dir(tmp
 def test_configure_mcp_client_writes_expanded_paths(tmp_path, monkeypatch):
     _set_home_env(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(config_manager, "CONFIG_FILE", tmp_path / ".codegraphcontext" / ".env")
+    for name in (
+        "CGC_HOME",
+        "CGC_RUNTIME_DB_PATH",
+        "CGC_RUNTIME_DB_TYPE",
+        "CGC_REPO_CONTEXT_DIR",
+        "CGC_INSTANCE_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
     fake_config = {
         "FALKORDB_PATH": "~/.codegraphcontext/global/db/falkordb",

@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 import logging
 from pathlib import Path
+from codegraphcontext.runtime_paths import get_default_debug_log_path
 logger = logging.getLogger(__name__)
 
 # Log level mapping
@@ -60,7 +61,7 @@ def debug_log(message):
         return
     
     # Get debug log path from config
-    debug_file = _get_config_value('DEBUG_LOG_PATH', os.path.expanduser("~/mcp_debug.log"))
+    debug_file = _get_config_value('DEBUG_LOG_PATH', str(get_default_debug_log_path()))
     
     # Ensure parent directory exists
     Path(debug_file).parent.mkdir(parents=True, exist_ok=True)

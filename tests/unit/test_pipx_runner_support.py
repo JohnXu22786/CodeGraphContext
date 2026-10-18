@@ -6,6 +6,7 @@ and use cgc / pipx / python as the MCP server runner.
 """
 
 import json
+import os
 import sys
 import pytest
 from pathlib import Path
@@ -31,7 +32,15 @@ def _run_generate_mcp_json(which_side_effect):
     """Helper: run _generate_mcp_json() with mocked shutil.which."""
     captured = {}
 
-    with patch("codegraphcontext.cli.setup_wizard.shutil.which",
+    isolation_keys = (
+        "CGC_HOME",
+        "CGC_RUNTIME_DB_PATH",
+        "CGC_RUNTIME_DB_TYPE",
+        "CGC_REPO_CONTEXT_DIR",
+        "CGC_INSTANCE_NAME",
+    )
+    with patch.dict(os.environ, {key: "" for key in isolation_keys}), \
+         patch("codegraphcontext.cli.setup_wizard.shutil.which",
                side_effect=which_side_effect), \
          patch("codegraphcontext.cli.setup_wizard._configure_ide",
                side_effect=lambda cfg: captured.update({"config": cfg})), \

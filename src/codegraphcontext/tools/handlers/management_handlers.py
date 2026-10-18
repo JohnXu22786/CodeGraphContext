@@ -30,7 +30,7 @@ def delete_repository(graph_builder: GraphBuilder, **args) -> Dict[str, Any]:
         return {
             "error": (
                 "Repository deletion is disabled. Set ALLOW_DB_DELETION=true in "
-                "~/.codegraphcontext/.env to enable destructive MCP operations."
+                "CGC_HOME/.env (default ~/.codegraphcontext/.env) to enable destructive MCP operations."
             )
         }
 
@@ -157,7 +157,7 @@ def load_bundle(code_finder: CodeFinder, **args) -> Dict[str, Any]:
                 return {
                     "error": (
                         "Bundle import with clear_existing is disabled. Set "
-                        "ALLOW_DB_DELETION=true in ~/.codegraphcontext/.env."
+                        "ALLOW_DB_DELETION=true in CGC_HOME/.env (default ~/.codegraphcontext/.env)."
                     )
                 }
 

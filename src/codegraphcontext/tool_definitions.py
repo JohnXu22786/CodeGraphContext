@@ -360,7 +360,7 @@ TOOLS = {
 
     "discover_codegraph_contexts": {
         "name": "discover_codegraph_contexts",
-        "description": "Discover .codegraphcontext folders.",
+        "description": "Discover repository-local graph context folders (default: .codegraphcontext).",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 
 from codegraphcontext.utils.cypher_ddl import ddl_kind, is_schema_ddl
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
+from codegraphcontext.runtime_paths import get_cgc_home
 
 # ---------------------------------------------------------------------------
 # Compatibility patch: newer redis-py releases assume every Connection exposes
@@ -116,7 +117,7 @@ class FalkorDBManager:
         # Database path with fallback chain (Explicit > Env > Config/Default)
         new_db_path = db_path or os.getenv(
             'FALKORDB_PATH',
-            config_db_path or str(Path.home() / '.codegraphcontext' / 'global' / 'falkordb.db')
+            config_db_path or str(get_cgc_home() / 'global' / 'falkordb.db')
         )
         new_db_path = os.path.abspath(new_db_path)
 
@@ -149,7 +150,7 @@ class FalkorDBManager:
         else:
             self.socket_path = os.getenv(
                 'FALKORDB_SOCKET_PATH',
-                config_socket_path or str(Path.home() / '.codegraphcontext' / 'global' / 'falkordb.sock')
+                config_socket_path or str(get_cgc_home() / 'global' / 'falkordb.sock')
             )
         self.socket_path = os.path.abspath(self.socket_path)
         self._configuration_key = (self.db_path, self.socket_path)
