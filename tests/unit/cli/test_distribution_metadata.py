@@ -101,6 +101,36 @@ def test_installation_guides_show_valid_windows_venv_activation_commands():
         assert invalid_windows_hint not in content, relative_path
 
 
+def test_translated_readme_docs_badges_describe_repository_docs_links():
+    repo_root = Path(__file__).resolve().parents[3]
+    translated_readmes = (
+        "docs/translations/README.kor.md",
+        "docs/translations/README.ru-RU.md",
+        "docs/translations/README.uk.md",
+    )
+
+    for relative_path in translated_readmes:
+        content = (repo_root / relative_path).read_text(encoding="utf-8")
+        docs_badge = re.search(
+            r'<a href="https://github\.com/JohnXu22786/CodeGraphContext/tree/main/docs/"\s*>'
+            r'\s*<img src="https://img\.shields\.io/badge/docs-([^?]+)\?style=flat-square"',
+            content,
+        )
+
+        assert docs_badge, relative_path
+        assert docs_badge.group(1) == "Repository%20Docs-blue", relative_path
+
+
+def test_architecture_doc_labels_upstream_snapshot():
+    repo_root = Path(__file__).resolve().parents[3]
+    content = (repo_root / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+
+    assert (
+        "> **Status:** Historical snapshot of upstream CodeGraphContext 0.4.16, generated 2026-05-12; "
+        "it does not describe the full architecture of the fork's 0.7.0 release."
+    ) in content
+
+
 def test_bundle_registry_install_dialog_requires_an_isolated_environment():
     repo_root = Path(__file__).resolve().parents[3]
     content = (repo_root / "website/src/components/BundleRegistrySection.tsx").read_text(encoding="utf-8")

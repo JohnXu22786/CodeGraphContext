@@ -57,7 +57,7 @@
     <img src="https://img.shields.io/badge/website-up-brightgreen?style=flat-square" alt="웹사이트">
   </a>
   <a href="https://github.com/JohnXu22786/CodeGraphContext/tree/main/docs/">
-    <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue?style=flat-square" alt="문서">
+    <img src="https://img.shields.io/badge/docs-Repository%20Docs-blue?style=flat-square" alt="문서">
   </a>
   <a href="https://youtu.be/KYYSdxhg1xU">
     <img src="https://img.shields.io/badge/YouTube-Watch%20Demo-red?style=flat-square&logo=youtube" alt="YouTube 데모">
