@@ -1707,7 +1707,15 @@ def doctor():
         console.print("  • For Neo4j issues: Run 'cgc neo4j setup'")
         console.print(
             "  • For missing packages, after 0.7.0 is published on PyPI run: "
-            "pip install codegraphcontext-fork"
+            "pip install codegraphcontext-fork in a dedicated virtual environment."
+        )
+        console.print(
+            "    Upstream and fork share the codegraphcontext import and CLI names; "
+            "installing both together can overwrite them."
+        )
+        console.print(
+            "    Isolated install guide: "
+            "https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/getting-started/installation.md"
         )
         console.print("  • For config issues: Run 'cgc config reset'")
         raise typer.Exit(code=1)

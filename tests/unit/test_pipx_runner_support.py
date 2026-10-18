@@ -85,13 +85,13 @@ class TestTC01_CgcAvailable:
 
 # ---------------------------------------------------------------------------
 # TC-02: cgc is absent but pipx is available in system PATH
-# When cgc is not found but pipx is, the MCP config should use pipx run --spec
-# so the fork distribution provides the preserved codegraphcontext command.
+# The fork distribution is currently unpublished. Use this running installation
+# rather than asking pipx to download it from PyPI before publication.
 # ---------------------------------------------------------------------------
 
 class TestTC02_PipxAvailable:
 
-    def test_pipx_used_when_cgc_absent(self):
+    def test_current_interpreter_used_when_cgc_absent_before_publication(self):
         def which_side(name):
             if name == "cgc":
                 return None
@@ -101,22 +101,20 @@ class TestTC02_PipxAvailable:
 
         config = _run_generate_mcp_json(which_side)
         server = _get_server_block(config)
-        assert server["command"] == "/usr/bin/pipx", \
-            f"Expected pipx path, got: {server['command']}"
-        assert server["args"] == ["run", "--spec", "codegraphcontext-fork", "codegraphcontext", "mcp", "start"], \
-            f"Expected pipx run args, got: {server['args']}"
+        assert server["command"] == sys.executable, \
+            f"Expected current interpreter, got: {server['command']}"
+        assert server["args"] == ["-m", "codegraphcontext", "mcp", "start"], \
+            f"Expected current distribution module args, got: {server['args']}"
 
-    def test_pipx_args_contain_codegraphcontext_package(self):
+    def test_prepublication_fallback_runs_current_distribution_module(self):
         config = _run_generate_mcp_json(
             lambda name: None if name == "cgc" else "/usr/bin/pipx"
         )
         server = _get_server_block(config)
-        assert "codegraphcontext-fork" in server["args"], \
-            "Distribution name 'codegraphcontext-fork' must be selected for pipx run"
-        assert server["args"][-3:] == ["codegraphcontext", "mcp", "start"], \
-            "pipx must invoke the preserved codegraphcontext console command"
-        assert server["args"][0] == "run", \
-            "First arg must be 'run' for pipx"
+        assert server["command"] == sys.executable, \
+            f"Expected current interpreter, got: {server['command']}"
+        assert server["args"] == ["-m", "codegraphcontext", "mcp", "start"], \
+            f"Expected current distribution module args, got: {server['args']}"
 
 
 # ---------------------------------------------------------------------------
@@ -271,32 +269,31 @@ class TestTC05_ReadmeDocumentation:
         if not self.README_PATH.exists():
             pytest.skip("README.md not found")
         content = self.README_PATH.read_text(encoding="utf-8")
-        pipx_idx = content.lower().find("pipx")
-        if pipx_idx == -1:
+        pipx_command_idx = content.find('"command": "pipx"')
+        if pipx_command_idx == -1:
             pytest.skip("pipx section not yet added to README")
-        nearby = content[pipx_idx: pipx_idx + 500]
+        nearby = content[pipx_command_idx: pipx_command_idx + 500]
         assert "mcp" in nearby.lower() and "start" in nearby.lower(), \
             "pipx section in README must include 'mcp start' args"
 
 
 # ---------------------------------------------------------------------------
-# TC-06: generated mcp config output must have valid structure and correct values
-# After _generate_mcp_json() runs with pipx available, the resulting config
-# dict must have proper mcpServers > CodeGraphContext > command/args structure.
+# TC-06: generated MCP config must use the active interpreter when cgc is absent
+# Even when pipx is installed, the package may be unpublished. The config should
+# run the currently active distribution rather than downloading it from PyPI.
 # ---------------------------------------------------------------------------
 
 class TestTC06_McpJsonFileOutput:
 
-    def test_mcp_json_written_with_pipx_command(self):
+    def test_mcp_json_written_with_current_interpreter_fallback(self):
         config = _run_generate_mcp_json(
             lambda name: None if name == "cgc" else "/usr/bin/pipx"
         )
         server = _get_server_block(config)
-        assert server["command"] == "/usr/bin/pipx", \
-            f"command should be pipx, got: {server['command']}"
-        assert server["args"][0] == "run", "args[0] should be 'run'"
-        assert server["args"] == ["run", "--spec", "codegraphcontext-fork", "codegraphcontext", "mcp", "start"], \
-            "pipx must select the fork distribution and execute its preserved command"
+        assert server["command"] == sys.executable, \
+            f"command should use the active interpreter, got: {server['command']}"
+        assert server["args"] == ["-m", "codegraphcontext", "mcp", "start"], \
+            "the active interpreter should launch the current distribution module"
 
     def test_mcp_json_structure_valid(self):
         config = _run_generate_mcp_json(
@@ -311,63 +308,49 @@ class TestTC06_McpJsonFileOutput:
 
 
 # ---------------------------------------------------------------------------
-# TC-07: pipx uses "run" keyword which tells pipx to execute the package
-# inside its own isolated virtual environment. The explicit spec must select
-# this fork while the final command remains the preserved executable name.
+# TC-07: the active-interpreter fallback must use the preserved module name.
 # ---------------------------------------------------------------------------
 
 class TestTC07_PipxIsolatedEnvArgs:
 
-    def test_pipx_run_keyword_present_for_isolated_env(self):
-        """TC-07: 'run' keyword must be first arg so pipx uses isolated env."""
+    def test_current_module_is_selected_for_prepublication_fallback(self):
+        """TC-07: invoke the currently installed module, not the unpublished spec."""
         config = _run_generate_mcp_json(
             lambda name: None if name == "cgc" else "/usr/bin/pipx"
         )
         server = _get_server_block(config)
-        assert server["args"][0] == "run", \
-            "'run' must be first arg — this tells pipx to use isolated environment"
-        assert "codegraphcontext-fork" in server["args"], \
-            "fork distribution must be present so pipx fetches it in its isolated venv"
+        assert server["args"] == ["-m", "codegraphcontext", "mcp", "start"]
+        assert "codegraphcontext-fork" not in server["args"]
 
 
 # ---------------------------------------------------------------------------
-# TC-08: when pipx is used, "-m" module flag must NOT appear in args
-# "-m" flag means run as python module which completely bypasses pipx
-# isolated environment. This would defeat the purpose of using pipx.
+# TC-08: do not select pipx's unpublished package when cgc is absent.
 # ---------------------------------------------------------------------------
 
 class TestTC08_PipxNotUsingPythonModule:
 
-    def test_pipx_args_do_not_contain_module_flag(self):
-        """TC-08: '-m' flag must NOT be in pipx args — it bypasses isolated env."""
+    def test_prepublication_fallback_selects_current_interpreter(self):
+        """TC-08: pipx availability does not replace the active Python environment."""
         config = _run_generate_mcp_json(
             lambda name: None if name == "cgc" else "/usr/bin/pipx"
         )
         server = _get_server_block(config)
-        assert "-m" not in server["args"], \
-            "'-m' flag bypasses pipx isolated environment — must not be present"
-        assert server["command"] != "python" and server["command"] != "python3", \
-            "command must be pipx binary, not python — python bypasses isolated env"
+        assert server["command"] == sys.executable
+        assert server["args"][0] == "-m"
 
 
 # ---------------------------------------------------------------------------
-# TC-09: the exact pipx binary path returned by shutil.which must be used
-# as the command. Using any other binary like python or cgc would bypass
-# pipx entirely and break execution for pipx-installed users.
+# TC-09: any pipx binary path is ignored for the prepublication fallback.
 # ---------------------------------------------------------------------------
 
 class TestTC09_PipxBinaryAsCommand:
 
-    def test_pipx_binary_path_used_as_command(self):
-        """TC-09: exact pipx binary path must be the command."""
+    def test_pipx_binary_path_does_not_override_current_interpreter(self):
+        """TC-09: preserve the interpreter that launched the setup wizard."""
         pipx_path = "/home/user/.local/bin/pipx"
         config = _run_generate_mcp_json(
             lambda name: None if name == "cgc" else pipx_path
         )
         server = _get_server_block(config)
-        assert server["command"] == pipx_path, \
-            f"command must be exact pipx binary path, got: {server['command']}"
-        assert "python" not in server["command"].lower(), \
-            "pipx binary path must not contain 'python'"
-        assert "cgc" not in server["command"].lower(), \
-            "pipx binary path must not contain 'cgc'"
+        assert server["command"] == sys.executable
+        assert server["command"] != pipx_path

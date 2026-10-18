@@ -3,6 +3,7 @@
 import importlib
 import importlib.metadata
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -110,6 +111,95 @@ def test_bundle_registry_install_dialog_requires_an_isolated_environment():
     assert 'href="#installation"' in content
 
 
+def test_pypi_download_widget_uses_cached_fork_stats_for_empty_api_data():
+    repo_root = Path(__file__).resolve().parents[3]
+    content = (repo_root / "website/src/components/ShowDownloads.tsx").read_text(encoding="utf-8")
+
+    assert "function getCachedStats()" in content
+    assert "if (!data?.data)" in content
+    assert "const cachedStats = getCachedStats();" in content
+    assert 'package: "codegraphcontext-fork"' in content
+    assert re.search(
+        r"function getCachedStats\(\): PypiStats \| null \{\s*try\s*\{[\s\S]*?localStorage\.getItem[\s\S]*?\}\s*catch\s*\{\s*return null;\s*\}",
+        content,
+    )
+    assert re.search(
+        r"function cacheLastMonth\(lastMonth: number\): void \{\s*try\s*\{[\s\S]*?localStorage\.setItem[\s\S]*?\}\s*catch\s*\{",
+        content,
+    )
+
+
+def test_bundle_upgrade_examples_require_dedicated_environment():
+    repo_root = Path(__file__).resolve().parents[3]
+    relative_paths = (
+        "docs/BUNDLE_QUICKREF.md",
+        "docs/docs/guides/bundles.md",
+    )
+
+    for relative_path in relative_paths:
+        content = (repo_root / relative_path).read_text(encoding="utf-8")
+        section = content.split("### Version Mismatch", 1)[1].split("\n## ", 1)[0]
+
+        assert "not published on PyPI" in section, relative_path
+        assert "dedicated virtual environment" in section, relative_path
+        assert "share the `codegraphcontext` import and CLI files" in section, relative_path
+        assert "python -m pip install --upgrade codegraphcontext-fork" in section, relative_path
+        assert "\npip install --upgrade codegraphcontext-fork" not in section, relative_path
+
+
+def test_ci_install_example_requires_a_dedicated_virtual_environment():
+    repo_root = Path(__file__).resolve().parents[3]
+    content = (repo_root / "docs/CI_INTEGRATION.md").read_text(encoding="utf-8")
+
+    assert "dedicated virtual environment" in content
+    assert "python -m venv .venv" in content
+    assert "source .venv/bin/activate" in content
+    assert "shell: bash" in content
+
+
+def test_readme_virtualenv_troubleshooting_does_not_use_global_path_fix():
+    repo_root = Path(__file__).resolve().parents[3]
+    readmes = (
+        "README.md",
+        "docs/translations/README.ja.md",
+        "docs/translations/README.kor.md",
+        "docs/translations/README.ru-RU.md",
+        "docs/translations/README.ta.md",
+        "docs/translations/README.uk.md",
+        "docs/translations/README.zh-CN.md",
+    )
+
+    for relative_path in readmes:
+        content = (repo_root / relative_path).read_text(encoding="utf-8")
+        assert "post_install_fix.sh" not in content, relative_path
+
+
+def test_manual_mcp_configs_use_isolated_distribution_runner():
+    repo_root = Path(__file__).resolve().parents[3]
+    config_docs = (
+        "README.md",
+        "docs/docs/getting-started/mcp-setup.md",
+        "docs/translations/README.ja.md",
+        "docs/translations/README.kor.md",
+        "docs/translations/README.ru-RU.md",
+        "docs/translations/README.ta.md",
+        "docs/translations/README.uk.md",
+        "docs/translations/README.zh-CN.md",
+    )
+
+    for relative_path in config_docs:
+        content = (repo_root / relative_path).read_text(encoding="utf-8")
+        assert '"command": "cgc"' not in content, relative_path
+        assert '"command": "codegraphcontext"' not in content, relative_path
+        assert '"command": "pipx"' in content, relative_path
+        assert '"--spec"' in content, relative_path
+        assert '"codegraphcontext-fork"' in content, relative_path
+
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert "Desktop clients do not inherit the active virtual environment" in readme
+    assert "client's own `PATH`" in readme
+
+
 def test_docker_build_context_includes_package_provenance_markdown():
     repo_root = Path(__file__).resolve().parents[3]
     ignore_lines = (repo_root / ".dockerignore").read_text(encoding="utf-8").splitlines()
@@ -130,7 +220,12 @@ def test_ghcr_docs_explain_public_visibility_step():
         "As part of the first image publication, the owner will set the package visibility to Public; "
         "anonymous pulls will be available after that change takes effect."
     )
-    for relative_path in ("README.md", "docs/DOCKER.md", "CHANGELOG.md"):
+    for relative_path in (
+        "README.md",
+        "docs/DOCKER.md",
+        "CHANGELOG.md",
+        "docs/docs/guides/side-by-side-installations.md",
+    ):
         content = (repo_root / relative_path).read_text(encoding="utf-8")
         assert "not published yet" in content, relative_path
         assert english_note in content, relative_path
@@ -140,18 +235,52 @@ def test_ghcr_docs_explain_public_visibility_step():
     assert "首次发布镜像时，所有者会将软件包可见性设为公开；此更改生效后即可匿名拉取。" in chinese
 
 
+def test_runtime_pip_install_hints_require_isolated_environment_guidance():
+    repo_root = Path(__file__).resolve().parents[3]
+    installation_guide = (
+        "https://github.com/JohnXu22786/CodeGraphContext/blob/main/"
+        "docs/docs/getting-started/installation.md"
+    )
+    hint_files = (
+        "src/codegraphcontext/cli/main.py",
+        "src/codegraphcontext/utils/tree_sitter_manager.py",
+        "scripts/create-bundle.sh",
+        "scripts/post_install_fix.sh",
+        "extensions/vscode/src/mcp/client.ts",
+    )
+
+    for relative_path in hint_files:
+        content = (repo_root / relative_path).read_text(encoding="utf-8")
+        assert "dedicated virtual environment" in content, relative_path
+        assert installation_guide in content, relative_path
+        assert re.search(r"pip install ['\"]?codegraphcontext-fork", content), relative_path
+
+    tree_sitter_hint = (repo_root / "src/codegraphcontext/utils/tree_sitter_manager.py").read_text(
+        encoding="utf-8"
+    )
+    assert "pip install 'codegraphcontext-fork[parsing]'" in tree_sitter_hint
+
+
+def test_bundle_quickref_support_link_uses_fork_issue_tracker():
+    repo_root = Path(__file__).resolve().parents[3]
+    content = (repo_root / "docs/BUNDLE_QUICKREF.md").read_text(encoding="utf-8")
+
+    assert "https://github.com/JohnXu22786/CodeGraphContext/issues" in content
+    assert "https://github.com/CodeGraphContext/CodeGraphContext/issues" not in content
+
+
 def test_unpublished_package_install_examples_are_labeled_for_publication():
     repo_root = Path(__file__).resolve().parents[3]
     expected_notes = {
         "README.md": "not published on PyPI yet",
         ".cursor/skills/codegraphcontext/SKILL.md": "After 0.7.0 is published on PyPI",
         "docs/docs/getting-started/installation.md": "not published on PyPI yet",
-        "docs/docs/getting-started/mcp-setup.md": "not published yet",
+        "docs/docs/getting-started/mcp-setup.md": "currently unpublished",
         "docs/CI_INTEGRATION.md": "not published on PyPI yet",
         "src/codegraphcontext/cli/main.py": "after 0.7.0 is published on PyPI",
         "src/codegraphcontext/utils/tree_sitter_manager.py": "after 0.7.0 is published on PyPI",
-        "docs/BUNDLE_QUICKREF.md": "After the 0.7.0 PyPI publication",
-        "docs/docs/guides/bundles.md": "After the 0.7.0 PyPI publication",
+        "docs/BUNDLE_QUICKREF.md": "not published on PyPI yet",
+        "docs/docs/guides/bundles.md": "not published on PyPI yet",
         "scripts/create-bundle.sh": "After the 0.7.0 PyPI publication",
         "scripts/post_install_fix.sh": "after 0.7.0 is published on PyPI",
         "extensions/vscode/src/mcp/client.ts": "After the 0.7.0 PyPI publication",
@@ -174,10 +303,10 @@ def test_unpublished_package_install_examples_are_labeled_for_publication():
 def test_secondary_readme_install_examples_are_labeled_near_commands():
     repo_root = Path(__file__).resolve().parents[3]
     pipx_notes = {
-        "README.md": "This pipx run --spec configuration is available after the 0.7.0 PyPI publication.",
-        "docs/translations/README.ja.md": "この pipx run --spec 設定は、0.7.0 が PyPI に公開された後に利用できます。",
-        "docs/translations/README.ta.md": "இந்த pipx run --spec கட்டமைப்பு, 0.7.0 PyPI-இல் வெளியிடப்பட்ட பிறகு கிடைக்கும்.",
-        "docs/translations/README.zh-CN.md": "此 pipx run --spec 配置将在 0.7.0 发布到 PyPI 后可用。",
+        "README.md": "The `pipx` example below works after the 0.7.0 PyPI publication",
+        "docs/translations/README.ja.md": "以下の `pipx` 設定は 0.7.0 の PyPI 公開後に利用できます。",
+        "docs/translations/README.ta.md": "கீழே உள்ள `pipx` அமைப்பு 0.7.0 PyPI-இல் வெளியிடப்பட்ட பிறகு கிடைக்கும்.",
+        "docs/translations/README.zh-CN.md": "下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用",
     }
 
     for relative_path, expected_note in pipx_notes.items():

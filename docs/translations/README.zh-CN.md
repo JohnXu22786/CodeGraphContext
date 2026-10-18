@@ -309,10 +309,7 @@ _如果你正在项目中使用 CodeGraphContext，欢迎提交 PR 并添加到�
     ```
 
 2.  **故障排除（找不到命令）：**
-    如果找不到 `codegraphcontext` 命令，请运行以下一行修复：
-    ```bash
-    curl -sSL https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-    ```
+    如果找不到 `codegraphcontext` 命令，请使用上面的命令在当前 shell 中重新激活 `.venv`。在 Windows 上，请使用上面列出的 PowerShell 或命令提示符命令。
 
 3.  **数据库设置（自动）：**
     CodeGraphContext 默认使用嵌入式图数据库。
@@ -598,35 +595,9 @@ codegraphcontext find pattern "Auth" --viz
 
 ## MCP 客户端配置
 
-`codegraphcontext mcp setup` 命令尝试自动配置你的 IDE/CLI。如果你选择不使用自动设置，或者你的工具不受支持，你可以进行手动配置。
+`codegraphcontext mcp setup` 命令尝试自动配置你的 IDE/CLI。如果你选择不使用自动设置，或者你的工具不受支持，你可以进行手动配置。桌面客户端不会继承已激活的虚拟环境，因此在终端激活 `.venv` 不会让客户端自动找到其中的命令。下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用；发布前，请填写独立虚拟环境中 `cgc` 可执行文件的绝对路径。客户端自己的 `PATH` 中也必须能找到 `pipx`。
 
 将以下服务端配置添加到客户端的设置文件中（例如 VS Code 的 `settings.json` 或 `.claude.json`）：
-
-```json
-{
-  "mcpServers": {
-    "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": [
-        "mcp",
-        "start"
-      ],
-      "disabled": false,
-      "alwaysAllow": []
-    }
-  }
-}
-```
-
-#### OpenCode 配置
-
-有关使用 OpenCode 安装和配置 MCP 服务器的说明，请参阅 [OpenCode MCP 指南](https://opencode.ai/docs/ko/mcp-servers/#_top)。
-
-#### 如果通过 pipx 安装
-
-如果你使用 `pipx` 安装了 CodeGraphContext，请改用以下配置：
-
-此 pipx run --spec 配置将在 0.7.0 发布到 PyPI 后可用。
 
 ```json
 {
@@ -653,6 +624,10 @@ codegraphcontext find pattern "Auth" --viz
 }
 ```
 
+#### OpenCode 配置
+
+有关使用 OpenCode 安装和配置 MCP 服务器的说明，请参阅 [OpenCode MCP 指南](https://opencode.ai/docs/ko/mcp-servers/#_top)。
+
 ---
 
 ## Token 优化输出（GCF）
@@ -666,12 +641,21 @@ CGC_OUTPUT_FORMAT=gcf codegraphcontext mcp start
 
 或将其添加到你的 MCP 客户端配置中：
 
+下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用。
+
 ```json
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": ["mcp", "start"],
+      "command": "pipx",
+      "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
+        "mcp",
+        "start"
+      ],
       "env": {
         "CGC_OUTPUT_FORMAT": "gcf"
       }

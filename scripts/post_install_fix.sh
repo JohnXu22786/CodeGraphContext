@@ -146,12 +146,14 @@ else
             fi
         fi
     else
+        echo "Use only a dedicated virtual environment; upstream and fork share the codegraphcontext import and CLI names, and installing both together can overwrite them."
+        echo "Isolated install guide: https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/getting-started/installation.md"
         if [[ "$OS" == "Windows_NT" ]]; then
             echo "❌ cgc not found in expected Windows locations. Please reinstall:"
-            echo "   pip install codegraphcontext-fork (after 0.7.0 is published on PyPI)"
+            echo "   pip install codegraphcontext-fork in a dedicated virtual environment (after 0.7.0 is published on PyPI)"
         else
             echo "❌ cgc not found in ~/.local/bin. Please reinstall:"
-            echo "   pip install codegraphcontext-fork (after 0.7.0 is published on PyPI)"
+            echo "   pip install codegraphcontext-fork in a dedicated virtual environment (after 0.7.0 is published on PyPI)"
         fi
     fi
 fi

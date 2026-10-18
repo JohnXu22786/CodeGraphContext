@@ -32,8 +32,12 @@ def _missing_tree_sitter_error(import_error: ImportError) -> ImportError:
     """Return an actionable error for optional tree-sitter dependencies."""
     return ImportError(
         "tree-sitter and tree-sitter-language-pack are required for code parsing. "
-        "Install them after 0.7.0 is published on PyPI with: "
-        "pip install codegraphcontext-fork[parsing]"
+        "Install them only in a dedicated virtual environment; upstream and fork "
+        "share the codegraphcontext import and CLI names, and installing both "
+        "together can overwrite them. See the isolated install guide: "
+        "https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/getting-started/installation.md. "
+        "after 0.7.0 is published on PyPI, run: "
+        "pip install 'codegraphcontext-fork[parsing]'"
     )
 
 

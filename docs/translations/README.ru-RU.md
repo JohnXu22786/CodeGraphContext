@@ -220,10 +220,8 @@ source .venv/bin/activate
 python -m pip install codegraphcontext-fork
 ```
 
-### Если команда 'cgc' не найдена, выполните скрипт исправления в одну строку:
-```bash
-curl -sSL https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-```
+### Если команда 'cgc' не найдена:
+В новом окне терминала повторно активируйте выделенное виртуальное окружение `.venv` командой из раздела установки выше.
 
 ---
 
@@ -254,34 +252,7 @@ CodeGraphContext функционирует в **двух режимах**, ко
     <details>
     <summary>⚙️ Решение проблем: Если команда <code>cgc</code> не найдена</summary>
 
-    Если после установки вы получаете ошибку <i>"cgc: command not found"</i>, выполните скрипт для исправления переменной PATH:
-    
-    **Linux/Mac:**
-    ```bash
-    # Скачать скрипт исправления
-    curl -O https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh
-    
-    # Сделать исполняемым
-    chmod +x post_install_fix.sh
-    
-    # Запустить скрипт
-    ./post_install_fix.sh
-    
-    # Перезапустить терминал или обновить конфигурацию shell
-    source ~/.bashrc  # или ~/.zshrc для пользователей zsh
-    ```
-    
-    **Windows (PowerShell):**
-    ```powershell
-    # Скачать скрипт исправления
-    curl -O https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh
-    
-    # Запустить через bash (требуется Git Bash или WSL)
-    bash post_install_fix.sh
-    
-    # Перезапустить PowerShell или обновить профиль
-    . $PROFILE
-    ``` 
+    Если в новом окне терминала отображается <i>"cgc: command not found"</i>, повторно активируйте выделенное `.venv` командой из раздела установки выше. Скрипт для глобального PATH не находит команду в неактивном виртуальном окружении.
     </details>
 
 2.  **Настройка базы данных (Автоматически)**
@@ -400,7 +371,7 @@ cgc find pattern "Auth" --viz
 
 ## Конфигурация MCP-клиента
 
-Команда `cgc mcp setup` пытается автоматически настроить вашу IDE/CLI. Если вы предпочитаете отказаться от автонастройки или ваш инструмент пока не поддерживается, вы можете настроить всё вручную.
+Команда `cgc mcp setup` пытается автоматически настроить вашу IDE/CLI. Если вы предпочитаете отказаться от автонастройки или ваш инструмент пока не поддерживается, вы можете настроить всё вручную. Настольные клиенты не наследуют активированное виртуальное окружение, поэтому `.venv`, активированное в терминале, не делает команды доступными клиенту. Пример с `pipx` ниже станет доступен после публикации версии 0.7.0 в PyPI. До публикации укажите абсолютный путь к исполняемому файлу `cgc` в отдельном виртуальном окружении. Сам клиент должен находить `pipx` через свой `PATH`.
 
 Добавьте следующую конфигурацию сервера в файл настроек вашего клиента (например, `settings.json` в VS Code или `.claude.json`):
 
@@ -408,8 +379,12 @@ cgc find pattern "Auth" --viz
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "cgc",
+      "command": "pipx",
       "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
         "mcp",
         "start"
       ],

@@ -217,10 +217,8 @@ source .venv/bin/activate
 python -m pip install codegraphcontext-fork
 ```
 
-### 'cgc' 명령어를 찾을 수 없는 경우, 다음 한 줄 수정 스크립트를 실행하세요:
-```
-curl -sSL https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-```
+### 'cgc' 명령어를 찾을 수 없는 경우:
+새 셸에서 명령을 찾을 수 없다면 위 설치 단계에 나온 전용 `.venv` 활성화 명령을 다시 실행하세요.
 
 ---
 
@@ -251,34 +249,7 @@ CodeGraphContext를 AI 어시스턴트를 위한 **MCP 서버**로 사용하세�
     <details>
     <summary>⚙️ 문제 해결: <code>cgc</code> 명령어를 찾을 수 없는 경우</summary>
 
-    설치 후 <i>"cgc: command not found"</i> 오류가 발생하면 PATH 수정 스크립트를 실행하세요:
-
-    **Linux/Mac:**
-    ```bash
-    # 수정 스크립트 다운로드
-    curl -O https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh
-
-    # 실행 권한 부여
-    chmod +x post_install_fix.sh
-
-    # 스크립트 실행
-    ./post_install_fix.sh
-
-    # 터미널을 재시작하거나 셸 설정을 다시 로드
-    source ~/.bashrc  # zsh 사용자는 ~/.zshrc
-    ```
-
-    **Windows (PowerShell):**
-    ```powershell
-    # 수정 스크립트 다운로드
-    curl -O https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh
-
-    # bash로 실행 (Git Bash 또는 WSL 필요)
-    bash post_install_fix.sh
-
-    # PowerShell을 재시작하거나 프로필을 다시 로드
-    . $PROFILE
-    ```
+    새 셸에서 <i>"cgc: command not found"</i>가 표시되면 위 설치 단계의 전용 `.venv` 활성화 명령을 다시 실행하세요. 전역 PATH 수정 스크립트는 비활성 가상 환경의 명령을 찾지 못합니다.
     </details>
 
 2.  **데이터베이스 설정 (자동)**
@@ -397,7 +368,7 @@ cgc find pattern "Auth" --viz
 
 ## MCP 클라이언트 설정
 
-`cgc mcp setup` 명령은 IDE/CLI를 자동으로 구성하려고 시도합니다. 자동 설정을 사용하지 않거나 도구가 지원되지 않는 경우 수동으로 구성할 수 있습니다.
+`cgc mcp setup` 명령은 IDE/CLI를 자동으로 구성하려고 시도합니다. 자동 설정을 사용하지 않거나 도구가 지원되지 않는 경우 수동으로 구성할 수 있습니다. 데스크톱 클라이언트는 활성화된 가상 환경을 상속하지 않으므로 터미널에서 `.venv`를 활성화해도 클라이언트가 해당 명령을 사용할 수 없습니다. 아래 `pipx` 설정은 0.7.0이 PyPI에 게시된 뒤 사용할 수 있습니다. 게시 전에는 전용 가상 환경 안에 있는 `cgc` 실행 파일의 절대 경로를 지정하세요. 클라이언트 자체의 `PATH`에서 `pipx`를 찾을 수 있어야 합니다.
 
 클라이언트의 설정 파일(예: VS Code의 `settings.json` 또는 `.claude.json`)에 다음 서버 설정을 추가하세요:
 
@@ -405,8 +376,12 @@ cgc find pattern "Auth" --viz
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "cgc",
+      "command": "pipx",
       "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
         "mcp",
         "start"
       ],

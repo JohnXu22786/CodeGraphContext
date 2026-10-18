@@ -240,10 +240,7 @@ PyPI の `codegraphcontext-fork` はまだ公開されていません。以下�
     ```
 
 2.  **トラブルシューティング（コマンドが見つからない場合）:**
-    `codegraphcontext` コマンドが見つからない場合は、次のワンライナーで修正できます。
-    ```bash
-    curl -sSL https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-    ```
+    `codegraphcontext` コマンドが見つからない場合は、上記のコマンドで `.venv` をこのシェルで再度有効にしてください。Windows では、上記の PowerShell またはコマンド プロンプト用コマンドを使用してください。
 
 3.  **データベースのセットアップ（自動）:**
     CodeGraphContext はデフォルトで組み込み型のグラフデータベースを使用します。
@@ -361,36 +358,9 @@ codegraphcontext find pattern "Auth" --viz
 
 ## MCP クライアントの設定
 
-`codegraphcontext mcp setup` コマンドは IDE / CLI の自動設定を試みます。自動セットアップを使わない場合や、対応していないツールを使う場合は、手動で設定できます。
+`codegraphcontext mcp setup` コマンドは IDE / CLI の自動設定を試みます。自動セットアップを使わない場合や、対応していないツールを使う場合は、手動で設定できます。デスクトップクライアントは有効化した仮想環境を引き継がないため、端末で `.venv` を有効にしても、そのコマンドをクライアントから実行できるとは限りません。以下の `pipx` 設定は 0.7.0 の PyPI 公開後に利用できます。公開までは、専用仮想環境にある `cgc` 実行ファイルの絶対パスを指定してください。クライアント自身の `PATH` から `pipx` を見つけられる必要があります。
 
 クライアントの設定ファイル（VS Code の `settings.json` や `.claude.json` など）に、次のサーバー設定を追加してください。
-
-```json
-{
-  "mcpServers": {
-    "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": [
-        "mcp",
-        "start"
-      ],
-      "env": {
-        "NEO4J_URI": "YOUR_NEO4J_URI",
-        "NEO4J_USERNAME": "YOUR_NEO4J_USERNAME",
-        "NEO4J_PASSWORD": "YOUR_NEO4J_PASSWORD"
-      },
-      "disabled": false,
-      "alwaysAllow": []
-    }
-  }
-}
-```
-
-#### pipx でインストールした場合
-
-`pipx` で CodeGraphContext をインストールした場合は、代わりに次の設定を使用してください。
-
-この pipx run --spec 設定は、0.7.0 が PyPI に公開された後に利用できます。
 
 ```json
 {

@@ -320,10 +320,7 @@ The commands below use Bash on macOS/Linux. In PowerShell, activate the environm
     ```
 
 2.  **Troubleshooting (Command not found):**
-    If the `codegraphcontext` command is not found, run this one-line fix:
-    ```bash
-    curl -sSL https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-    ```
+    If the `codegraphcontext` command is not found, reactivate `.venv` in this shell using the activation command above. On Windows, use the PowerShell or Command Prompt activation command shown above.
 
 3.  **Database Setup (Automatic):**
     CodeGraphContext uses an embedded graph database by default.
@@ -608,35 +605,9 @@ You can tell CodeGraphContext to ignore specific files and directories by creati
 
 ## MCP Client Configuration
 
-The `codegraphcontext mcp setup` command attempts to automatically configure your IDE/CLI. If you choose not to use the automatic setup, or if your tool is not supported, you can configure it manually.
+The `codegraphcontext mcp setup` command attempts to automatically configure your IDE/CLI. If you choose not to use the automatic setup, or if your tool is not supported, you can configure it manually. Desktop clients do not inherit the active virtual environment from your terminal. Before publication, use the absolute path to `cgc` in your dedicated virtual environment. The `pipx` example below works after the 0.7.0 PyPI publication and requires `pipx` on the client's own `PATH`.
 
 Add the following server configuration to your client's settings file (e.g., VS Code's `settings.json` or `.claude.json`):
-
-```json
-{
-  "mcpServers": {
-    "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": [
-        "mcp",
-        "start"
-      ],
-      "disabled": false,
-      "alwaysAllow": []
-    }
-  }
-}
-```
-
-#### OpenCode Configuration
-
-For instructions on installing and configuring MCP servers with OpenCode, see the [OpenCode MCP Guide](https://opencode.ai/docs/ko/mcp-servers/#_top).
-
-#### If installed via pipx
-
-If you installed CodeGraphContext using `pipx`, use the following configuration instead:
-
-This pipx run --spec configuration is available after the 0.7.0 PyPI publication.
 
 ```json
 {
@@ -663,6 +634,10 @@ This pipx run --spec configuration is available after the 0.7.0 PyPI publication
 }
 ```
 
+#### OpenCode Configuration
+
+For instructions on installing and configuring MCP servers with OpenCode, see the [OpenCode MCP Guide](https://opencode.ai/docs/ko/mcp-servers/#_top).
+
 ---
 
 ## Token-Optimized Output (GCF)
@@ -676,12 +651,21 @@ CGC_OUTPUT_FORMAT=gcf codegraphcontext mcp start
 
 Or add it to your MCP client config:
 
+The `pipx` example below works after the 0.7.0 PyPI publication.
+
 ```json
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": ["mcp", "start"],
+      "command": "pipx",
+      "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
+        "mcp",
+        "start"
+      ],
       "env": {
         "CGC_OUTPUT_FORMAT": "gcf"
       }

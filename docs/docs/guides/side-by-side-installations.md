@@ -64,7 +64,7 @@ CGC_INSTANCE_NAME="CodeGraphContext Fork" \
 
 The HTTP API title and MCP server identity use `CGC_INSTANCE_NAME`; the port remains controlled by `cgc api start --port`.
 
-The checked-in Docker and Kubernetes examples use the fork-owned GHCR image `ghcr.io/johnxu22786/codegraphcontext`. For parallel deployments, use separate Docker volumes and a separate Kubernetes namespace.
+The checked-in Docker and Kubernetes examples use the fork-owned GHCR image `ghcr.io/johnxu22786/codegraphcontext`. The image is not published yet. As part of the first image publication, the owner will set the package visibility to Public; anonymous pulls will be available after that change takes effect. For parallel deployments, use separate Docker volumes and a separate Kubernetes namespace.
 
 ## Existing settings and graph data
 
