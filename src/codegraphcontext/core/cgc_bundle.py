@@ -266,9 +266,9 @@ class CGCBundle:
                 # Compile dynamic standardized metadata
                 try:
                     from importlib.metadata import version as get_version
-                    py_version = get_version("codegraphcontext")
+                    py_version = get_version("codegraphcontext-fork")
                 except Exception:
-                    py_version = "0.5.1"
+                    py_version = "0.0.0-dev"
 
                 metadata["format_version"] = "1.0.0"
                 metadata["generator"] = f"PYv{py_version}"

@@ -12,47 +12,47 @@
 - 🇮🇳 [தமிழ்](README.ta.md)
 - 🇪🇸 Español (即将推出)
 
-🌍 **在 [GitHub Issues](https://github.com/CodeGraphContext/CodeGraphContext/issues) 上提交 Issue 和 PR，帮助我们将 CodeGraphContext 翻译成你的语言！**
+🌍 **在 [GitHub Issues](https://github.com/JohnXu22786/CodeGraphContext/issues) 上提交 Issue 和 PR，帮助我们将 CodeGraphContext 翻译成你的语言！**
 
 <p align="center">
   <br>
   <b>连接深层代码图与 AI 上下文之间的鸿沟。</b>
   <br><br>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/v/codegraphcontext?style=flat-square&logo=pypi" alt="PyPI 版本">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/v/codegraphcontext-fork?style=flat-square&logo=pypi" alt="PyPI 版本">
   </a>
-  <a href="https://pypi.org/project/codegraphcontext/">
-    <img src="https://img.shields.io/pypi/dm/codegraphcontext?style=flat-square" alt="PyPI 下载量">
+  <a href="https://pypi.org/project/codegraphcontext-fork/">
+    <img src="https://img.shields.io/pypi/dm/codegraphcontext-fork?style=flat-square" alt="PyPI 下载量">
   </a>
   <a href="../../LICENSE">
-    <img src="https://img.shields.io/github/license/CodeGraphContext/CodeGraphContext?style=flat-square" alt="许可证">
+    <img src="https://img.shields.io/github/license/JohnXu22786/CodeGraphContext?style=flat-square" alt="许可证">
   </a>
   <img src="https://img.shields.io/badge/MCP-兼容-green?style=flat-square" alt="MCP 兼容">
   <a href="https://discord.gg/VCwUdCnn">
     <img src="https://img.shields.io/discord/1421769154507309150?label=Discord&logo=discord&logoColor=white&style=flat-square">
   </a>
   <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/stargazers">
-    <img src="https://img.shields.io/github/stars/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Stars">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/stargazers">
+    <img src="https://img.shields.io/github/stars/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Stars">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/network/members">
-    <img src="https://img.shields.io/github/forks/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Forks">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/network/members">
+    <img src="https://img.shields.io/github/forks/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Forks">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/issues">
-    <img src="https://img.shields.io/github/issues-raw/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/issues">
+    <img src="https://img.shields.io/github/issues-raw/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/pulls">
-    <img src="https://img.shields.io/github/issues-pr/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="PRs">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/pulls">
+    <img src="https://img.shields.io/github/issues-pr/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="PRs">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/CodeGraphContext/CodeGraphContext?style=flat-square&logo=github" alt="贡献者">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="贡献者">
   </a>
 <br><br>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="测试">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/test.yml/badge.svg" alt="测试">
   </a>
-  <a href="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml">
-    <img src="https://github.com/CodeGraphContext/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E 测试">
+  <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml">
+    <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E 测试">
   </a>
   <a href="http://codegraphcontext.vercel.app/">
     <img src="https://img.shields.io/badge/website-up-brightgreen?style=flat-square" alt="网站">
@@ -87,16 +87,16 @@
 
 ### 👨🏻‍💻 安装与 CLI
 > 使用 pip 在几秒钟内完成安装，解锁强大的代码图分析 CLI。
-![立即安装并解锁 CLI](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/install&cli.gif)
+![立即安装并解锁 CLI](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/install&cli.gif)
 
 
 ### 🛠️ 秒级索引
 > CLI 智能解析 tree-sitter 节点以构建代码图。
-![使用 MCP 客户端进行索引](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Indexing.gif)
+![使用 MCP 客户端进行索引](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Indexing.gif)
 
 ### 🤖 赋能你的 AI 助手
 > 使用自然语言通过 MCP 查询复杂的调用链。
-![使用 MCP 服务端](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/images/Usecase.gif)
+![使用 MCP 服务端](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Usecase.gif)
 
 ---
 
@@ -138,7 +138,7 @@ flowchart LR
 ---
 
 ## 项目详情
-- **版本:** 0.5.1
+- **版本:** 0.7.0
 - **作者:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **许可证:** MIT License (详见 [LICENSE](../../LICENSE))
 - **网站:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
@@ -159,12 +159,12 @@ flowchart LR
 ---
 
 ## Star 历史
-[Star 历史图表 ↗](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date)
+[Star 历史图表 ↗](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date)
 <!-- 内联图表暂时移除：api.star-history.com 目前会渲染
      "GitHub restricted access to star data" 而不是图表
      （GitHub 侧限制，参见 PR #1642）。待官方服务恢复后
      再恢复图片：
-     [![Star 历史图表](https://api.star-history.com/svg?repos=CodeGraphContext/CodeGraphContext&type=Date)](https://www.star-history.com/#CodeGraphContext/CodeGraphContext&Date) -->
+     [![Star 历史图表](https://api.star-history.com/svg?repos=JohnXu22786/CodeGraphContext&type=Date)](https://www.star-history.com/#JohnXu22786/CodeGraphContext&Date) -->
 
 ---
 
@@ -295,16 +295,21 @@ _如果你正在项目中使用 CodeGraphContext，欢迎提交 PR 并添加到�
 
 ### 🚀 快速入门
 
+> 注意：上游发行包 `codegraphcontext` 与本 fork 的发行包 `codegraphcontext-fork` 会安装到同一个 Python 导入命名空间 `codegraphcontext`。请在专用 Python 虚拟环境中安装本 fork，不要在同一环境中安装这两个发行包。CLI 命令仍为 `cgc` 和 `codegraphcontext`。
+
+`codegraphcontext-fork` 软件包目前尚未在 PyPI 发布。以下安装命令将在 0.7.0 发布后可用。
+
+以下命令适用于 macOS/Linux 的 Bash。在 PowerShell 中运行 `.\.venv\Scripts\Activate.ps1` 激活环境；在 Windows 命令提示符中运行 `.venv\Scripts\activate.bat`。
+
 1.  **安装工具包：**
     ```bash
-    pip install codegraphcontext
+    python -m venv .venv
+    source .venv/bin/activate
+    python -m pip install codegraphcontext-fork
     ```
 
 2.  **故障排除（找不到命令）：**
-    如果找不到 `codegraphcontext` 命令，请运行以下一行修复：
-    ```bash
-    curl -sSL https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/scripts/post_install_fix.sh | bash
-    ```
+    如果找不到 `codegraphcontext` 命令，请使用上面的命令在当前 shell 中重新激活 `.venv`。在 Windows 上，请使用上面列出的 PowerShell 或命令提示符命令。
 
 3.  **数据库设置（自动）：**
     CodeGraphContext 默认使用嵌入式图数据库。
@@ -317,7 +322,7 @@ _如果你正在项目中使用 CodeGraphContext，欢迎提交 PR 并添加到�
 如果你想从本地克隆运行 CodeGraphContext 并贡献改动，请使用可编辑安装：
 
 ```bash
-git clone https://github.com/CodeGraphContext/CodeGraphContext.git
+git clone https://github.com/JohnXu22786/CodeGraphContext.git
 cd CodeGraphContext
 python -m venv .venv
 source .venv/bin/activate
@@ -340,7 +345,7 @@ cgc mcp setup
 cgc mcp start
 ```
 
-如果你只是安装已发布的包，`pip install codegraphcontext` 就足够了。如果你在开发解析器密集型功能，并且还需要可选的解析依赖，请使用 `pip install -e ".[dev,parsing]"` 安装。
+0.7.0 版本发布后，可使用 `pip install codegraphcontext-fork` 安装。如果你在开发解析器密集型功能，并且还需要可选的解析依赖，请使用 `pip install -e ".[dev,parsing]"` 安装。
 
 ---
 
@@ -348,28 +353,30 @@ cgc mcp start
 
 无需安装 Python 即可运行 CodeGraphContext —— 拉取镜像并开始索引：
 
+fork 所属的 GHCR 软件包目前尚未发布。首次发布镜像时，所有者会将软件包可见性设为公开；此更改生效后即可匿名拉取。
+
 ### 快速开始
 ```bash
 # 拉取最新镜像
-docker pull codegraphcontext/codegraphcontext:latest
+docker pull ghcr.io/johnxu22786/codegraphcontext:latest
 
 # 索引当前目录
-docker run --rm -v "$(pwd):/workspace" codegraphcontext/codegraphcontext cgc index .
+docker run --rm -v "$(pwd):/workspace" ghcr.io/johnxu22786/codegraphcontext cgc index .
 
 # 列出已索引的仓库
 docker run --rm -v cgc-data:/home/cgc/.codegraphcontext \
-    codegraphcontext/codegraphcontext cgc list
+    ghcr.io/johnxu22786/codegraphcontext cgc list
 
 # 交互式 shell
 docker run -it --rm -v "$(pwd):/workspace" \
     -v cgc-data:/home/cgc/.codegraphcontext \
-    codegraphcontext/codegraphcontext bash
+    ghcr.io/johnxu22786/codegraphcontext bash
 ```
 
 ### Docker Compose
 ```bash
 # 克隆仓库并使用 Docker Compose 启动
-git clone https://github.com/CodeGraphContext/CodeGraphContext.git
+git clone https://github.com/JohnXu22786/CodeGraphContext.git
 cd CodeGraphContext
 
 # 使用嵌入式数据库启动
@@ -388,8 +395,8 @@ docker compose --profile viz up -d
 |---|---|
 | `latest` | 最新稳定版本 |
 | `edge` | `main` 分支的最新版本（可能不稳定） |
-| `0.4.19` | 特定版本 |
-| `0.4` | 0.4.x 的最新补丁版本 |
+| `0.7.0` | Fork 发布标签（发布后可用） |
+| `0.7` | 0.7.x 的最新补丁版本（发布后可用） |
 
 有关更高级的 Docker 用法，包括运行 MCP 服务端或连接外部数据库，请参阅我们的[全面 Docker 指南](../../docs/DOCKER.md)。
 
@@ -415,8 +422,12 @@ python --version
 
 ### 步骤 1：安装 CodeGraphContext
 
+`codegraphcontext-fork` 软件包目前尚未在 PyPI 发布。请在 0.7.0 发布后运行以下安装命令。
+
 ```bash
-pip install codegraphcontext  # 安装 CodeGraphContext 及所需依赖
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install codegraphcontext-fork  # 安装 CodeGraphContext 及所需依赖
 ```
 
 此命令会安装 CodeGraphContext 及所有必需的依赖项。
@@ -584,7 +595,7 @@ codegraphcontext find pattern "Auth" --viz
 
 ## MCP 客户端配置
 
-`codegraphcontext mcp setup` 命令尝试自动配置你的 IDE/CLI。如果你选择不使用自动设置，或者你的工具不受支持，你可以进行手动配置。
+`codegraphcontext mcp setup` 命令尝试自动配置你的 IDE/CLI。如果你选择不使用自动设置，或者你的工具不受支持，你可以进行手动配置。桌面客户端不会继承已激活的虚拟环境，因此在终端激活 `.venv` 不会让客户端自动找到其中的命令。下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用；发布前，请填写独立虚拟环境中 `cgc` 可执行文件的绝对路径。客户端自己的 `PATH` 中也必须能找到 `pipx`。
 
 将以下服务端配置添加到客户端的设置文件中（例如 VS Code 的 `settings.json` 或 `.claude.json`）：
 
@@ -592,32 +603,11 @@ codegraphcontext find pattern "Auth" --viz
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": [
-        "mcp",
-        "start"
-      ],
-      "disabled": false,
-      "alwaysAllow": []
-    }
-  }
-}
-```
-
-#### OpenCode 配置
-
-有关使用 OpenCode 安装和配置 MCP 服务器的说明，请参阅 [OpenCode MCP 指南](https://opencode.ai/docs/ko/mcp-servers/#_top)。
-
-#### 如果通过 pipx 安装
-
-如果你使用 `pipx` 安装了 CodeGraphContext，请改用以下配置：
-```json
-{
-  "mcpServers": {
-    "CodeGraphContext": {
       "command": "pipx",
       "args": [
         "run",
+        "--spec",
+        "codegraphcontext-fork",
         "codegraphcontext",
         "mcp",
         "start"
@@ -634,6 +624,10 @@ codegraphcontext find pattern "Auth" --viz
 }
 ```
 
+#### OpenCode 配置
+
+有关使用 OpenCode 安装和配置 MCP 服务器的说明，请参阅 [OpenCode MCP 指南](https://opencode.ai/docs/ko/mcp-servers/#_top)。
+
 ---
 
 ## Token 优化输出（GCF）
@@ -647,12 +641,21 @@ CGC_OUTPUT_FORMAT=gcf codegraphcontext mcp start
 
 或将其添加到你的 MCP 客户端配置中：
 
+下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用。
+
 ```json
 {
   "mcpServers": {
     "CodeGraphContext": {
-      "command": "codegraphcontext",
-      "args": ["mcp", "start"],
+      "command": "pipx",
+      "args": [
+        "run",
+        "--spec",
+        "codegraphcontext-fork",
+        "codegraphcontext",
+        "mcp",
+        "start"
+      ],
       "env": {
         "CGC_OUTPUT_FORMAT": "gcf"
       }
@@ -738,6 +741,6 @@ GCF 使用位置字段编码结构化数据（键只声明一次，值以竖线�
 
 欢迎贡献！ 🎉  
 请参阅我们的 [CONTRIBUTING.md](../../.github/CONTRIBUTING.md) 以获取详细准则。
-如果你有新功能、集成或改进的想法，请开启 [issue](https://github.com/CodeGraphContext/CodeGraphContext/issues) 或提交 Pull Request。
+如果你有新功能、集成或改进的想法，请开启 [issue](https://github.com/JohnXu22786/CodeGraphContext/issues) 或提交 Pull Request。
 
 加入讨论，共同塑造 CodeGraphContext 的未来。

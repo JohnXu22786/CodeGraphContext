@@ -87,7 +87,7 @@ export class CgcMcpClient {
       if (!proc || !proc.stdin) {
         const hint =
           resolved.source === "path"
-            ? "Is 'cgc' on your PATH? Install with `pip install codegraphcontext`, or reinstall the extension to get the bundled binary."
+            ? "Is 'cgc' on your PATH? After the 0.7.0 PyPI publication, install with `pip install codegraphcontext-fork` in a dedicated virtual environment. Upstream and fork share the codegraphcontext import and CLI names; installing both together can overwrite them. See the isolated install guide: https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/getting-started/installation.md, or reinstall the extension to get the bundled binary."
             : `Tried to launch ${executable}.`;
         throw new Error(`Failed to initialize CGC MCP process (no stdin). ${hint}`);
       }

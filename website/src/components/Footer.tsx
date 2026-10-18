@@ -23,7 +23,7 @@ const Footer = () => {
     async function fetchVersion() {
       try {
         const res = await fetch(
-          "https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/README.md",
+          "https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/README.md",
         );
         if (!res.ok) throw new Error("Failed to fetch README");
         const text = await res.text();
@@ -118,7 +118,7 @@ const Footer = () => {
                 className="rounded-full bg-transparent border-white/30 text-white hover:bg-white/10 hover:border-white/50 text-xs h-9 px-4 transition-all"
               >
                 <a
-                  href="https://github.com/CodeGraphContext/CodeGraphContext"
+                  href="https://github.com/JohnXu22786/CodeGraphContext"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2"
@@ -150,7 +150,7 @@ const Footer = () => {
                 className="rounded-full bg-transparent border-white/30 text-white hover:bg-white/10 hover:border-white/50 text-xs h-9 px-4 transition-all"
               >
                 <a
-                  href="https://pypi.org/project/codegraphcontext/"
+                  href="https://pypi.org/project/codegraphcontext-fork/"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2"
@@ -196,7 +196,7 @@ const Footer = () => {
               </li>
               <li>
                 <a
-                  href="https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/docs/cookbook.md"
+                  href="https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/cookbook.md"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="hover:text-white transition-colors"
@@ -214,7 +214,7 @@ const Footer = () => {
               </li>
               <li>
                 <a
-                  href="https://github.com/CodeGraphContext/CodeGraphContext/issues"
+                  href="https://github.com/JohnXu22786/CodeGraphContext/issues"
                   className="hover:text-white transition-colors"
                   target="_blank"
                   rel="noopener noreferrer"

@@ -1,6 +1,6 @@
 services:
   codegraphcontext:
-    image: codegraphcontext/codegraphcontext:latest
+    image: ghcr.io/johnxu22786/codegraphcontext:latest
     container_name: codegraphcontext
     volumes:
       - ./:/workspace
@@ -74,7 +74,7 @@ services:
 
   # Visualization Server
   viz:
-    image: codegraphcontext/codegraphcontext:latest
+    image: ghcr.io/johnxu22786/codegraphcontext:latest
     container_name: cgc-viz
     volumes:
       - ./:/workspace

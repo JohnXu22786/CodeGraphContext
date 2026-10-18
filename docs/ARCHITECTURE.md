@@ -2,6 +2,7 @@
 
 > **Version:** 0.4.16  
 > **Generated:** 2026-05-12  
+> **Status:** Historical snapshot of upstream CodeGraphContext 0.4.16, generated 2026-05-12; it does not describe the full architecture of the fork's 0.7.0 release.
 > **Scope:** Every module, connection, data flow, limitation, and feature across the entire codebase.
 
 ---

@@ -20,7 +20,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: codegraphcontext
-        image: codegraphcontext/codegraphcontext:latest
+        image: ghcr.io/johnxu22786/codegraphcontext:latest
         imagePullPolicy: Always
         command: ["/bin/bash"]
         args: ["-c", "while true; do sleep 30; done"]

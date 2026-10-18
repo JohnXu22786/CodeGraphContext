@@ -31,7 +31,7 @@ const HeroSection = () => {
     async function fetchVersion() {
       try {
         const res = await fetch(
-          "https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/README.md"
+          "https://raw.githubusercontent.com/JohnXu22786/CodeGraphContext/main/README.md"
         );
         if (!res.ok) throw new Error("Failed to fetch README");
         const text = await res.text();
@@ -45,7 +45,7 @@ const HeroSection = () => {
   }, []);
 
   useEffect(() => {
-    fetch("https://api.github.com/repos/CodeGraphContext/CodeGraphContext")
+    fetch("https://api.github.com/repos/JohnXu22786/CodeGraphContext")
       .then((response) => response.json())
       .then((data) => {
         setStars(data.stargazers_count);
@@ -56,7 +56,7 @@ const HeroSection = () => {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText("pip install codegraphcontext");
+      await navigator.clipboard.writeText("pip install codegraphcontext-fork");
       setCopied(true);
       toast.success("Copied to clipboard!");
       setTimeout(() => setCopied(false), 2000);
@@ -381,8 +381,11 @@ const HeroSection = () => {
           <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-cyan-400">KNOWLEDGE GRAPH</span>
         </h1>
 
-        <p className="text-lg md:text-xl text-gray-400 max-w-2xl mx-auto mb-12 font-light">
+        <p className="text-lg md:text-xl text-gray-400 max-w-2xl mx-auto mb-8 font-light">
           A powerful CLI toolkit and MCP server that instantly indexes your local code into a fully navigable graph for AI assistants.
+        </p>
+        <p className="text-sm text-gray-500 max-w-2xl mx-auto mb-12">
+          Install the fork in a dedicated Python environment; upstream and fork distributions share the <code>codegraphcontext</code> import namespace. The PyPI package is not published yet, so this command will work after the 0.7.0 publication.
         </p>
 
         <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto items-center justify-center mb-24">
@@ -391,11 +394,11 @@ const HeroSection = () => {
             onClick={handleCopy}
           >
             {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-            pip install codegraphcontext
+            pip install codegraphcontext-fork
           </Button>
 
           <Button asChild className="bg-cyan-400 hover:bg-cyan-300 text-black shadow-[0_0_20px_rgba(34,211,238,0.4)] border-0 transition-colors w-full sm:w-auto h-14 rounded-full font-bold uppercase tracking-widest text-xs px-8">
-            <a href="https://github.com/CodeGraphContext/CodeGraphContext" target="_blank" rel="noopener noreferrer">
+            <a href="https://github.com/JohnXu22786/CodeGraphContext" target="_blank" rel="noopener noreferrer">
               <Github className="mr-2 h-4 w-4" />
               GitHub
             </a>

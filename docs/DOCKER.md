@@ -6,9 +6,12 @@ Running CodeGraphContext via Docker is the easiest way to use the tool without s
 
 ## 1. Quick Start
 
-Pull the latest image from Docker Hub:
+Pull the latest fork image from GitHub Container Registry (GHCR):
+
+The fork-owned GHCR package is not published yet. As part of the first image publication, the owner will set the package visibility to Public; anonymous pulls will be available after that change takes effect.
+
 ```bash
-docker pull codegraphcontext/codegraphcontext:latest
+docker pull ghcr.io/johnxu22786/codegraphcontext:latest
 ```
 
 Index your current directory:
@@ -16,7 +19,7 @@ Index your current directory:
 docker run --rm \
   -v "$(pwd):/workspace" \
   -v cgc-data:/home/cgc/.codegraphcontext \
-  codegraphcontext/codegraphcontext cgc index .
+  ghcr.io/johnxu22786/codegraphcontext cgc index .
 ```
 
 *Note: The `-v cgc-data:/home/cgc/.codegraphcontext` volume is crucial as it persists the graph database across runs.*
@@ -29,7 +32,7 @@ For convenience, a helper script is included in the repository.
 
 ```bash
 # Clone the repository
-git clone https://github.com/CodeGraphContext/CodeGraphContext.git
+git clone https://github.com/JohnXu22786/CodeGraphContext.git
 cd CodeGraphContext
 
 # Index a repo
@@ -102,7 +105,7 @@ docker run -i --rm \
   -v "/path/to/your/codebase:/workspace" \
   -v cgc-data:/home/cgc/.codegraphcontext \
   -e CGC_MODE=mcp \
-  codegraphcontext/codegraphcontext
+  ghcr.io/johnxu22786/codegraphcontext
 ```
 
 **Important Notes for MCP in Docker**:
@@ -126,7 +129,7 @@ docker run -i --rm \
         "cgc-data:/home/cgc/.codegraphcontext",
         "-e",
         "CGC_MODE=mcp",
-        "codegraphcontext/codegraphcontext:latest"
+        "ghcr.io/johnxu22786/codegraphcontext:latest"
       ]
     }
   }
@@ -148,7 +151,7 @@ docker run -i --rm \
 
 ## 6. Image Variants & Architecture
 
-The `codegraphcontext/codegraphcontext` image is multi-architecture, supporting:
+The `ghcr.io/johnxu22786/codegraphcontext` image is multi-architecture, supporting:
 - `linux/amd64` (Standard Intel/AMD x86_64 PCs & Servers)
 - `linux/arm64` (Apple Silicon M1/M2/M3, AWS Graviton, Raspberry Pi)
 
@@ -160,7 +163,7 @@ Docker will automatically pull the correct variant for your architecture.
 |---|---|
 | `latest` | The most recent stable release. Recommended for most users. |
 | `edge` | Built automatically from the `main` branch. Contains the latest features but may be unstable. |
-| `0.4.19` | Specific semantic version. |
+| `0.7.0` | Fork release tag (available after publication). |
 
 ---
 

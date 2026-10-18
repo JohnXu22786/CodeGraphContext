@@ -350,7 +350,7 @@ const CookbookSection = () => {
             </p>
             <Button className="bg-transparent hover:bg-purple-600 hover:text-white shadow-[0_0_15px_rgba(168,85,247,0.4)] text-white rounded-full px-8 py-3 border border-white/20 font-black text-[10px] uppercase tracking-widest transition-colors" asChild>
               <a
-                href="https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/docs/cookbook.md"
+                href="https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/cookbook.md"
                 target="_blank"
                 rel="noopener noreferrer"
               >

@@ -70,16 +70,13 @@ def _check_write_access(path: Path) -> bool:
 
 
 def _mcp_server_command() -> tuple[str, list[str]]:
-    """Select this installation when an isolated runtime was explicitly configured."""
+    """Use the current installation when generating an MCP server command."""
     if get_isolation_environment():
         return sys.executable, ["-m", "codegraphcontext", "mcp", "start"]
 
     cgc_path = shutil.which("cgc")
-    pipx_path = shutil.which("pipx")
     if cgc_path:
         return cgc_path, ["mcp", "start"]
-    if pipx_path:
-        return pipx_path, ["run", "codegraphcontext", "mcp", "start"]
     return sys.executable, ["-m", "codegraphcontext", "mcp", "start"]
 
 
