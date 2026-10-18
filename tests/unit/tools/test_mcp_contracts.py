@@ -73,7 +73,6 @@ def test_every_wrapper_has_a_tool_definition():
         "_init_tools",
         "_load_disabled_tools",
         "_normalize_tool_name",
-        "_get_version",
         "handle_tool_call",
     }
 

@@ -2,6 +2,8 @@
 
 When running the CodeGraphContext (CGC) MCP server, it registers a suite of **29 JSON-RPC tools** that AI assistants can use to analyze and query the code graph.
 
+The Python distribution release version is managed separately in package metadata. MCP `initialize.serverInfo.version` is server metadata, currently **0.1.0** for both stdio and HTTP; clients negotiate the MCP protocol version independently.
+
 ---
 
 ## Code Ingestion & System Control
