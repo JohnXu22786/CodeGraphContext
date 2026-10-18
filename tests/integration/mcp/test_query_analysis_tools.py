@@ -199,9 +199,8 @@ def unused_python_routine():
 
         _index_and_seed(server, repo, context)
 
-        # The two optional Spring/datasource query shapes are currently not
-        # supported by Kùzu's binder. Exercise their successful path against
-        # the already available local FalkorDB Lite backend as well.
+        # Kùzu now supports the Spring stereotype query shape. Build a
+        # FalkorDB Lite fixture too when available for cross-backend coverage.
         if is_falkordb_usable():
             (context / "config.yaml").write_text("database: falkordb\n", encoding="utf-8")
             os.environ["CGC_RUNTIME_DB_TYPE"] = "falkordb"
@@ -209,6 +208,10 @@ def unused_python_routine():
             assert falkor_server.resolved_context.is_local
             assert falkor_server.db_manager.get_backend_type() == "falkordb"
             _index_and_seed(falkor_server, repo, context)
+
+        for active_server in (server, falkor_server):
+            if active_server is not None:
+                _seed_redis_datasource(active_server)
 
         yield {"server": server, "falkor_server": falkor_server, "repo": repo, "root": root}
     finally:
@@ -281,10 +284,32 @@ def _index_and_seed(server: MCPServer, repo: Path, context: Path) -> None:
     )
 
 
+def _seed_redis_datasource(server: MCPServer) -> None:
+    server.graph_builder._writer.write_datasource_graph(
+        {
+            "datasource": {
+                "name": "fixture-redis",
+                "kind": "redis",
+                "host": "127.0.0.1",
+                "env": "test",
+            },
+            "key_patterns": [
+                {
+                    "pattern": "user:*",
+                    "key_type": "hash",
+                    "example_key": "user:1",
+                    "count": 2,
+                    "datasource_name": "fixture-redis",
+                }
+            ],
+        }
+    )
+
+
 def _falkor_server(mcp_graph) -> MCPServer:
     server = mcp_graph["falkor_server"]
     if server is None:
-        pytest.skip("FalkorDB Lite is unavailable; Kùzu reports the documented binder limitation")
+        pytest.skip("FalkorDB Lite is unavailable; cross-backend assertions cannot run")
     return server
 
 
@@ -536,34 +561,76 @@ def test_find_datasource_nodes_returns_disposable_fixture_metadata(mcp_graph):
         "find_datasource_nodes",
         {"kind": "mysql", "include_columns": True},
     )
-    if "error" in result:
-        assert "not in scope" in result["error"]
-        result = _call(
-            _falkor_server(mcp_graph),
-            "find_datasource_nodes",
-            {"kind": "mysql", "include_columns": True},
-        )
 
-    assert result["success"] is True
+    assert result.get("success") is True, result
     assert result["count"] == 1
     datasource = result["datasources"][0]
     assert datasource["datasource"] == "fixture-mysql"
     assert datasource["tables"] == ["fixture-mysql.orders"]
-    assert datasource["columns"]["fixture-mysql.orders"][0]["name"] == "id"
+    assert datasource["columns"]["fixture-mysql.orders"] == [
+        {"name": "id", "type": "INT", "nullable": False, "is_primary_key": True}
+    ]
+
+    falkor_server = mcp_graph["falkor_server"]
+    if falkor_server is not None:
+        falkor_result = _call(
+            falkor_server,
+            "find_datasource_nodes",
+            {"kind": "mysql", "include_columns": True},
+        )
+        assert falkor_result.get("success") is True, falkor_result
+        assert falkor_result["datasources"] == result["datasources"]
 
 
 def test_find_datasource_nodes_returns_empty_for_unknown_kind_filter(mcp_graph):
-    server = mcp_graph["falkor_server"] or mcp_graph["server"]
-    result = _call(
-        server,
-        "find_datasource_nodes",
-        {"kind": "not-a-kind"},
-    )
+    servers = [mcp_graph["server"]]
+    if mcp_graph["falkor_server"] is not None:
+        servers.append(mcp_graph["falkor_server"])
 
-    if "error" in result and "not in scope" in result["error"]:
-        pytest.skip("Kùzu cannot bind the datasource table query on the current backend")
-    assert result["success"] is True
-    assert result["count"] == 0
+    for server in servers:
+        result = _call(server, "find_datasource_nodes", {"kind": "not-a-kind"})
+        assert result.get("success") is True, result
+        assert result["count"] == 0
+        assert result["datasources"] == []
+
+
+def test_find_datasource_nodes_filters_by_name(mcp_graph):
+    servers = [mcp_graph["server"]]
+    if mcp_graph["falkor_server"] is not None:
+        servers.append(mcp_graph["falkor_server"])
+
+    for server in servers:
+        matching = _call(server, "find_datasource_nodes", {"name": "fixture-mysql"})
+        assert matching.get("success") is True, matching
+        assert matching["count"] == 1
+        assert matching["datasources"][0]["datasource"] == "fixture-mysql"
+
+        missing = _call(server, "find_datasource_nodes", {"name": "missing"})
+        assert missing.get("success") is True, missing
+        assert missing["count"] == 0
+        assert missing["datasources"] == []
+
+
+def test_find_datasource_nodes_keeps_redis_key_patterns_optional(mcp_graph):
+    result = _call(mcp_graph["server"], "find_datasource_nodes", {"kind": "redis"})
+    assert result.get("success") is True, result
+    assert result["count"] == 1
+    datasource = result["datasources"][0]
+    assert datasource["datasource"] == "fixture-redis"
+    if "key_patterns" in datasource:
+        assert datasource["key_patterns"] == [
+            {"pattern": "user:*", "key_type": "hash", "count": 2}
+        ]
+
+    falkor_server = mcp_graph["falkor_server"]
+    if falkor_server is not None:
+        falkor_result = _call(falkor_server, "find_datasource_nodes", {"kind": "redis"})
+        assert falkor_result.get("success") is True, falkor_result
+        assert falkor_result["count"] == 1
+        assert falkor_result["datasources"][0]["datasource"] == "fixture-redis"
+        assert falkor_result["datasources"][0]["key_patterns"] == [
+            {"pattern": "user:*", "key_type": "hash", "count": 2}
+        ]
 
 
 def test_generate_report_writes_a_scoped_report(mcp_graph):
