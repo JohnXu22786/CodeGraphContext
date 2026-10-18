@@ -359,6 +359,12 @@ class GraphBuilder:
         """
         return self._writer.get_caller_file_paths(file_path_str)
 
+    def get_importer_file_paths(
+        self, names: set[str], repo_path: Path, changed_path: Path
+    ) -> set:
+        """Return files importing changed symbols or the changed relative module."""
+        return self._writer.get_importer_file_paths(names, repo_path, changed_path)
+
     def get_repo_file_paths(self, repo_path: Path) -> set:
         """Get all file paths indexed for a repository.
 

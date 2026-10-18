@@ -99,6 +99,38 @@ def _normalize_prefix(p) -> str:
     return _normalize_path(p) + "/"
 
 
+def _module_specifier_matches_path(importer_path: str, specifier: str, target_path: Path) -> bool:
+    """Resolve a relative JS/TS module specifier to a changed source file."""
+    if not specifier or not (specifier.startswith(".") or specifier.startswith("/")):
+        return False
+
+    specifier_path = Path(specifier)
+    if not specifier_path.is_absolute():
+        specifier_path = Path(importer_path).parent / specifier_path
+    resolved_specifier = specifier_path.resolve()
+    resolved_target = Path(target_path).resolve()
+    if resolved_specifier == resolved_target:
+        return True
+
+    source_extensions = (
+        ".d.ts", ".tsx", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".ts", ".js", ".json"
+    )
+
+    def without_source_extension(path: Path) -> str:
+        path_str = path.as_posix()
+        for extension in source_extensions:
+            if path_str.endswith(extension):
+                return path_str[: -len(extension)]
+        return path.with_suffix("").as_posix() if path.suffix else path_str
+
+    # TS projects commonly write a .js specifier for a corresponding .ts
+    # source, and both JS and TS permit extensionless relative imports.
+    if without_source_extension(resolved_specifier) == without_source_extension(resolved_target):
+        return True
+
+    return resolved_specifier == resolved_target.parent and resolved_target.stem == "index"
+
+
 # These labels are deliberately global: one node per name, shared across files.
 # They are keyed on `name` alone and must not take a per-file disambiguator.
 _NAME_ONLY_MERGE_LABELS = {"Module", "DbTable", "ExternalClass"}
@@ -2546,6 +2578,50 @@ DETACH DELETE r, n
                 path=file_path_str,
             )
             return {r["p"] for r in result if r["p"] and r["p"] != file_path_str}
+
+        return execute_read_operation(self.driver, backend, _work)
+
+    def get_importer_file_paths(
+        self, names: set[str], repo_path: Path, changed_path: Path
+    ) -> set:
+        """Return files importing changed symbols or the changed relative module."""
+        prefix = _normalize_prefix(repo_path)
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            result = session.run(
+                "MATCH (importer:File)-[imp:IMPORTS]->(module:Module) "
+                "WHERE importer.path STARTS WITH $prefix "
+                "AND (imp.imported_name IN $names OR module.name IN $names "
+                "OR module.full_import_name IN $names OR imp.imported_name IN ['*', 'default'] "
+                "OR module.name STARTS WITH '.' OR module.name STARTS WITH '/' "
+                "OR module.full_import_name STARTS WITH '.' OR module.full_import_name STARTS WITH '/' "
+                "OR imp.imported_name STARTS WITH '.' OR imp.imported_name STARTS WITH '/') "
+                "RETURN DISTINCT importer.path AS p, imp.imported_name AS imported_name, "
+                "module.name AS module_name, module.full_import_name AS full_import_name",
+                prefix=prefix,
+                names=sorted(names),
+            )
+            importer_paths = set()
+            for record in result:
+                importer_path = record["p"]
+                if not importer_path:
+                    continue
+                imported_name = record["imported_name"]
+                module_names = {
+                    record["module_name"],
+                    record["full_import_name"],
+                }
+                if imported_name in names or module_names.intersection(names):
+                    importer_paths.add(importer_path)
+                    continue
+                if any(
+                    _module_specifier_matches_path(importer_path, specifier, changed_path)
+                    for specifier in (*module_names, imported_name)
+                    if specifier
+                ):
+                    importer_paths.add(importer_path)
+            return importer_paths
 
         return execute_read_operation(self.driver, backend, _work)
 

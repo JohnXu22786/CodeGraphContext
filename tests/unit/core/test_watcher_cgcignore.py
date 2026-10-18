@@ -8,6 +8,9 @@ from codegraphcontext.core.watcher import RepositoryEventHandler
 def _graph_builder():
     graph_builder = MagicMock()
     graph_builder.parsers = {".py": "python"}
+    graph_builder.get_importer_file_paths.return_value = set()
+    graph_builder.generic_extensions = {".md"}
+    graph_builder.generic_filenames = {"Dockerfile"}
     graph_builder.pre_scan_imports.return_value = {}
     graph_builder.parse_file.return_value = {"path": "parsed.py"}
     graph_builder.link_function_calls.return_value = None
@@ -32,6 +35,8 @@ def test_watcher_skips_ignored_modified_event(tmp_path: Path):
     tracked_file.write_text("print('tracked')\n", encoding="utf-8")
 
     handler = RepositoryEventHandler(_graph_builder(), repo, perform_initial_scan=False)
+    generic_file = repo / "README.md"
+    generic_file.write_text("# tracked generic file\n", encoding="utf-8")
 
     with patch.object(handler, "_debounce") as debounce:
         handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(ignored_file)))
@@ -39,6 +44,38 @@ def test_watcher_skips_ignored_modified_event(tmp_path: Path):
 
         handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(tracked_file)))
         debounce.assert_called_once()
+
+        handler.on_created(SimpleNamespace(is_directory=False, src_path=str(generic_file)))
+        assert debounce.call_count == 2, "creating an indexed generic file should queue an update"
+
+        handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(generic_file)))
+        assert debounce.call_count == 3, "editing an indexed generic file should queue an update"
+
+
+def test_watcher_filters_large_ignored_deletion_batch_before_queueing(tmp_path: Path):
+    repo = tmp_path / "repo"
+    (repo / "bin").mkdir(parents=True)
+    (repo / "src").mkdir()
+    (repo / ".cgcignore").write_text("**/bin/\n", encoding="utf-8")
+    graph_builder = _graph_builder()
+    graph_builder.generic_extensions = {".md"}
+    graph_builder.generic_filenames = {"Dockerfile"}
+    handler = RepositoryEventHandler(graph_builder, repo, perform_initial_scan=False)
+
+    # Deleted paths no longer exist, so filtering must use the path and ignore
+    # rules before adding any work, not rely on is_file().
+    with patch.object(handler, "_debounce") as debounce:
+        for index in range(1000):
+            handler.on_deleted(
+                SimpleNamespace(
+                    is_directory=False,
+                    src_path=str(repo / "bin" / f"generated_{index}.py"),
+                )
+            )
+
+        debounce.assert_not_called()
+        handler.on_deleted(SimpleNamespace(is_directory=False, src_path=str(repo / "README.md")))
+        assert debounce.call_count == 1, "deleting a graph-indexed generic file should remain supported"
 
 
 def test_watcher_initial_scan_filters_cgcignore(tmp_path: Path):
