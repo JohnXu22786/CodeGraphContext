@@ -29,6 +29,8 @@ env/
 docs/
 *.md
 !README.md
+!CHANGELOG.md
+!UPSTREAM.md
 
 # Test files
 tests/

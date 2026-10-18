@@ -110,6 +110,20 @@ def test_bundle_registry_install_dialog_requires_an_isolated_environment():
     assert 'href="#installation"' in content
 
 
+def test_docker_build_context_includes_package_provenance_markdown():
+    repo_root = Path(__file__).resolve().parents[3]
+    ignore_lines = (repo_root / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8").splitlines()
+    markdown_ignore = ignore_lines.index("*.md")
+    docker_copy = next(line for line in dockerfile if line.startswith("COPY pyproject.toml README.md"))
+
+    for filename in ("README.md", "CHANGELOG.md", "UPSTREAM.md"):
+        exception = f"!{filename}"
+        assert exception in ignore_lines, filename
+        assert ignore_lines.index(exception) > markdown_ignore, filename
+        assert filename in docker_copy.split(), filename
+
+
 def test_ghcr_docs_explain_public_visibility_step():
     repo_root = Path(__file__).resolve().parents[3]
     english_note = (
