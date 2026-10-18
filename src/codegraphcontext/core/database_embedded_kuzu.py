@@ -23,6 +23,7 @@ from typing import Optional, Tuple, Dict, Any, List, ClassVar
 from codegraphcontext.core.graph_query import GraphQueryInterface
 from ..utils.cypher_ddl import is_schema_ddl
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
+from codegraphcontext.runtime_paths import get_cgc_home
 
 # Default cap for ladybug/kuzu buffer pools (bytes). Both libraries otherwise
 # default to ~80% of system RAM, which lets long-running gateways grow huge.
@@ -187,7 +188,7 @@ class EmbeddedGraphManager(GraphQueryInterface):
 
         new_db_path = db_path or os.getenv(
             spec.path_env_var,
-            config_db_path or str(Path.home() / '.codegraphcontext' / 'global' / spec.default_dir)
+            config_db_path or str(get_cgc_home() / 'global' / spec.default_dir)
         )
 
         if hasattr(self, '_initialized') and getattr(self, 'db_path', None) == new_db_path:

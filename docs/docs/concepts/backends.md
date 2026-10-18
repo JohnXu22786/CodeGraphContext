@@ -23,7 +23,7 @@ KuzuDB is an in-process property graph database management system. It requires z
 
 - **OLAP Optimized**: Designed for structured graph analysis and multi-hop queries.
 - **Cross-Platform**: Natively supports Windows, Linux, and macOS on Python 3.10+.
-- **Data Directory**: Graphs are saved inside the local `.codegraphcontext/` directory within the workspace.
+- **Data Directory**: Graphs are saved inside the local `.codegraphcontext/` directory by default. Set `CGC_REPO_CONTEXT_DIR` to use a separate repository-local directory for another installation.
 
 ### Version Compatibility
 

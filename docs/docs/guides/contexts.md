@@ -9,7 +9,7 @@ CodeGraphContext (CGC) uses a context resolution system to determine where graph
 Below is the standard directory structure under global and local scopes:
 
 ```text
-~/.codegraphcontext/            <-- Global configuration directory
+${CGC_HOME:-~/.codegraphcontext}/ <-- Global configuration directory
     config.yaml                 <-- Active context mode and registry
     .env                        <-- Database credentials and tuning configurations
     global/
@@ -31,9 +31,9 @@ Below is the standard directory structure under global and local scopes:
 When executing a CLI command (e.g., `cgc index`) or starting an MCP session, CGC resolves the target database location in this priority order:
 
 1. **Context Override Flag**: If `--context <name>` or `-c <name>` is provided, CGC routes all writes and queries to the specified named context.
-2. **Local Repository Scope**: If the current directory contains a `.codegraphcontext/` folder, CGC operates in per-repo mode.
-3. **Global Config Setting**: CGC reads the active mode (`global`, `per-repo`, or `named`) and default context name specified in `~/.codegraphcontext/config.yaml`.
-4. **Default Fallback**: On Linux/macOS with Python 3.12+, connects to FalkorDB Lite at `~/.codegraphcontext/global/db/falkordb/`; otherwise KuzuDB at `~/.codegraphcontext/global/db/kuzudb/`.
+2. **Local Repository Scope**: If the current directory contains the selected repository-context folder (default `.codegraphcontext`), CGC operates in per-repo mode.
+3. **Global Config Setting**: CGC reads the active mode (`global`, `per-repo`, or `named`) and default context name specified in `CGC_HOME/config.yaml` (default `~/.codegraphcontext/config.yaml`).
+4. **Default Fallback**: On Linux/macOS with Python 3.12+, connects to FalkorDB Lite under `CGC_HOME/global/db/falkordb/`; otherwise KuzuDB under `CGC_HOME/global/db/kuzudb/`.
 
 ---
 
@@ -68,7 +68,7 @@ cgc list
 
 ### 2. Per-Repo Mode
 
-In Per-Repo Mode, each repository maintains its own local `.codegraphcontext/` directory (similar to how Git uses `.git/`).
+In Per-Repo Mode, each repository maintains its own local context directory (default `.codegraphcontext`, similar to how Git uses `.git/`). Set `CGC_REPO_CONTEXT_DIR` to a different one-component name when two installations need separate local graphs in the same repository.
 
 ```bash
 cgc context mode per-repo
@@ -79,12 +79,12 @@ When indexing inside a project, a local database folder is created within the re
 ```bash
 cd ~/projects/service-api
 cgc index .
-# Creates: ~/projects/service-api/.codegraphcontext/db/kuzudb/
+# Creates: ~/projects/service-api/.codegraphcontext/db/kuzudb/ (or the selected CGC_REPO_CONTEXT_DIR)
 ```
 
 Graphs are completely isolated, and commands run within a repository only inspect the local database.
 
-When you first index in per-repo mode, CGC auto-creates `.codegraphcontext/` and seeds a local `config.yaml` from your global `DEFAULT_DATABASE`. Project-local `.codegraphcontext/.env` and `.env` files are loaded **only in this mode** (unless you set `CGC_LOAD_PROJECT_ENV=1`). In global or named mode, global `~/.codegraphcontext/.env` wins so cloned repos cannot override your credentials.
+When you first index in per-repo mode, CGC auto-creates the selected repository-context directory and seeds a local `config.yaml` from your global `DEFAULT_DATABASE`. Project-local `<CGC_REPO_CONTEXT_DIR>/.env` and `.env` files are loaded **only in this mode** (unless you set `CGC_LOAD_PROJECT_ENV=1`). In global or named mode, `CGC_HOME/.env` wins so cloned repos cannot override your credentials. The default roots remain `~/.codegraphcontext` and `.codegraphcontext`.
 
 ---
 
@@ -146,9 +146,9 @@ CGC filters files using `.cgcignore` config files. The location of the active ig
 
 | Mode | Active `.cgcignore` Path |
 | :--- | :--- |
-| **Global** | `~/.codegraphcontext/global/.cgcignore` |
-| **Per-Repo** | `<repo_root>/.codegraphcontext/.cgcignore` |
-| **Named** | `~/.codegraphcontext/contexts/<name>/.cgcignore` |
+| **Global** | `CGC_HOME/global/.cgcignore` (default `~/.codegraphcontext/global/.cgcignore`) |
+| **Per-Repo** | `<repo_root>/<CGC_REPO_CONTEXT_DIR>/.cgcignore` (default `<repo_root>/.codegraphcontext/.cgcignore`) |
+| **Named** | `CGC_HOME/contexts/<name>/.cgcignore` (default `~/.codegraphcontext/contexts/<name>/.cgcignore`) |
 
 ### Default Global `.cgcignore` Template
 

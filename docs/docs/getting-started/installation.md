@@ -6,6 +6,8 @@ CodeGraphContext (CGC) is packaged as a standard Python utility. The CLI and ser
 
 ## 1. CLI Installation
 
+For installing this fork next to upstream, use a separate Python environment and the runtime isolation settings in [Run the fork beside upstream](../guides/side-by-side-installations.md).
+
 ### Method A: Execution via `uvx` (Recommended)
 If you use [uv](https://github.com/astral-sh/uv), you can run the CGC CLI on demand without installing it globally:
 

@@ -12,7 +12,7 @@ cgc api start --host 127.0.0.1 --port 8080
 cgc api start --reload   # development only
 ```
 
-The server loads credentials from the same configuration chain as the CLI (`~/.codegraphcontext/.env`, context resolution, etc.).
+The server loads credentials from the same configuration chain as the CLI (`CGC_HOME/.env`, default `~/.codegraphcontext/.env`, context resolution, etc.).
 
 ---
 

@@ -26,9 +26,21 @@ Use **`NEO4J_USERNAME`**, not `NEO4J_USER`. The latter is not a valid `cgc confi
 cgc config set NEO4J_USERNAME neo4j
 ```
 
+### Installation and runtime isolation
+
+| Environment variable | Default | Description |
+| :--- | :--- | :--- |
+| **`CGC_HOME`** | `~/.codegraphcontext` | Root for user configuration, named contexts, default global database paths, logs, and imported bundles. |
+| **`CGC_REPO_CONTEXT_DIR`** | `.codegraphcontext` | Repository-local context directory name. Set a unique one-component name to keep per-repo data separate. |
+| **`CGC_INSTANCE_NAME`** | `CodeGraphContext` | MCP registration key and MCP/HTTP server display name. |
+| **`CGC_RUNTIME_DB_PATH`** | Backend default | Explicit global database path override; it does not move configuration, logs, bundles, or repository-local contexts. |
+| **`CGC_RUNTIME_DB_TYPE`** | `DEFAULT_DATABASE` | Explicit global database backend override; the MCP setup wizard forwards it to the server process. |
+
+See [Side-by-Side Installations](../guides/side-by-side-installations.md) for separate-environment, migration, and reindexing guidance.
+
 ### Project-local `.env` files
 
-Repository `.codegraphcontext/.env` and `.env` files are loaded **only in per-repo context mode** (or when `CGC_LOAD_PROJECT_ENV=1`). In **global** or **named** mode, `~/.codegraphcontext/.env` wins so cloned repos cannot override your credentials. Set `CGC_IGNORE_PROJECT_ENV=1` to force-skip project env.
+Repository `<CGC_REPO_CONTEXT_DIR>/.env` and `.env` files are loaded **only in per-repo context mode** (or when `CGC_LOAD_PROJECT_ENV=1`). In **global** or **named** mode, `CGC_HOME/.env` wins so cloned repos cannot override your credentials. Set `CGC_IGNORE_PROJECT_ENV=1` to force-skip project env.
 
 Project files are resolved in the **current working directory only**; parent directories are never searched. Run CGC from the project root, or put the shared setting in your global configuration. `CGC_LOAD_PROJECT_ENV=1` enables local loading without expanding this boundary.
 
@@ -166,9 +178,9 @@ Local embedded database instances are stored on disk. Use the settings below to 
 
 | Config Key | Default | Description |
 | :--- | :--- | :--- |
-| **`KUZUDB_PATH`** | `~/.codegraphcontext/global/db/kuzudb/` | Root storage directory for KuzuDB files. |
-| **`LADYBUGDB_PATH`** | `~/.codegraphcontext/global/db/ladybugdb/` | Root storage directory for LadybugDB files. |
-| **`FALKORDB_PATH`** | `~/.codegraphcontext/global/db/falkordb/` | Storage path for FalkorDB Lite database. |
+| **`KUZUDB_PATH`** | `CGC_HOME/global/db/kuzudb/` | Root storage directory for KuzuDB files (`~/.codegraphcontext/...` when CGC_HOME is unset). |
+| **`LADYBUGDB_PATH`** | `CGC_HOME/global/db/ladybugdb/` | Root storage directory for LadybugDB files (`~/.codegraphcontext/...` when CGC_HOME is unset). |
+| **`FALKORDB_PATH`** | `CGC_HOME/global/db/falkordb/` | Storage path for FalkorDB Lite database (`~/.codegraphcontext/...` when CGC_HOME is unset). |
 | **`CGC_EMBEDDED_BUFFER_POOL_MB`** | `4096` | Max buffer pool size in MiB for LadybugDB/Kuzu. Set `0` to use the library default (~80% of system RAM). |
 
 ---
@@ -179,11 +191,11 @@ Repository-level env files are **not** loaded in every mode:
 
 | File | When it applies |
 | :--- | :--- |
-| `~/.codegraphcontext/.env` | Always (global defaults) |
-| `<repo>/.codegraphcontext/.env` | **Per-repo mode only** (or when `CGC_LOAD_PROJECT_ENV=1`) |
+| `CGC_HOME/.env` (default `~/.codegraphcontext/.env`) | Always (global defaults) |
+| `<repo>/<CGC_REPO_CONTEXT_DIR>/.env` (default `<repo>/.codegraphcontext/.env`) | **Per-repo mode only** (or when `CGC_LOAD_PROJECT_ENV=1`) |
 | `<repo>/.env` | **Per-repo mode only** (current working directory only) |
 
-In **global** or **named** context mode, a checked-in `.codegraphcontext/.env` inside a clone does **not** override your user config—this prevents accidental hijacking when indexing third-party repos.
+In **global** or **named** context mode, a checked-in repository-context `.env` inside a clone does **not** override your user config—this prevents accidental hijacking when indexing third-party repos.
 
 Override flags:
 
@@ -198,6 +210,6 @@ CGC resolves configuration keys in the following hierarchical priority (highest 
 
 1. **CLI flag parameters** — e.g. `cgc index --db neo4j`.
 2. **Runtime environment variables** — shell/CI exports and `CGC_RUNTIME_DB_TYPE`.
-3. **Project-local env** — `.codegraphcontext/.env` / `.env` (per-repo mode only; see above).
-4. **User global settings** — `~/.codegraphcontext/.env` (including values from `cgc config set`).
+3. **Project-local env** — `<CGC_REPO_CONTEXT_DIR>/.env` / `.env` (per-repo mode only; see above).
+4. **User global settings** — `CGC_HOME/.env` (default `~/.codegraphcontext/.env`, including values from `cgc config set`).
 5. **System defaults** — hardcoded fallbacks in the package.

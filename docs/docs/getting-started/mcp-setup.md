@@ -72,7 +72,7 @@ Use the following configuration details:
 - **Command**: `cgc`
 - **Arguments**: `mcp start`
 
-*Note: Ensure your database credentials and configurations match what `cgc mcp setup` generated (usually in `~/.codegraphcontext/.env`).*
+*Note: Ensure your database credentials and configurations match what `cgc mcp setup` generated (in `CGC_HOME/.env`, default `~/.codegraphcontext/.env`).*
 
 ---
 

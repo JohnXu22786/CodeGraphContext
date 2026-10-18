@@ -10,6 +10,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from codegraphcontext.api.router import get_server
 from codegraphcontext.server import _strip_workspace_prefix, _apply_response_token_limit
+from codegraphcontext.runtime_paths import get_instance_name
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ async def handle_call_tool(ctx, params) -> CallToolResult:
 
 # Streamable HTTP server (spec 2026-07-28), mounted at /api/v1/mcp in app.py.
 mcp_server = Server(
-    "CodeGraphContext",
+    get_instance_name(),
     version="0.1.0",
     on_list_tools=handle_list_tools,
     on_call_tool=handle_call_tool,

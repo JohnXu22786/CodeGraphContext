@@ -51,6 +51,11 @@ except Exception:
     console = _ConsoleFallback()
 import os
 import yaml
+from codegraphcontext.runtime_paths import (
+    get_cgc_home,
+    get_default_debug_log_path,
+    get_repo_context_path,
+)
 
 
 def _atomic_write_text(path: Path, content: str, *, secure: bool = False) -> None:
@@ -65,8 +70,9 @@ def _atomic_write_text(path: Path, content: str, *, secure: bool = False) -> Non
     if secure:
         os.chmod(path, 0o600)
 
-# Configuration file location
-CONFIG_DIR = Path.home() / ".codegraphcontext"
+# Configuration file location. CGC_HOME lets another installation keep its
+# user configuration, logs, named contexts, bundles, and default databases apart.
+CONFIG_DIR = get_cgc_home()
 CONFIG_FILE = CONFIG_DIR / ".env"
 
 # Keys that pin embedded DB directories; must not bleed across profiles via local .env
@@ -94,7 +100,7 @@ DEFAULT_CONFIG = {
     "INDEX_VARIABLES": "true",
     "ALLOW_DB_DELETION": "false",
     "DEBUG_LOGS": "false",
-    "DEBUG_LOG_PATH": str(Path.home() / "mcp_debug.log"),
+    "DEBUG_LOG_PATH": str(get_default_debug_log_path()),
     "ENABLE_APP_LOGS": "CRITICAL",
     "LIBRARY_LOG_LEVEL": "WARNING",
     "LOG_FILE_PATH": str(CONFIG_DIR / "logs" / "cgc.log"),
@@ -338,7 +344,7 @@ def ensure_config_dir(path: Optional[Path] = None):
 
 
 def ensure_global_cgcignore() -> bool:
-    """Create ``~/.codegraphcontext/global/.cgcignore`` with sensible defaults
+    """Create the global context's ``.cgcignore`` with sensible defaults
     if it does not already exist.  Returns True when a new file was created."""
     cgcignore_path = CONFIG_DIR / "global" / ".cgcignore"
     if cgcignore_path.exists():
@@ -355,7 +361,7 @@ def load_config() -> Dict[str, str]:
     Priority order (highest to lowest):
     1. Environment variables (always highest priority)
     2. Local .env file (ONLY in per-repo mode or when CGC_LOAD_PROJECT_ENV=1)
-    3. Global ~/.codegraphcontext/.env
+    3. Global CGC_HOME/.env (default: ~/.codegraphcontext/.env)
     
     BUG FIX: In global/named context mode, local repo .env files are now properly ignored
     to prevent silent database redirection when working inside cloned repositories.
@@ -419,11 +425,11 @@ def load_config() -> Dict[str, str]:
 
 
 def should_apply_project_dotenv() -> bool:
-    """True when cwd-local ``.codegraphcontext/.env`` should merge with global config.
+    """True when the selected repository context's ``.env`` should merge globally.
 
     Project env is loaded only in **per-repo** context mode (or when
-    ``CGC_LOAD_PROJECT_ENV=1``). In **global** / **named** mode, ``~/.codegraphcontext/.env``
-    wins so clones with a checked-in ``.codegraphcontext/.env`` do not hijack config.
+    ``CGC_LOAD_PROJECT_ENV=1``). In **global** / **named** mode, ``CGC_HOME/.env``
+    wins so clones with a checked-in repository-context ``.env`` do not hijack config.
 
     Set ``CGC_IGNORE_PROJECT_ENV=1`` to force skip; ``CGC_LOAD_PROJECT_ENV=1`` to force load.
     """
@@ -445,7 +451,7 @@ def should_apply_project_dotenv() -> bool:
 def find_local_env() -> Optional[Path]:
     """Find project configuration in the current directory only.
 
-    Prefer ``.codegraphcontext/.env`` to ``.env``. Parent directories are
+    Prefer the selected repository-context ``.env`` to ``.env``. Parent directories are
     deliberately excluded, just as they are for local context resolution:
     starting CGC in one project must not import another project's settings.
     """
@@ -453,7 +459,7 @@ def find_local_env() -> Optional[Path]:
         return None
 
     current = Path.cwd()
-    for candidate in (current / ".codegraphcontext" / ".env", current / ".env"):
+    for candidate in (get_repo_context_path(current) / ".env", current / ".env"):
         if candidate.is_file() and candidate != CONFIG_FILE:
             return candidate
     return None
@@ -461,13 +467,13 @@ def find_local_env() -> Optional[Path]:
 
 def codegraphcontext_dotenv_at_cwd(cwd: Optional[Path] = None) -> Optional[Path]:
     """
-    Return ``<cwd>/.codegraphcontext/.env`` if that file exists, else None.
+    Return the selected repository-context ``.env`` if it exists, else None.
 
     *cwd* defaults to ``Path.cwd()``. Parent directories are **not** searched—same rule as
     local context resolution (``find_local_cgc_dir``).
     """
     root = (cwd or Path.cwd()).resolve()
-    candidate = root / ".codegraphcontext" / ".env"
+    candidate = get_repo_context_path(root) / ".env"
     return candidate if candidate.exists() else None
 
 
@@ -720,7 +726,9 @@ def _print_welcome_banner() -> None:
     console.print()
     console.print("CGC organises your code graphs using [bold]contexts[/bold]:")
     console.print("  [cyan]global[/cyan]    - One shared graph for all projects (default)")
-    console.print("  [cyan]per-repo[/cyan]  - Each repo gets its own .codegraphcontext/ folder")
+    console.print(
+        f"  [cyan]per-repo[/cyan]  - Each repo gets its own {get_repo_context_path(Path('.')).name}/ folder"
+    )
     console.print("  [cyan]named[/cyan]     - Create named workspaces (e.g. cgc index . --context MyProject)")
     console.print()
     console.print("Switch modes anytime:  [dim]cgc context mode <global|per-repo|named>[/dim]")
@@ -842,7 +850,7 @@ class ContextInfo:
 
 @dataclass
 class ContextConfig:
-    """Top-level structure stored in ~/.codegraphcontext/config.yaml."""
+    """Top-level structure stored in CGC_HOME/config.yaml."""
     version: int = 1
     mode: str = "global"                 # global | per-repo | named
     default_context: str = ""           # used when mode=named and no --context flag
@@ -860,7 +868,7 @@ _LEGACY_FALKORDB_PATH = CONFIG_DIR / "global" / "falkordb.db"
 def _default_global_db_path(database: str) -> str:
     """Return the canonical DB path for the global context.
 
-    New layout: ``~/.codegraphcontext/global/db/<backend>/``
+    New layout: ``CGC_HOME/global/db/<backend>/`` (default CGC_HOME is ~/.codegraphcontext)
     For backward-compat, we check:
     1. CGC_RUNTIME_DB_PATH environment variable (highest priority — works for all DBs)
     2. FALKORDB_PATH in config (if database is falkordb)
@@ -895,7 +903,7 @@ def _migrate_legacy_config_yaml() -> None:
 
 def load_context_config() -> ContextConfig:
     """
-    Load ~/.codegraphcontext/config.yaml.
+    Load CGC_HOME/config.yaml (default: ~/.codegraphcontext/config.yaml).
     Returns a ContextConfig with defaults if the file does not exist.
     """
     _migrate_legacy_config_yaml()
@@ -936,7 +944,7 @@ def load_context_config() -> ContextConfig:
 
 
 def save_context_config(cfg: ContextConfig) -> None:
-    """Persist ContextConfig to ~/.codegraphcontext/config.yaml."""
+    """Persist ContextConfig to CGC_HOME/config.yaml."""
     ensure_config_dir()
 
     contexts_raw: Dict[str, Any] = {}
@@ -984,19 +992,19 @@ class ResolvedContext:
     database: str         # neo4j | falkordb | kuzudb
     db_path: str          # absolute path to the DB directory
     cgcignore_path: str   # path to the applicable .cgcignore
-    is_local: bool = False  # True when a local .codegraphcontext/ was found
+    is_local: bool = False  # True when a repository-local context was found
 
 
 def find_local_cgc_dir(start: Optional[Path] = None) -> Optional[Path]:
     """
-    Check *start* (default: cwd) for a ``.codegraphcontext/`` directory that
-    belongs to a repo (i.e. is NOT the global ``~/.codegraphcontext``).
+    Check *start* (default: cwd) for the selected repository-context directory
+    (i.e. not the global CGC_HOME).
     Returns the directory path or None.
     """
     current = start or Path.cwd()
     global_dir = CONFIG_DIR.resolve()
 
-    candidate = current / ".codegraphcontext"
+    candidate = get_repo_context_path(current)
     if candidate.exists() and candidate.resolve() != global_dir:
         return candidate
     return None
@@ -1015,7 +1023,7 @@ def resolve_context(
 
     Resolution order (highest priority first):
       1. --context <name>  CLI flag
-      2. Local .codegraphcontext/ directory (per-repo)
+      2. Local repository-context directory (default .codegraphcontext)
       3. Global config.yaml: mode + default_context
       4. Ultimate fallback: global mode, default DB
     """
@@ -1038,12 +1046,12 @@ def resolve_context(
             cgcignore_path=ctx.cgcignore_path,
         )
 
-    # --- 2. Local .codegraphcontext/ in repo (per-repo mode only) ---
+    # --- 2. Repository-local context directory (per-repo mode only) ---
     local_cgc = find_local_cgc_dir(cwd) if cfg.mode == "per-repo" else None
     
     # If we are in per-repo mode and no local folder was found, create it in CWD
     if local_cgc is None and cfg.mode == "per-repo":
-        local_cgc = cwd / ".codegraphcontext"
+        local_cgc = get_repo_context_path(cwd)
         local_cgc.mkdir(parents=True, exist_ok=True)
         (local_cgc / "db").mkdir(exist_ok=True)
 
@@ -1255,9 +1263,9 @@ def list_contexts() -> List[ContextInfo]:
 
 @dataclass
 class DiscoveredContext:
-    """A .codegraphcontext folder found in a child directory."""
+    """A repository-context folder found in a child directory."""
     path: str            # absolute path to the parent repo directory
-    cgc_path: str        # absolute path to the .codegraphcontext directory
+    cgc_path: str        # absolute path to the repository-context directory
     repo_name: str       # name of the parent directory
     database: str        # backend from local config.yaml, or default
     db_path: str         # resolved db path
@@ -1269,10 +1277,10 @@ def discover_child_contexts(
     max_depth: int = 1,
 ) -> List[DiscoveredContext]:
     """Walk child directories of *start* up to *max_depth* levels looking for
-    ``.codegraphcontext/`` folders that represent per-repo databases.
+    repository-context folders that represent per-repo databases.
 
     Returns a list of :class:`DiscoveredContext` for each match found.
-    The global ``~/.codegraphcontext`` is always excluded.
+    The selected global CGC_HOME is always excluded.
     """
     start = (start or Path.cwd()).resolve()
     global_dir = CONFIG_DIR.resolve()
@@ -1288,7 +1296,7 @@ def discover_child_contexts(
         for entry in entries:
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
-            candidate = entry / ".codegraphcontext"
+            candidate = get_repo_context_path(entry)
             if candidate.exists() and candidate.is_dir() and candidate.resolve() != global_dir:
                 local_db = "falkordb"
                 local_yaml = candidate / "config.yaml"
@@ -1361,7 +1369,7 @@ def get_workspace_mapping(cwd: Path) -> Optional[Dict[str, str]]:
 
 
 def save_workspace_mapping(cwd: Path, context_path: Path) -> None:
-    """Persist an association from *cwd* to a ``.codegraphcontext`` directory."""
+    """Persist an association from *cwd* to a repository-context directory."""
     context_path = context_path.resolve()
     local_db = "falkordb"
     local_yaml = context_path / "config.yaml"
