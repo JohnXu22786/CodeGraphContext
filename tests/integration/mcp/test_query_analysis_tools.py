@@ -494,30 +494,40 @@ def test_find_java_spring_beans_returns_service_stereotype(mcp_graph):
         "find_java_spring_beans",
         {"stereotype": "service", "repo_path": str(mcp_graph["repo"])},
     )
-    if "error" in result:
-        assert "spring_stereotype" in result["error"]
-        result = _call(
-            _falkor_server(mcp_graph),
+
+    assert result.get("success") is True, result
+    assert any(row["name"] == "OrderService" and row["stereotype"] == "SERVICE" for row in result["beans"])
+
+    falkor_server = mcp_graph["falkor_server"]
+    if falkor_server is not None:
+        falkor_result = _call(
+            falkor_server,
             "find_java_spring_beans",
             {"stereotype": "service", "repo_path": str(mcp_graph["repo"])},
         )
-
-    assert result["success"] is True
-    assert any(row["name"] == "OrderService" and row["stereotype"] == "SERVICE" for row in result["beans"])
+        assert falkor_result["success"] is True
+        assert any(row["name"] == "OrderService" and row["stereotype"] == "SERVICE" for row in falkor_result["beans"])
 
 
 def test_find_java_spring_beans_returns_no_rows_for_unknown_stereotype(mcp_graph):
-    server = mcp_graph["falkor_server"] or mcp_graph["server"]
     result = _call(
-        server,
+        mcp_graph["server"],
         "find_java_spring_beans",
         {"stereotype": "not-a-stereotype", "repo_path": str(mcp_graph["repo"])},
     )
 
-    if "error" in result and "spring_stereotype" in result["error"]:
-        pytest.skip("Kùzu cannot bind the Spring stereotype property on the current graph schema")
-    assert result["success"] is True
+    assert result.get("success") is True, result
     assert result["count"] == 0
+
+    falkor_server = mcp_graph["falkor_server"]
+    if falkor_server is not None:
+        falkor_result = _call(
+            falkor_server,
+            "find_java_spring_beans",
+            {"stereotype": "not-a-stereotype", "repo_path": str(mcp_graph["repo"])},
+        )
+        assert falkor_result["success"] is True
+        assert falkor_result["count"] == 0
 
 
 def test_find_datasource_nodes_returns_disposable_fixture_metadata(mcp_graph):
