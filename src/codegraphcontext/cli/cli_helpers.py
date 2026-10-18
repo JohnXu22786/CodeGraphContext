@@ -23,6 +23,12 @@ from rich.progress import (
 )
 
 from ..core import get_database_manager
+from ..core.database_ownership import (
+    DatabaseOwnershipError,
+    GatewayRequestError,
+    GatewayUnavailableError,
+    find_active_gateway,
+)
 from ..core.jobs import JobManager
 from ..tools.code_finder import CodeFinder
 from ..tools.graph_builder import GraphBuilder, PARSER_EXTENSIONS
@@ -72,6 +78,46 @@ def _kuzu_fallback_path(ctx: ResolvedContext) -> Optional[str]:
         return _default_global_db_path("kuzudb")
     except Exception:
         return None
+
+
+def _embedded_gateway_candidates(
+    database_path: Optional[str], backend: Optional[str]
+) -> list[tuple[str, str]]:
+    """Return effective embedded paths that the configured backend can use.
+
+    The database manager factory can fall back from FalkorDB Lite to KùzuDB or
+    LadybugDB, and from KùzuDB to LadybugDB. Resolve those same local paths
+    before opening a CLI manager so it can find the gateway that owns a fallback
+    database.
+    """
+    if not database_path:
+        return []
+
+    requested = (backend or "").lower()
+    if requested in {"neo4j", "nornic", "falkordb-remote"}:
+        return []
+
+    fallbacks = {
+        "falkordb": ("kuzudb", "ladybugdb"),
+        "kuzudb": ("ladybugdb",),
+        "ladybugdb": (),
+        "": ("kuzudb", "ladybugdb"),
+    }
+    if requested not in fallbacks:
+        return []
+    if not requested and os.getenv("FALKORDB_HOST"):
+        return []
+
+    from ..core import _fallback_db_path_for
+
+    candidates: list[tuple[str, str]] = []
+    if requested in {"kuzudb", "ladybugdb"}:
+        candidates.append((database_path, requested))
+    for fallback_backend in fallbacks[requested]:
+        fallback_path = _fallback_db_path_for(database_path, fallback_backend)
+        if fallback_path:
+            candidates.append((fallback_path, fallback_backend))
+    return candidates
 
 
 def _print_call_resolution_diagnostics(graph_builder: GraphBuilder, limit: int = 5) -> None:
@@ -188,6 +234,13 @@ def _initialize_services(
     try:
         db_manager.get_driver()
     except Exception as e:
+        if isinstance(e, DatabaseOwnershipError):
+            if console.quiet:
+                typer.echo(f"Database Ownership Error: {e}", err=True)
+            else:
+                console.print(f"[bold red]Database Ownership Error:[/bold red] {e}")
+            _fail_services_init()
+
         # Check if this is a FalkorDB failure that should trigger a KùzuDB fallback
         from ..core.database_falkordb import FalkorDBUnavailableError
         if isinstance(e, FalkorDBUnavailableError):
@@ -959,6 +1012,57 @@ def reindex_helper(path: str, context: Optional[str] = None, no_progress: bool =
         raise typer.Exit(code=1)
 
     index_cwd = path_obj if path_obj.is_dir() else path_obj.parent
+    # A live embedded gateway owns its database. Resolve the same context that
+    # the local path below would use before constructing any CLI DB services,
+    # then submit the update to that owner when its registration is verified.
+    ensure_first_run_bootstrap()
+    try:
+        gateway_ctx = resolve_context(context, cwd=index_cwd)
+    except ContextNotFoundError:
+        gateway_ctx = None
+    if gateway_ctx is not None:
+        if (
+            gateway_ctx.database
+            and not os.getenv("CGC_RUNTIME_DB_TYPE")
+            and not os.getenv("DEFAULT_DATABASE")
+        ):
+            os.environ["DEFAULT_DATABASE"] = gateway_ctx.database
+        backend = (
+            os.getenv("CGC_RUNTIME_DB_TYPE")
+            or os.getenv("DEFAULT_DATABASE")
+            or gateway_ctx.database
+            or ""
+        ).lower()
+        database_path = os.getenv("CGC_RUNTIME_DB_PATH") or gateway_ctx.db_path
+        registration = None
+        for candidate_path, candidate_backend in _embedded_gateway_candidates(
+            database_path, backend
+        ):
+            registration = find_active_gateway(candidate_path, candidate_backend)
+            if registration is not None:
+                break
+        if registration is not None:
+            console.print(
+                f"[cyan]Delegating re-index to active gateway at "
+                f"{registration.endpoint}...[/cyan]"
+            )
+            try:
+                registration.update_repository(
+                    path_obj, cgcignore_path=gateway_ctx.cgcignore_path
+                )
+            except GatewayUnavailableError:
+                # The endpoint was live during discovery but failed before
+                # the operation completed. The subsequent lease attempt
+                # remains authoritative and fails safely if the owner is
+                # still holding the database.
+                pass
+            except GatewayRequestError as exc:
+                console.print(f"[bold red]Gateway update failed:[/bold red] {exc}")
+                raise typer.Exit(code=1)
+            else:
+                console.print(f"[green]Successfully re-indexed through gateway: {path}[/green]")
+                return
+
     services = _initialize_services(context, cwd=index_cwd)
     if not all(services[:3]):
         _fail_services_init()

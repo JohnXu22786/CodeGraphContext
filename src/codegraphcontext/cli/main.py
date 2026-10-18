@@ -1333,9 +1333,19 @@ def api_start(
     Claude, or web frontends to interact with the CodeGraphContext graph.
     """
     import uvicorn
+    from ..core.database_ownership import local_gateway_endpoint
+
     console.print(f"[bold green]Starting CGC Gateway on {host}:{port}...[/bold green]")
     _load_credentials()
-    uvicorn.run("codegraphcontext.api.app:app", host=host, port=port, reload=reload)
+    prior_endpoint = os.environ.get("CGC_GATEWAY_ENDPOINT")
+    os.environ["CGC_GATEWAY_ENDPOINT"] = local_gateway_endpoint(host, port) or ""
+    try:
+        uvicorn.run("codegraphcontext.api.app:app", host=host, port=port, reload=reload)
+    finally:
+        if prior_endpoint is None:
+            os.environ.pop("CGC_GATEWAY_ENDPOINT", None)
+        else:
+            os.environ["CGC_GATEWAY_ENDPOINT"] = prior_endpoint
 
 
 
