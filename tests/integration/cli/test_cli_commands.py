@@ -685,6 +685,9 @@ class TestNeo4jDatabaseNameCLI:
             "NEO4J_PASSWORD": "password",
             "NEO4J_DATABASE": "mydb",
             "DEFAULT_DATABASE": "neo4j",
+            # The credential loader is mocked below, so set the selected backend
+            # directly instead of inheriting a previous test's selection.
+            "CGC_SELECTED_DATABASE": "neo4j",
         }
         with patch.dict(os.environ, env, clear=False):
             with patch("codegraphcontext.cli.main._load_credentials"):
