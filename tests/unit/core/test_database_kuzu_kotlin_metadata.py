@@ -992,6 +992,33 @@ def test_visibility_modifiers_decorators_migrate_onto_pre_existing_kuzu_db(tmp_p
         manager.close_driver()
 
 
+def test_spring_stereotype_migrates_onto_pre_existing_kuzu_db(tmp_path):
+    """Existing Class tables need the Spring column as well as new databases."""
+    db_path = tmp_path / "pre-existing-spring-stereotype-db"
+
+    db = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    conn.execute(
+        "CREATE NODE TABLE Class(uid STRING, name STRING, path STRING, "
+        "line_number INT64, PRIMARY KEY (uid))"
+    )
+    conn.close()
+    db.close()
+
+    manager = _fresh_kuzu_manager(db_path)
+    try:
+        driver = manager.get_driver()
+        with driver.session() as session:
+            class_columns = {
+                row["name"]
+                for row in session.run("CALL TABLE_INFO('Class') RETURN *").data()
+            }
+
+        assert "spring_stereotype" in class_columns
+    finally:
+        manager.close_driver()
+
+
 def test_interface_object_visibility_modifiers_persist_in_kuzu(tmp_path):
     """The Kotlin parser sets visibility/modifiers on interfaces and objects
     too (e.g. `internal interface Repo`, `private object Holder`), not just
