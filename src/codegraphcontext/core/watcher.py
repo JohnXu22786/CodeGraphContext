@@ -246,14 +246,17 @@ class RepositoryEventHandler(FileSystemEventHandler):
                     action,
                 )
 
-            if self._worker_thread is None:
-                self._worker_thread = threading.Thread(
-                    target=self._process_pending_events,
-                    name=f"cgc-watcher-{id(self):x}",
-                    daemon=True,
-                )
-                self._worker_thread.start()
+            self._ensure_worker_locked()
             self._event_condition.notify()
+
+    def _ensure_worker_locked(self) -> None:
+        if self._worker_thread is None:
+            self._worker_thread = threading.Thread(
+                target=self._process_pending_events,
+                name=f"cgc-watcher-{id(self):x}",
+                daemon=True,
+            )
+            self._worker_thread.start()
 
     def _require_disk_resync(self) -> None:
         """Collapse pending actions and reconcile disk after an event failure."""
@@ -265,6 +268,7 @@ class RepositoryEventHandler(FileSystemEventHandler):
             self._resync_required = True
             self._resync_retry_at = 0.0
             self._resync_retry_delay = self.RESYNC_RETRY_INITIAL_DELAY_SECONDS
+            self._ensure_worker_locked()
             self._event_condition.notify_all()
 
     def _process_pending_events(self) -> None:
@@ -555,6 +559,9 @@ class RepositoryEventHandler(FileSystemEventHandler):
 
     def on_moved(self, event):
         if event.is_directory:
+            endpoints = [getattr(event, name, None) for name in ("src_path", "dest_path")]
+            if not all(path and self._should_ignore(path) for path in endpoints):
+                self._require_disk_resync()
             return
         # Both endpoints matter. Only dest_path was handled, so the node for
         # the *old* path and all of its symbols stayed in the graph forever:

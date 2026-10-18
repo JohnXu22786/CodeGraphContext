@@ -67,16 +67,32 @@ def test_on_moved_handles_both_endpoints(tmp_path):
     ], "the destination must be indexed before callers of the source are relinked"
 
 
-def test_on_moved_ignores_directories(tmp_path):
+def test_on_moved_directory_schedules_disk_resync(tmp_path):
     handler = _handler(tmp_path)
-    seen = []
-    handler._debounce = lambda path, action: seen.append(path)
+    sync_started = threading.Event()
+    finish_sync = threading.Event()
 
-    handler.on_moved(SimpleNamespace(
-        is_directory=True, src_path=str(tmp_path / "a"), dest_path=str(tmp_path / "b")
-    ))
+    def synchronize_with_disk():
+        sync_started.set()
+        finish_sync.wait(timeout=5)
 
-    assert seen == []
+    handler.synchronize_with_disk = synchronize_with_disk
+    worker = None
+    try:
+        handler.on_moved(SimpleNamespace(
+            is_directory=True,
+            src_path=str(tmp_path / "a"),
+            dest_path=str(tmp_path / "b"),
+        ))
+
+        assert sync_started.wait(timeout=2), "directory move did not schedule disk reconciliation"
+        assert handler._resync_required
+        worker = handler._worker_thread
+    finally:
+        finish_sync.set()
+        handler.stop()
+
+    assert worker is not None and not worker.is_alive()
 
 
 def test_handle_removal_relinks_callers_of_the_removed_file(tmp_path):
@@ -144,9 +160,22 @@ def test_modification_relinks_importers_of_a_new_definition(tmp_path):
 def test_handle_removal_survives_a_failing_delete(tmp_path):
     handler = _handler(tmp_path)
     handler.graph_builder.update_file_in_graph.side_effect = RuntimeError("boom")
+    sync_started = threading.Event()
+    finish_sync = threading.Event()
 
-    handler._handle_removal(str(tmp_path / "x.py"))   # must not raise
-    assert handler._resync_required, "a failed removal must request disk reconciliation"
+    def synchronize_with_disk():
+        sync_started.set()
+        finish_sync.wait(timeout=5)
+
+    handler.synchronize_with_disk = synchronize_with_disk
+
+    try:
+        handler._handle_removal(str(tmp_path / "x.py"))   # must not raise
+        assert sync_started.wait(timeout=2), "failed removal did not start a recovery worker"
+        assert handler._resync_required, "a failed removal must request disk reconciliation"
+    finally:
+        finish_sync.set()
+        handler.stop()
 
 
 def test_move_destination_failure_requests_disk_resync(tmp_path):
