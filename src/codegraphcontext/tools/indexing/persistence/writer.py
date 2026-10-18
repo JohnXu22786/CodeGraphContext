@@ -99,8 +99,10 @@ def _normalize_prefix(p) -> str:
     return _normalize_path(p) + "/"
 
 
-def _module_specifier_matches_path(importer_path: str, specifier: str, target_path: Path) -> bool:
-    """Match a Python or JS/TS relative module specifier to a changed source file."""
+def _module_specifier_matches_path(
+    importer_path: str, specifier: str, target_path: Path, repo_path: Path
+) -> bool:
+    """Match a Python or JS/TS module specifier to a changed source file."""
     if not specifier or not (specifier.startswith(".") or specifier.startswith("/")):
         return False
 
@@ -123,9 +125,15 @@ def _module_specifier_matches_path(importer_path: str, specifier: str, target_pa
             if target in python_paths:
                 return True
 
-    specifier_path = Path(specifier)
-    if not specifier_path.is_absolute():
-        specifier_path = importer.parent / specifier_path
+    if (
+        importer.suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
+        and specifier.startswith("/")
+    ):
+        specifier_path = Path(repo_path) / specifier.lstrip("/")
+    else:
+        specifier_path = Path(specifier)
+        if not specifier_path.is_absolute():
+            specifier_path = importer.parent / specifier_path
     resolved_specifier = specifier_path.resolve()
     resolved_target = Path(target_path).resolve()
     if resolved_specifier == resolved_target:
@@ -2603,7 +2611,7 @@ DETACH DELETE r, n
     def get_importer_file_paths(
         self, names: set[str], repo_path: Path, changed_path: Path
     ) -> set:
-        """Return files importing changed symbols or the changed relative module."""
+        """Return files importing changed symbols or the changed module path."""
         prefix = _normalize_prefix(repo_path)
         backend = get_backend_type(self.driver, self._db_manager)
 
@@ -2635,7 +2643,9 @@ DETACH DELETE r, n
                     importer_paths.add(importer_path)
                     continue
                 if any(
-                    _module_specifier_matches_path(importer_path, specifier, changed_path)
+                    _module_specifier_matches_path(
+                        importer_path, specifier, changed_path, repo_path
+                    )
                     for specifier in (*module_names, imported_name)
                     if specifier
                 ):
