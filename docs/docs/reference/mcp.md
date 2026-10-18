@@ -1,6 +1,6 @@
 # MCP Tool Reference
 
-When running the CodeGraphContext (CGC) MCP server, it registers a suite of **25 JSON-RPC tools** that AI assistants can use to analyze and query the code graph.
+When running the CodeGraphContext (CGC) MCP server, it registers a suite of **29 JSON-RPC tools** that AI assistants can use to analyze and query the code graph.
 
 ---
 
@@ -39,6 +39,9 @@ Removes a repository's code structures from the graph.
 
 ### `list_indexed_repositories`
 Returns a list of all repositories stored in the active database.
+
+### `list_graphs`
+Lists graphs available in the current FalkorDB instance. This tool takes no parameters. Backends without graph-list support return an unsupported message.
 
 ### `get_repository_stats`
 Retrieves ingestion metrics (counts of files, functions, classes, modules).
@@ -192,3 +195,23 @@ Returns ingested MySQL, Cassandra, or Redis schema nodes.
   - `kind` (string, optional): Datasource kind (`mysql`, `cassandra`, `redis`).
   - `name` (string, optional): Substring filter for names.
   - `include_columns` (boolean, optional): Appends table columns/key patterns (default: false).
+
+### `simulate_metrics`
+Calculates repository architecture metrics, including coupling, cohesion, circular dependencies, complexity, and maintainability.
+- **Parameters**:
+  - `repo_path` (string, optional): Repository path; defaults to the current workspace.
+  - `context` (string, optional): Present in the input schema, but the current server handler uses its active database connection and does not use this field to select a context.
+
+### `simulate_architectural_change`
+Compares baseline and simulated architecture metrics after applying a list of proposed graph changes.
+- **Parameters**:
+  - `repo_path` (string, optional): Repository path; defaults to the current workspace.
+  - `changes` (array, required): Simulation steps with a `type` of `decompose`, `remove_dependency`, `add_dependency`, or `remove_node`. Steps can include `mapping`, `source`, `target`, `rel_type`, or `node_id`, as appropriate.
+  - `context` (string, optional): Present in the input schema, but the current server handler uses its active database connection and does not use this field to select a context.
+
+### `analyze_architectural_evolution`
+Reports repository growth trends and technical-debt hotspots using code complexity and Git commit churn.
+- **Parameters**:
+  - `repo_path` (string, optional): Repository path; defaults to the current workspace.
+  - `commits` (integer, optional): Number of commits to analyze (default: 50).
+  - `context` (string, optional): Present in the input schema, but the current server handler uses its active database connection and does not use this field to select a context.

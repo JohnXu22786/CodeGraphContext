@@ -36,6 +36,7 @@ nav:
     - Indexing Codebases: guides/indexing.md
     - Configuration Contexts: guides/contexts.md
     - Side-by-Side Installations: guides/side-by-side-installations.md
+    - Migrate from legacy CodeGraph: guides/migration-from-codegraph.md
     - Portable CGC Bundles: guides/bundles.md
     - Interactive Visualization: guides/visualization.md
     - Datasource Indexing: guides/datasource-indexing.md

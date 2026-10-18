@@ -229,4 +229,21 @@ These are F1 evidence states, not claims that an upstream issue is currently ope
 
 ## F1 completion boundary
 
-The source inventory, line references, sample fixtures, test references, environment, and issue evidence are recorded here. Runtime parity is not implied: no existing tests or product commands could run because the host lacks the project and development dependencies. F1 adds no product behavior, dependencies, test files, or user data. The next full language/backend/protocol acceptance remains F3's responsibility.
+The source inventory, line references, sample fixtures, test references, environment, and issue evidence are recorded here. Runtime parity is not implied: no existing tests or product commands could run because the host lacks the project and development dependencies. F1 adds no product behavior, dependencies, test files, or user data. At F1 completion, the full language/backend/protocol acceptance assigned to F3 was still pending; its later results are summarized below.
+
+## F3 verification update
+
+F1 is a source and test baseline; its “not run” results describe that F1 environment. F3 later ran bounded verification against the fork. The summary below keeps source inventory, exercised behavior, partial tool evidence, and unverified backends separate.
+
+| Evidence area | F3 result | Boundary |
+| --- | --- | --- |
+| Source and dispatch inventory | The 29 definitions, 29 dispatcher entries, and wrapper methods matched. A stubbed dispatch smoke reached all 29 wrappers. | This verifies catalog and dispatch wiring, not the runtime behavior of all 29 tools. |
+| Combined test coverage | The collected 1,844 items are accounted for across separate invocations: 1,836 passed, 8 skipped, and 0 failed. The first fast-suite invocation was interrupted after 1,769 passed; the disjoint remainder was run separately. | The total is a combined result, not one uninterrupted fast-suite exit. |
+| Parser goldens | All 22 committed golden directories passed without updates. | This is the exercised golden set, not exhaustive coverage of every parser option. |
+| MCP behavior | A real stdio MCP <code>tools/call</code> to <code>find_code</code> returned an indexed symbol from a scratch repository. | This is one bounded end-to-end MCP path. |
+| Partial MCP tool evidence | Twenty-one tools had underlying handler, unit, CLI, contract, or related behavior evidence; see their individual entries in the [MCP tool matrix](#mcp-tool-matrix). | These are partial results below the MCP wrapper or on selected paths, not end-to-end verification of those tools. |
+| MCP behavior not run | Seven tools had no behavior test: <code>add_package_to_graph</code>, <code>visualize_graph_query</code>, <code>list_watched_paths</code>, <code>unwatch_directory</code>, <code>search_registry_bundles</code>, <code>discover_codegraph_contexts</code>, and <code>list_graphs</code>. | A route smoke alone does not count as behavior evidence. |
+| Embedded database consistency | KuzuDB, LadybugDB, and FalkorDB Lite indexed a disposable fixture copy. Counts matched for all eight node labels and seven relationship types, with additional CALLS and CONTAINS identity checks. An isolated KuzuDB context, indexing, query, and list workflow passed. | This is bounded fixture coverage for the three embedded backends. |
+| Other database backends | — | Neo4j was intentionally skipped; Nornic and remote FalkorDB were not contacted. All three remain unverified by F3. |
+
+The F3 run found no database mismatch in the three embedded backends. It did not functionally test all 29 MCP tools end-to-end, nor establish live registry behavior or remote-backend parity. Use the [migration guide](../guides/migration-from-codegraph.md#feature-support-and-verification-boundary) for the practical migration implications of these limits.
