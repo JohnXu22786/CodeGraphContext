@@ -1,7 +1,7 @@
 """Tests for API /health endpoint (BUG-008)."""
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, RLock
 from types import SimpleNamespace
 
 import pytest
@@ -169,6 +169,7 @@ def test_ownership_handshake_stays_responsive_during_update_prework(
     class FakeServer:
         db_manager = FakeManager()
         code_finder = BlockingCodeFinder()
+        _context_transition_lock = RLock()
 
         class ResolvedContext:
             cgcignore_path = str(tmp_path / ".cgcignore")

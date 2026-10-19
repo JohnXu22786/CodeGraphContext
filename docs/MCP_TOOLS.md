@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-This document describes the Model Context Protocol (MCP) tools exposed by CodeGraphContext **0.7.0**. The server registers the full catalog defined in `src/codegraphcontext/tool_definitions.py` (the same tools the CLI graph operations rely on). MCP `tools/list` returns **29** tool definitions; a workspace can hide tools through `mcp.json` and the subsections below enumerate each one.
+This document describes the Model Context Protocol (MCP) tools exposed by CodeGraphContext **0.7.0**. The server registers the full catalog defined in `src/codegraphcontext/tool_definitions.py` (the same tools the CLI graph operations rely on). MCP `tools/list` returns **30** tool definitions; a workspace can hide tools through `mcp.json` and the subsections below enumerate each one.
 
 The Python distribution release version is managed in package metadata. MCP `initialize.serverInfo.version` is separate server metadata and is currently **0.1.0** for both stdio and HTTP transports.
 
@@ -64,14 +64,16 @@ Point the MCP session at a different `.codegraphcontext` database (repository ro
 
 One-time scan of a local folder to add code to the graph (libraries, dependencies, or projects not under active watch).
 
-- **Args:** `path` (string), `is_dependency` (boolean)
+- **Args:** `path` (string), `is_dependency` (boolean), `timeout_seconds` (positive number, optional)
 - **Returns:** Job ID
+
+`timeout_seconds` bounds the job's runtime. If it expires during a database call, the server waits for that call to finish, stops at the next safe boundary, and removes the incomplete repository graph before marking the job `cancelled`. The final ready-marker write is the commit point: if it starts before the deadline and succeeds, the job completes even if the write crosses the deadline. If cleanup itself fails, the job reports `failed` and the partial repository stays out of indexed-repository lists. While any repository is building, graph search and read-only Cypher tools report that indexing is in progress instead of returning partial graph results.
 
 ### `add_package_to_graph`
 
 Add an external package by resolving its install location.
 
-- **Args:** `package_name` (string), `language` (string), `is_dependency` (boolean)
+- **Args:** `package_name` (string), `language` (string), `is_dependency` (boolean), `timeout_seconds` (positive number, optional)
 - **Returns:** Job ID
 - **Supported languages:** python, javascript, typescript, java, c, go, ruby, php, cpp
 
@@ -247,6 +249,15 @@ Poll a single job.
 
 Failed jobs expose the same `error_type` and bounded `traceback` fields as
 `list_jobs`, so clients can inspect the cause without access to server logs.
+
+### `cancel_indexing_job`
+
+Request cancellation of a pending or running indexing job and wait until its worker has stopped and incomplete graph data has been removed.
+
+- **Args:** `job_id` (string)
+- **Returns:** Cancellation result and final job status
+
+Database drivers do not expose a portable way to interrupt an active write call. The server waits for the call to finish, stops at the next safe boundary, removes the repository's incomplete graph, and then reports `cancelled`. The final ready-marker write is the commit point: if it succeeds, completion wins cancellation requests and deadlines that arrive during that write. If cleanup fails, the job reports `failed` and the partial repository stays out of indexed-repository lists. While any repository is building, graph search and read-only Cypher tools report that indexing is in progress instead of returning partial graph results. Repeated requests are safe; a completed or failed job keeps its existing terminal status.
 
 ---
 

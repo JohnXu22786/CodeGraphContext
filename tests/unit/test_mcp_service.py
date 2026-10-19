@@ -4,6 +4,7 @@ import io
 import json
 import re
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -103,6 +104,202 @@ async def test_registered_tool_dispatch_and_utf8_payload_match_across_transports
     assert all(call.kwargs == args for call in handler.call_args_list)
 
 
+def test_stdio_cancellation_tracking_does_not_require_task_cancelling_method():
+    class Python310Task:
+        def __init__(self):
+            self.cancel_calls = 0
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancel_calls += 1
+            return True
+
+    task = Python310Task()
+    active_requests = {"request-1": task}
+    cancelling_requests = set()
+
+    server_module._cancel_stdio_tool_request(
+        "request-1", active_requests, cancelling_requests
+    )
+    server_module._cancel_stdio_tool_request(
+        "request-1", active_requests, cancelling_requests
+    )
+
+    assert task.cancel_calls == 1
+    assert cancelling_requests == {"request-1"}
+
+
+@pytest.mark.asyncio
+async def test_stdio_cancellation_notification_cancels_active_tool_request(monkeypatch):
+    handler_started = threading.Event()
+    release_handler = threading.Event()
+    allow_notification = threading.Event()
+    cancellation_started = threading.Event()
+    allow_repeat_notification = threading.Event()
+    allow_cancel_cleanup = asyncio.Event()
+    job_cancelled = threading.Event()
+
+    class CancellationInput:
+        def __init__(self):
+            self._read_count = 0
+
+        def readline(self):
+            self._read_count += 1
+            if self._read_count == 1:
+                return json.dumps(_call_body("add_code_to_graph", {})) + "\n"
+            if self._read_count == 2:
+                assert allow_notification.wait(timeout=5), "test did not release cancellation notification"
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/cancelled",
+                        "params": {"requestId": 1, "reason": "test cancellation"},
+                    }
+                ) + "\n"
+            if self._read_count == 3:
+                assert allow_repeat_notification.wait(timeout=5), "test did not release repeated cancellation notification"
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/cancelled",
+                        "params": {"requestId": 1, "reason": "repeated test cancellation"},
+                    }
+                ) + "\n"
+            return ""
+
+    class JobManager:
+        async def cancel_job_async(self, job_id):
+            assert job_id == "job-1"
+            cancellation_started.set()
+            await allow_cancel_cleanup.wait()
+            job_cancelled.set()
+            return {"success": True, "cancelled": True}
+
+    def add_code_to_graph_tool(**_args):
+        handler_started.set()
+        assert release_handler.wait(timeout=5), "test did not release the blocking tool handler"
+        return {"success": True, "job_id": "job-1"}
+
+    server = _server()
+    server.add_code_to_graph_tool = add_code_to_graph_tool
+    server.job_manager = JobManager()
+    stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", CancellationInput())
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    run_task = asyncio.create_task(MCPServer._run_loop(server, asyncio.get_running_loop()))
+    try:
+        assert await asyncio.to_thread(handler_started.wait, 5), "tool handler did not start"
+        allow_notification.set()
+        await asyncio.sleep(0.05)
+        release_handler.set()
+        assert await asyncio.to_thread(cancellation_started.wait, 5), "request cancellation did not reach its indexing job"
+        allow_repeat_notification.set()
+        await asyncio.sleep(0.05)
+    finally:
+        allow_cancel_cleanup.set()
+        release_handler.set()
+
+    await run_task
+    assert job_cancelled.is_set(), "stdio cancellation did not cancel the scheduled indexing job"
+    responses = [json.loads(line) for line in stdout.getvalue().splitlines() if line.startswith("{")]
+    assert responses == [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32800, "message": "Request cancelled"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_context_switch_waits_until_indexing_registers_job(monkeypatch):
+    from codegraphcontext.core.jobs import JobManager
+
+    server = _server()
+    jobs = JobManager()
+    server.job_manager = jobs
+    server.loop = asyncio.get_running_loop()
+    server._graph_builder = object()
+    server.list_indexed_repositories_tool = Mock(return_value={"repositories": []})
+    server._context_transition_lock = threading.RLock()
+    server._stop_current_watcher = Mock(return_value=False)
+    server._close_db_manager_for_context_switch = Mock(
+        return_value={"error": "context switch passed the active-job check"}
+    )
+    handler_started = threading.Event()
+    release_handler = threading.Event()
+
+    def prepare_index(_graph_builder, job_manager, _loop, _list_repos_func, **_args):
+        handler_started.set()
+        assert release_handler.wait(timeout=2)
+        job_id = job_manager.create_job("/tmp/index-request")
+        return {"success": True, "job_id": job_id}
+
+    monkeypatch.setattr(server_module.indexing_handlers, "add_code_to_graph", prepare_index)
+    index_request = asyncio.create_task(
+        server.handle_tool_call("add_code_to_graph", {"path": "/tmp/index-request"})
+    )
+    assert await asyncio.to_thread(handler_started.wait, 2)
+
+    switch_request = asyncio.create_task(
+        server.handle_tool_call("switch_context", {"context_path": "global"})
+    )
+    await asyncio.sleep(0.05)
+    switch_waited_for_registration = not switch_request.done()
+    release_handler.set()
+    index_result = await index_request
+    switch_result = await switch_request
+
+    assert switch_waited_for_registration
+    assert switch_result["active_jobs"][0]["job_id"] == index_result["job_id"]
+
+
+@pytest.mark.asyncio
+async def test_local_update_registers_job_under_context_transition_gate(monkeypatch, tmp_path):
+    from codegraphcontext.api import router
+    from codegraphcontext.core.jobs import JobManager
+
+    server = _server()
+    jobs = JobManager()
+    server.job_manager = jobs
+    server.loop = asyncio.get_running_loop()
+    server._graph_builder = object()
+    server.list_indexed_repositories_tool = Mock(return_value={"repositories": []})
+    server._context_transition_lock = threading.RLock()
+    server._stop_current_watcher = Mock(return_value=False)
+    server._close_db_manager_for_context_switch = Mock(
+        return_value={"error": "context switch passed the active-job check"}
+    )
+    handler_started = threading.Event()
+    release_handler = threading.Event()
+
+    def prepare_update(*_args):
+        handler_started.set()
+        assert release_handler.wait(timeout=2)
+        return 4, 0.25
+
+    monkeypatch.setattr(router, "_prepare_local_update", prepare_update)
+    update_request = asyncio.create_task(
+        router._prepare_local_update_and_create_job_async(
+            server, tmp_path, ".cgcignore", timeout_seconds=None
+        )
+    )
+    assert await asyncio.to_thread(handler_started.wait, 2)
+
+    switch_request = asyncio.create_task(
+        server.handle_tool_call("switch_context", {"context_path": "global"})
+    )
+    await asyncio.sleep(0.05)
+    switch_waited_for_registration = not switch_request.done()
+    release_handler.set()
+    update_result = await update_request
+    switch_result = await switch_request
+
+    assert switch_waited_for_registration
+    assert switch_result["active_jobs"][0]["job_id"] == update_result[2]
 @pytest.mark.asyncio
 async def test_unknown_tool_uses_shared_error_payload_and_transport_envelopes(monkeypatch):
     server = _server()
@@ -172,7 +369,7 @@ async def test_default_tool_catalog_matches_exactly_across_transports(monkeypatc
     expected_names = set(TOOLS)
     stdio_names = {tool["name"] for tool in stdio["result"]["tools"]}
     http_names = {tool["name"] for tool in http.json()["result"]["tools"]}
-    assert len(expected_names) == 29
+    assert len(expected_names) == 30
     assert stdio_names == expected_names
     assert http_names == expected_names
 
@@ -212,7 +409,7 @@ def test_mcp_docs_match_catalog_and_keep_server_version_distinct():
     repo_root = Path(__file__).resolve().parents[2]
     for filename in docs:
         content = (repo_root / filename).read_text(encoding="utf-8")
-        assert "29" in content
+        assert "30" in content
         assert "0.4.16" not in content
         assert "0.1.0" in content
         assert "distribution" in content.lower() or "package release" in content.lower()

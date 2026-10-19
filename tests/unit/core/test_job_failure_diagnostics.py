@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -41,7 +41,7 @@ async def test_indexing_exception_exposes_diagnostics(tmp_path):
     builder = GraphBuilder.__new__(GraphBuilder)
     builder.job_manager = manager
     builder.parsers = {}
-    builder._writer = object()
+    builder._writer = Mock()
     builder.get_parser = lambda extension: None
     builder.parse_file = lambda *args: {}
     builder.add_minimal_file_node = lambda *args: None

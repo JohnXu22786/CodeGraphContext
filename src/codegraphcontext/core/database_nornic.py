@@ -9,6 +9,7 @@ import threading
 from typing import Optional, Tuple
 from neo4j import GraphDatabase, Driver
 
+from codegraphcontext.core.database import _query_lock_for_driver
 from codegraphcontext.utils.debug_log import info_logger, error_logger
 
 class NornicDriverWrapper:
@@ -18,6 +19,7 @@ class NornicDriverWrapper:
     def __init__(self, driver: Driver, database: str = None):
         self._driver = driver
         self._database = database
+        self._query_lock = _query_lock_for_driver(driver)
 
     def session(self, **kwargs):
         """Proxy method to get a session from the underlying driver."""

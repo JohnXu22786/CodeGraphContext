@@ -1,5 +1,6 @@
 # src/codegraphcontext/tools/handlers/indexing_handlers.py
 import os
+import math
 from typing import Any, Dict
 from pathlib import Path
 import asyncio
@@ -9,6 +10,22 @@ from ...utils.repo_path import repo_record_matches_path
 from ..package_resolver import get_local_package_path
 
 
+def _get_timeout_seconds(args: Dict[str, Any]):
+    """Return a validated optional indexing deadline and an error response."""
+    raw_timeout = args.get("timeout_seconds")
+    if raw_timeout is None:
+        return None, None
+    if isinstance(raw_timeout, bool):
+        return None, {"error": "timeout_seconds must be a positive finite number."}
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError):
+        return None, {"error": "timeout_seconds must be a positive finite number."}
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        return None, {"error": "timeout_seconds must be a positive finite number."}
+    return timeout_seconds, None
+
+
 def add_code_to_graph(graph_builder, job_manager, loop, list_repos_func, **args) -> Dict[str, Any]:
     """
     Tool implementation to index a directory of code.
@@ -16,6 +33,9 @@ def add_code_to_graph(graph_builder, job_manager, loop, list_repos_func, **args)
     """
     path = args.get("path") or args.get("repo_path")
     is_dependency = args.get("is_dependency", False)
+    timeout_seconds, timeout_error = _get_timeout_seconds(args)
+    if timeout_error:
+        return timeout_error
 
     if not path:
         return {"error": "Path is a required argument (repo_path)."}
@@ -79,7 +99,9 @@ def add_code_to_graph(graph_builder, job_manager, loop, list_repos_func, **args)
         
         # Estimate time and create a job for the user to track.
         total_files, estimated_time = graph_builder.estimate_processing_time(path_obj)
-        job_id = job_manager.create_job(str(path_obj), is_dependency)
+        job_id = job_manager.create_job(
+            str(path_obj), is_dependency, timeout_seconds=timeout_seconds
+        )
         job_manager.update_job(job_id, total_files=total_files, estimated_duration=estimated_time)
         
         # Create the coroutine for the background task and schedule it on the main event loop.
@@ -110,6 +132,9 @@ def add_package_to_graph(graph_builder, job_manager, loop, list_repos_func, **ar
     package_name = args.get("package_name")
     language = args.get("language")
     is_dependency = args.get("is_dependency", True)
+    timeout_seconds, timeout_error = _get_timeout_seconds(args)
+    if timeout_error:
+        return timeout_error
 
     if not language:
         return {"error": "The 'language' parameter is required."}
@@ -145,7 +170,9 @@ def add_package_to_graph(graph_builder, job_manager, loop, list_repos_func, **ar
         
         total_files, estimated_time = graph_builder.estimate_processing_time(path_obj)
         
-        job_id = job_manager.create_job(package_path, is_dependency)
+        job_id = job_manager.create_job(
+            package_path, is_dependency, timeout_seconds=timeout_seconds
+        )
         
         job_manager.update_job(job_id, total_files=total_files, estimated_duration=estimated_time)
         

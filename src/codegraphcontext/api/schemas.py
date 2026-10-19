@@ -1,5 +1,5 @@
 # src/codegraphcontext/api/schemas.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, List, Optional
 
 class IndexRequest(BaseModel):
@@ -7,11 +7,31 @@ class IndexRequest(BaseModel):
     repo_name: Optional[str] = Field(None, description="Optional name for the repository")
     branch: str = "main"
     force: bool = False
+    timeout_seconds: Optional[float] = Field(
+        None, gt=0, description="Optional indexing deadline in seconds"
+    )
+
+    @field_validator("timeout_seconds", mode="before")
+    @classmethod
+    def timeout_seconds_must_not_be_boolean(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("timeout_seconds must be a number, not a boolean")
+        return value
 
 class LocalUpdateRequest(BaseModel):
     """Loopback-only update submitted by a CLI sharing this gateway's DB."""
     path: str
     cgcignore_path: Optional[str] = None
+    timeout_seconds: Optional[float] = Field(
+        None, gt=0, description="Optional indexing deadline in seconds"
+    )
+
+    @field_validator("timeout_seconds", mode="before")
+    @classmethod
+    def timeout_seconds_must_not_be_boolean(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("timeout_seconds must be a number, not a boolean")
+        return value
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="Cypher query to execute")

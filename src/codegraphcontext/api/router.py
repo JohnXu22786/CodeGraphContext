@@ -16,7 +16,7 @@ from .schemas import (
 )
 from .auth import require_api_key
 from codegraphcontext.server import MCPServer
-from codegraphcontext.core.jobs import JobStatus
+from codegraphcontext.core.jobs import JobStatus, wait_task_until_stopped
 from codegraphcontext.core.database_ownership import (
     DatabaseOwnershipLease,
 )
@@ -143,6 +143,60 @@ def _prepare_local_update(server: MCPServer, path: Path, cgcignore_path: str):
     return estimate or (0, 0.0)
 
 
+def _prepare_local_update_and_create_job(
+    server: MCPServer,
+    path: Path,
+    cgcignore_path: str,
+    timeout_seconds: float | None,
+):
+    """Prepare an update and register its job before a context switch can run."""
+    with server._context_transition_lock:
+        total_files, estimated_duration = _prepare_local_update(
+            server, path, cgcignore_path
+        )
+        job_id = server.job_manager.create_job(
+            str(path), is_dependency=False, timeout_seconds=timeout_seconds
+        )
+        server.job_manager.update_job(
+            job_id,
+            total_files=total_files,
+            estimated_duration=estimated_duration,
+        )
+    return total_files, estimated_duration, job_id
+
+
+async def _prepare_local_update_and_create_job_async(
+    server: MCPServer,
+    path: Path,
+    cgcignore_path: str,
+    timeout_seconds: float | None,
+):
+    """Keep sync preparation off-loop and cancel a job created during request stop."""
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            _prepare_local_update_and_create_job,
+            server,
+            path,
+            cgcignore_path,
+            timeout_seconds,
+        )
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await wait_task_until_stopped(task)
+        try:
+            job_id = task.result()[2]
+        except BaseException:
+            job_id = None
+        if job_id:
+            cancel_task = asyncio.create_task(
+                server.job_manager.cancel_job_async(job_id)
+            )
+            await wait_task_until_stopped(cancel_task)
+        raise
+
+
 @local_router.post("/update", include_in_schema=False)
 async def update_through_local_gateway(
     request: LocalUpdateRequest,
@@ -163,14 +217,10 @@ async def update_through_local_gateway(
     cgcignore_path = request.cgcignore_path or server.resolved_context.cgcignore_path
     async with _local_update_lock:
         try:
-            total_files, estimated_duration = await asyncio.to_thread(
-                _prepare_local_update, server, path, cgcignore_path
-            )
-            job_id = server.job_manager.create_job(str(path), is_dependency=False)
-            server.job_manager.update_job(
-                job_id,
-                total_files=total_files,
-                estimated_duration=estimated_duration,
+            total_files, estimated_duration, job_id = (
+                await _prepare_local_update_and_create_job_async(
+                    server, path, cgcignore_path, request.timeout_seconds
+                )
             )
             await server.graph_builder.build_graph_from_path_async(
                 path,
@@ -261,6 +311,8 @@ async def index_repository(
     # The add_code_to_graph handler only understands "path" (and is_dependency);
     # repo_name/branch/force from the request model are not supported by it.
     args = {"path": request.path}
+    if request.timeout_seconds is not None:
+        args["timeout_seconds"] = request.timeout_seconds
 
     try:
         result = await server.handle_tool_call(

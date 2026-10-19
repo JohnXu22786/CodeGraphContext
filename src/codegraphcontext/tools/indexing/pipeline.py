@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 import os
-from ...core.jobs import JobManager, JobStatus
+from ...core.jobs import JobManager, run_blocking_until_stopped, wait_task_until_stopped
 from ...utils.debug_log import debug_log, error_logger, info_logger, warning_logger
 from .discovery import discover_files_to_index
 from .persistence.writer import GraphWriter
@@ -30,6 +30,22 @@ from .resolution.inheritance import (
     build_part_of_links,
     build_previews_links,
 )
+
+
+async def _run_job_thread(job_manager, job_id, func, *args, **kwargs):
+    """Run one off-loop phase and stop at a safe boundary if cancelled."""
+    if job_id:
+        job_manager.raise_if_cancelled(job_id)
+    def request_cancel():
+        if job_id:
+            job_manager.request_cancel(job_id, reason="request_cancelled")
+
+    result = await run_blocking_until_stopped(
+        func, *args, on_cancel=request_cancel if job_id else None, **kwargs
+    )
+    if job_id:
+        job_manager.raise_if_cancelled(job_id)
+    return result
 
 
 DEFAULT_PARALLEL_WORKERS = 10
@@ -140,16 +156,25 @@ async def run_tree_sitter_index_async(
     add_minimal_file_node: Callable[[Path, Path, bool], None],
     call_resolution_diagnostics: Optional[List[Dict[str, Any]]] = None,
     index_summary: Optional[Dict[str, Any]] = None,
+    repo_root: Optional[Path] = None,
 ) -> None:
     """Parse all discovered files, write symbols, then inheritance + CALLS."""
-    if job_id:
-        job_manager.update_job(job_id, status=JobStatus.RUNNING)
-
-    repo_root = path if path.is_dir() else path.parent.resolve()
-    await asyncio.to_thread(writer.add_repository_to_graph, repo_root, is_dependency)
+    if not path.exists():
+        raise FileNotFoundError(f"Index source path no longer exists: {path}")
+    repo_root = Path(repo_root).resolve() if repo_root is not None else (
+        path.resolve() if path.is_dir() else path.parent.resolve()
+    )
+    await _run_job_thread(
+        job_manager,
+        job_id,
+        writer.add_repository_to_graph,
+        repo_root,
+        is_dependency,
+        "building",
+    )
     repo_name = repo_root.name
 
-    files, _ignore_root = await asyncio.to_thread(
+    files, _ignore_root = await _run_job_thread(job_manager, job_id,
         discover_files_to_index, path, cgcignore_path, supported_extensions=set(parsers.keys())
     )
 
@@ -157,7 +182,7 @@ async def run_tree_sitter_index_async(
         job_manager.update_job(job_id, total_files=len(files))
 
     debug_log("Starting pre-scan to build imports map...")
-    imports_map = await asyncio.to_thread(pre_scan_for_imports, files, parsers.keys(), get_parser)
+    imports_map = await _run_job_thread(job_manager, job_id, pre_scan_for_imports, files, parsers.keys(), get_parser)
     debug_log(f"Pre-scan complete. Found {len(imports_map)} definitions.")
 
     all_file_data: List[Dict[str, Any]] = []
@@ -180,7 +205,7 @@ async def run_tree_sitter_index_async(
             
             try:
                 # 1. Parse file (CPU bound, run in thread)
-                file_data = await asyncio.to_thread(parse_file, repo_path, file, is_dependency)
+                file_data = await _run_job_thread(job_manager, job_id, parse_file, repo_path, file, is_dependency)
                 
                 file_data["_index_repo_path"] = str(repo_path)
                 return file_data
@@ -190,47 +215,62 @@ async def run_tree_sitter_index_async(
             return None
 
     # Process all files in parallel with the semaphore limit
-    tasks = [process_file(f) for f in files]
-    for coro in asyncio.as_completed(tasks):
-        file_data = await coro
-        if file_data:
-            all_file_data.append(file_data)
-        
-        processed_count += 1
-        if job_id:
-            job_manager.update_job(job_id, processed_files=processed_count)
-        
-        if processed_count % 50 == 0:
-            
-            if os.environ.get("CGC_ACTIVE_PROGRESS_BAR") != "1":
-                info_logger(f"Processed {processed_count}/{len(files)} files...")
+    tasks = [asyncio.create_task(process_file(file)) for file in files]
+    try:
+        for coro in asyncio.as_completed(tasks):
+            file_data = await coro
+            if file_data:
+                all_file_data.append(file_data)
+
+            processed_count += 1
+            if job_id:
+                job_manager.update_job(job_id, processed_files=processed_count)
+
+            if processed_count % 50 == 0:
+                if os.environ.get("CGC_ACTIVE_PROGRESS_BAR") != "1":
+                    info_logger(f"Processed {processed_count}/{len(files)} files...")
+    except BaseException:
+        # A cancelled parse must not let sibling to_thread workers outlive the
+        # job and overlap GraphBuilder's partial-index cleanup.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        async def _drain_parse_tasks():
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        await wait_task_until_stopped(asyncio.create_task(_drain_parse_tasks()))
+        raise
 
     serialization_start = time.time()
 
     # Parsing remains concurrent, but graph writes are ordered so shared nodes
     # such as imported modules receive deterministic canonical metadata.
-    # One unwritable file must not abort the run. There is no transaction here,
-    # so an exception escaping this loop left a partially written graph with no
-    # rollback and every remaining file silently unindexed.
+    # Continue through the files to collect diagnostics, then fail the job if
+    # any required write still fails. There is no transaction here, so the
+    # caller must remove the partial graph rather than mark it ready.
     write_failures: List[Dict[str, Any]] = []
+    successful_file_writes = 0
     for file_data in sorted(all_file_data, key=lambda data: str(data.get("path") or "")):
         repo_path = Path(file_data.pop("_index_repo_path"))
         try:
             if "error" not in file_data:
-                await asyncio.to_thread(
+                await _run_job_thread(job_manager, job_id,
                     writer.add_file_to_graph,
                     file_data,
                     repo_name,
                     imports_map,
                     repo_path_str=resolved_repo_path_str,
                 )
+                successful_file_writes += 1
             elif not file_data.get("unsupported"):
-                await asyncio.to_thread(
+                await _run_job_thread(job_manager, job_id,
                     add_minimal_file_node,
                     Path(file_data["path"]),
                     repo_path,
                     is_dependency,
                 )
+                successful_file_writes += 1
         except Exception as exc:  # noqa: BLE001 - keep indexing the other files
             # Must not be named `path`: that is the function's repo-root Path
             # parameter, still needed further down (`path.is_dir()`). Rebinding
@@ -245,13 +285,14 @@ async def run_tree_sitter_index_async(
             if "error" not in file_data:
                 try:
                     await asyncio.sleep(0.2)
-                    await asyncio.to_thread(
+                    await _run_job_thread(job_manager, job_id,
                         writer.add_file_to_graph,
                         file_data,
                         repo_name,
                         imports_map,
                         repo_path_str=resolved_repo_path_str,
                     )
+                    successful_file_writes += 1
                     retried_ok = True
                     warning_logger(
                         f"Write for {failed_path} succeeded on retry after: {exc}"
@@ -267,8 +308,16 @@ async def run_tree_sitter_index_async(
     if write_failures:
         warning_logger(
             f"{len(write_failures)} file(s) could not be written to the graph; "
-            "the rest of the repository was still indexed."
+            "the partial repository index will be removed."
         )
+        if successful_file_writes == 0:
+            message = f"All {len(write_failures)} indexed file write attempts failed"
+        else:
+            message = (
+                f"{len(write_failures)} of {successful_file_writes + len(write_failures)} indexed file writes "
+                "failed after retry"
+            )
+        raise RuntimeError(f"{message}; the partial repository index will be removed.")
 
     # Capture genuine parse failures before the error entries are dropped —
     # build_index_summary runs much later, against the filtered list.
@@ -306,14 +355,14 @@ async def run_tree_sitter_index_async(
     if job_id:
         job_manager.update_job(job_id, status_message="Resolving inheritance links...")
     info_logger(f"[INHERITS] Resolving inheritance links across {len(all_file_data)} files...")
-    inheritance_batch, csharp_files = await asyncio.to_thread(
+    inheritance_batch, csharp_files = await _run_job_thread(job_manager, job_id,
         build_inheritance_and_csharp_files, all_file_data, imports_map
     )
-    implements_batch = await asyncio.to_thread(build_go_implements_links, all_file_data)
-    implements_batch.extend(await asyncio.to_thread(build_haskell_implements_links, all_file_data))
-    implements_batch.extend(await asyncio.to_thread(build_elixir_implements_links, all_file_data))
-    await asyncio.to_thread(writer.write_inheritance_links, inheritance_batch, csharp_files, imports_map)
-    await asyncio.to_thread(writer.write_implements_links, implements_batch)
+    implements_batch = await _run_job_thread(job_manager, job_id, build_go_implements_links, all_file_data)
+    implements_batch.extend(await _run_job_thread(job_manager, job_id, build_haskell_implements_links, all_file_data))
+    implements_batch.extend(await _run_job_thread(job_manager, job_id, build_elixir_implements_links, all_file_data))
+    await _run_job_thread(job_manager, job_id, writer.write_inheritance_links, inheritance_batch, csharp_files, imports_map)
+    await _run_job_thread(job_manager, job_id, writer.write_implements_links, implements_batch)
     # Keep graph writes sequential. Each await yields to health/status requests
     # and prevents scheduling the next phase after coroutine cancellation.
     for build_links, write_links in (
@@ -322,20 +371,20 @@ async def run_tree_sitter_index_async(
         (build_partial_of_links, writer.write_partial_of_links),
         (build_part_of_links, writer.write_part_of_links),
     ):
-        links = await asyncio.to_thread(build_links, all_file_data)
-        await asyncio.to_thread(write_links, links)
+        links = await _run_job_thread(job_manager, job_id, build_links, all_file_data)
+        await _run_job_thread(job_manager, job_id, write_links, links)
     for build_links, write_links in (
         (build_metaclass_links, writer.write_metaclass_links),
         (build_decorated_by_links, writer.write_decorated_by_links),
         (build_binds_links, writer.write_binds_links),
         (build_previews_links, writer.write_previews_links),
     ):
-        links = await asyncio.to_thread(build_links, all_file_data, imports_map)
-        await asyncio.to_thread(write_links, links)
+        links = await _run_job_thread(job_manager, job_id, build_links, all_file_data, imports_map)
+        await _run_job_thread(job_manager, job_id, write_links, links)
     t1 = time.time()
     info_logger(f"Inheritance links created in {t1 - t0:.1f}s. Starting function calls...")
 
-    resolved_calls = await asyncio.to_thread(
+    resolved_calls = await _run_job_thread(job_manager, job_id,
         build_function_call_groups,
         all_file_data,
         imports_map,
@@ -344,7 +393,7 @@ async def run_tree_sitter_index_async(
     )
     if job_id:
         job_manager.update_job(job_id, status_message="Writing function CALLS edges...")
-    await asyncio.to_thread(writer.write_function_call_groups, *resolved_calls)
+    await _run_job_thread(job_manager, job_id, writer.write_function_call_groups, *resolved_calls)
     t2 = time.time()
     info_logger(f"Function calls created in {t2 - t1:.1f}s. Total post-processing: {t2 - t0:.1f}s")
 
@@ -355,12 +404,12 @@ async def run_tree_sitter_index_async(
     if job_id:
         job_manager.update_job(job_id, status_message="Linking C++ class-function edges...")
     info_logger("[CPP] Linking C++ out-of-line method definitions to their classes...")
-    await asyncio.to_thread(writer.write_cpp_class_function_links, resolved_repo_path_str)
+    await _run_job_thread(job_manager, job_id, writer.write_cpp_class_function_links, resolved_repo_path_str)
 
     # ── File->CONTAINS invariant (empty-index race self-heal) ────────────────
     if job_id:
         job_manager.update_job(job_id, status_message="Verifying File->CONTAINS linking...")
-    repaired_contains = await asyncio.to_thread(writer.repair_missing_contains_links, resolved_repo_path_str)
+    repaired_contains = await _run_job_thread(job_manager, job_id, writer.repair_missing_contains_links, resolved_repo_path_str)
     if repaired_contains:
         warning_logger(
             f"[INVARIANT] Back-filled File-[:CONTAINS] edges for: {repaired_contains}"
@@ -376,7 +425,7 @@ async def run_tree_sitter_index_async(
             spring_inject_batch.extend(injections)
     if spring_inject_batch:
         info_logger(f"[SPRING] Writing {len(spring_inject_batch)} Spring injection edges...")
-        await asyncio.to_thread(writer.write_spring_inject_links, spring_inject_batch)
+        await _run_job_thread(job_manager, job_id, writer.write_spring_inject_links, spring_inject_batch)
 
     # Also collect Spring endpoint properties from functions and write them
     endpoint_batch = []
@@ -391,7 +440,7 @@ async def run_tree_sitter_index_async(
                     "http_path": fn.get("http_path"),
                 })
     if endpoint_batch:
-        await asyncio.to_thread(writer.write_spring_endpoint_properties, endpoint_batch)
+        await _run_job_thread(job_manager, job_id, writer.write_spring_endpoint_properties, endpoint_batch)
 
     # ── Maven / Gradle build graph (#888) ────────────────────────────────────
     if not is_dependency and path.is_dir():
@@ -399,21 +448,35 @@ async def run_tree_sitter_index_async(
             job_manager.update_job(job_id, status_message="Processing Maven build graph...")
         try:
             from ...tools.languages.maven import parse_repo_maven
-            maven_data = await asyncio.to_thread(parse_repo_maven, path.resolve())
-            if maven_data.get("modules"):
-                await asyncio.to_thread(writer.write_maven_build_graph, maven_data, str(path.resolve()))
+            maven_data = await _run_job_thread(job_manager, job_id, parse_repo_maven, path.resolve())
         except Exception as _me:
-            info_logger(f"[MAVEN] Build graph failed (skipping): {_me}")
+            info_logger(f"[MAVEN] Build graph parsing failed (skipping): {_me}")
+        else:
+            if maven_data.get("modules"):
+                await _run_job_thread(
+                    job_manager,
+                    job_id,
+                    writer.write_maven_build_graph,
+                    maven_data,
+                    str(path.resolve()),
+                )
 
         if job_id:
             job_manager.update_job(job_id, status_message="Processing Gradle build graph...")
         try:
             from ...tools.languages.gradle import parse_repo_gradle
-            gradle_data = await asyncio.to_thread(parse_repo_gradle, path.resolve())
-            if gradle_data.get("modules"):
-                await asyncio.to_thread(writer.write_gradle_build_graph, gradle_data, str(path.resolve()))
+            gradle_data = await _run_job_thread(job_manager, job_id, parse_repo_gradle, path.resolve())
         except Exception as _ge:
-            info_logger(f"[GRADLE] Build graph failed (skipping): {_ge}")
+            info_logger(f"[GRADLE] Build graph parsing failed (skipping): {_ge}")
+        else:
+            if gradle_data.get("modules"):
+                await _run_job_thread(
+                    job_manager,
+                    job_id,
+                    writer.write_gradle_build_graph,
+                    gradle_data,
+                    str(path.resolve()),
+                )
 
     # ── ORM / datasource code linkage (#843) ─────────────────────────────────
     if job_id:
@@ -429,9 +492,9 @@ async def run_tree_sitter_index_async(
         info_logger(
             f"[ORM] Writing {class_table_count} class→table mappings and {query_count} query links..."
         )
-        await asyncio.to_thread(writer.write_orm_mappings, orm_batch)
-        await asyncio.to_thread(writer.write_query_links, orm_batch)
-        await asyncio.to_thread(writer.write_spring_data_repo_links, orm_batch)
+        await _run_job_thread(job_manager, job_id, writer.write_orm_mappings, orm_batch)
+        await _run_job_thread(job_manager, job_id, writer.write_query_links, orm_batch)
+        await _run_job_thread(job_manager, job_id, writer.write_spring_data_repo_links, orm_batch)
 
     # ── MyBatis XML mapper READS / WRITES edges ───────────────────────────────
     if not is_dependency and path.is_dir():
@@ -439,11 +502,17 @@ async def run_tree_sitter_index_async(
             job_manager.update_job(job_id, status_message="Processing MyBatis XML mappers...")
         try:
             from ...tools.languages.mybatis import find_and_parse_mybatis_mappers
-            mybatis_batch = await asyncio.to_thread(find_and_parse_mybatis_mappers, path.resolve(), all_file_data)
-            if mybatis_batch:
-                await asyncio.to_thread(writer.write_mybatis_links, mybatis_batch)
+            mybatis_batch = await _run_job_thread(job_manager, job_id, find_and_parse_mybatis_mappers, path.resolve(), all_file_data)
         except Exception as _me:
             info_logger(f"[MYBATIS] Mapper parsing failed (skipping): {_me}")
+        else:
+            if mybatis_batch:
+                await _run_job_thread(
+                    job_manager,
+                    job_id,
+                    writer.write_mybatis_links,
+                    mybatis_batch,
+                )
 
     # ── Phase 4: embedding generation (optional, config-gated) ────────────────
     from ...cli.config_manager import get_config_value as _gcv
@@ -454,7 +523,7 @@ async def run_tree_sitter_index_async(
         # so 'vector resolve is working' and 'vector resolve has never run'
         # were indistinguishable (#1597).
         from .embeddings import probe_embedding_backend
-        _ok, _detail = await asyncio.to_thread(probe_embedding_backend)
+        _ok, _detail = await _run_job_thread(job_manager, job_id, probe_embedding_backend)
         if not _ok:
             embed_warning = f"ENABLE_VECTOR_RESOLVE=true but embeddings were NOT generated: {_detail}"
             error_logger(f"[EMBED] {embed_warning}")
@@ -468,7 +537,7 @@ async def run_tree_sitter_index_async(
                 def generate_embeddings():
                     EmbeddingPipeline(writer.driver).run(repo_path_str)
 
-                await asyncio.to_thread(generate_embeddings)
+                await _run_job_thread(job_manager, job_id, generate_embeddings)
                 info_logger("[EMBED] Embedding pipeline complete.")
             except Exception as _ee:
                 embed_warning = f"ENABLE_VECTOR_RESOLVE=true but the embedding pipeline failed: {_ee}"
@@ -492,7 +561,7 @@ async def run_tree_sitter_index_async(
                         info_logger(f"[VECTOR] Resolver unavailable: {_ve}")
                 return run_inheritance_reresolve(writer.driver, repo_path_str, vector_resolver)
 
-            improved = await asyncio.to_thread(reresolve_inheritance)
+            improved = await _run_job_thread(job_manager, job_id, reresolve_inheritance)
             info_logger(f"[INHERIT-RESOLVE] Post-resolution complete: {improved} edges improved")
         except Exception as _ie:
             info_logger(f"[INHERIT-RESOLVE] Post-resolution failed (skipping): {_ie}")
@@ -500,7 +569,7 @@ async def run_tree_sitter_index_async(
     if index_summary is not None:
         index_summary.clear()
         index_summary.update(
-            await asyncio.to_thread(
+            await _run_job_thread(job_manager, job_id,
                 build_index_summary,
                 files,
                 parsers,
@@ -514,4 +583,14 @@ async def run_tree_sitter_index_async(
             index_summary.setdefault("warnings", []).append(embed_warning)
 
     if job_id:
-        job_manager.update_job(job_id, status=JobStatus.COMPLETED, end_time=datetime.now())
+        if not await _run_job_thread(
+            job_manager,
+            job_id,
+            job_manager.complete_job,
+            job_id,
+            end_time=datetime.now(),
+            before_commit=lambda: writer.mark_repository_ready(repo_root),
+        ):
+            job_manager.raise_if_cancelled(job_id)
+    else:
+        await _run_job_thread(job_manager, job_id, writer.mark_repository_ready, repo_root)

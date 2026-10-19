@@ -65,6 +65,11 @@ class TestFalkorDBDriverWrapperSessionKwargs:
         class MockGraph:
             name = "test"
             def query(self, q, *a, **kw):
+                if "index_state" in q:
+                    class R:
+                        header = []
+                        result_set = []
+                    return R()
                 class R:
                     header = [("COL", "test")]
                     result_set = [[1]]
@@ -86,6 +91,11 @@ class TestFalkorDBDriverWrapperSessionKwargs:
         class MockGraph:
             name = "test"
             def query(self, q, *a, **kw):
+                if "index_state" in q:
+                    class R:
+                        header = []
+                        result_set = []
+                    return R()
                 class R:
                     header = [("COL", "labels"), ("COL", "count")]
                     result_set = [["Function", 100], ["Class", 50]]

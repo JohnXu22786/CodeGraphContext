@@ -232,11 +232,13 @@ class TestMCPServer:
 
     def test_switch_context_refuses_while_job_running(self, mock_server):
         """#1536: must not tear down the DB under an in-flight indexing job."""
-        from codegraphcontext.core.jobs import JobManager, JobStatus
+        from codegraphcontext.core.jobs import JobManager
 
         jobs = JobManager()
         job_id = jobs.create_job("/big/monorepo")
-        jobs.update_job(job_id, status=JobStatus.RUNNING)
+        worker = MagicMock()
+        worker.done.return_value = False
+        assert jobs.start_job(job_id, worker)
         mock_server.job_manager = jobs
 
         with patch("codegraphcontext.server._teardown_db_manager") as teardown:

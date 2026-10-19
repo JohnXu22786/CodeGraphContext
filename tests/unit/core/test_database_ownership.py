@@ -603,6 +603,7 @@ def test_context_switch_retains_manager_when_database_close_fails(
     ).acquire()
 
     server = object.__new__(MCPServer)
+    server._context_transition_lock = threading.RLock()
     server.db_manager = manager
     server.job_manager = JobManager()
     server.code_watcher = Watcher()

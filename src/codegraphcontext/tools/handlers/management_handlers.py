@@ -109,6 +109,18 @@ def check_job_status(job_manager: JobManager, **args) -> Dict[str, Any]:
         debug_log(f"Error checking job status: {str(e)}")
         return {"error": f"Failed to check job status: {str(e)}"}
 
+
+def cancel_indexing_job(job_manager: JobManager, **args) -> Dict[str, Any]:
+    """Cancel a job and wait until its worker and partial graph cleanup finish."""
+    job_id = args.get("job_id")
+    if not job_id:
+        return {"error": "Job ID is a required argument."}
+    try:
+        return job_manager.cancel_job(str(job_id))
+    except Exception as e:
+        debug_log(f"Error cancelling indexing job {job_id}: {str(e)}")
+        return {"error": f"Failed to cancel indexing job: {str(e)}"}
+
 def list_jobs(job_manager: JobManager) -> Dict[str, Any]:
     """Tool to list all jobs"""
     try:
@@ -340,7 +352,7 @@ def get_repository_stats(code_finder: CodeFinder, **args) -> Dict[str, Any]:
     try:
         debug_log(f"Getting stats for: {repo_path or 'all repositories'}")
 
-        with code_finder.db_manager.get_driver(graph_name).session() as session:
+        with code_finder.get_read_driver(graph_name).session() as session:
             if repo_path:
                 # Stats for specific repository
                 repo_path_obj = Path(repo_path).resolve().as_posix()

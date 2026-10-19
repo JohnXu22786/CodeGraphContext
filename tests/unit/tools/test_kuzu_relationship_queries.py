@@ -9,13 +9,17 @@ class _FakeResult:
     def data(self):
         return []
 
+    def single(self):
+        return None
+
 class _FakeSession:
     def __init__(self, recorder: Dict[str, Any]):
         self._recorder = recorder
 
     def run(self, query: str, **kwargs: Any):
-        self._recorder["last_query"] = query
-        self._recorder["last_params"] = kwargs
+        if "index_state: 'building'" not in query:
+            self._recorder["last_query"] = query
+            self._recorder["last_params"] = kwargs
         return _FakeResult()
 
     def __enter__(self):

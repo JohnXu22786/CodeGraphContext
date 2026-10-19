@@ -3,6 +3,7 @@
 This module provides a thread-safe singleton manager for the FalkorDB Lite database connection.
 FalkorDB Lite is an embedded graph database that requires no external server setup.
 """
+import weakref
 
 class FalkorDBUnavailableError(RuntimeError):
     """
@@ -23,6 +24,27 @@ from typing import Optional, Tuple
 from codegraphcontext.utils.cypher_ddl import ddl_kind, is_schema_ddl
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 from codegraphcontext.runtime_paths import get_cgc_home
+
+
+_FALKORDB_GRAPH_QUERY_LOCKS = weakref.WeakKeyDictionary()
+_FALKORDB_GRAPH_QUERY_LOCKS_GUARD = threading.Lock()
+_FALKORDB_FALLBACK_QUERY_LOCK = threading.RLock()
+
+
+def _query_lock_for_graph(graph):
+    """Return the shared operation lock for wrappers around one graph."""
+    try:
+        with _FALKORDB_GRAPH_QUERY_LOCKS_GUARD:
+            lock = _FALKORDB_GRAPH_QUERY_LOCKS.get(graph)
+            if lock is None:
+                lock = threading.RLock()
+                _FALKORDB_GRAPH_QUERY_LOCKS[graph] = lock
+            return lock
+    except TypeError:
+        # Some client graph objects cannot be weakly referenced or hashed.
+        # Serializing those uncommon wrappers through one shared lock retains
+        # the readiness guarantee without keeping graph objects alive forever.
+        return _FALKORDB_FALLBACK_QUERY_LOCK
 
 # ---------------------------------------------------------------------------
 # Compatibility patch: newer redis-py releases assume every Connection exposes
@@ -548,6 +570,7 @@ class FalkorDBDriverWrapper:
     
     def __init__(self, graph):
         self.graph = graph
+        self._query_lock = _query_lock_for_graph(graph)
 
     def session(self, **kwargs):
         """Returns a session-like object for FalkorDB.
@@ -561,7 +584,11 @@ class FalkorDBDriverWrapper:
         """
         access_mode = kwargs.get("default_access_mode")
         read_only = isinstance(access_mode, str) and access_mode.strip().upper() in ("READ", "R")
-        return FalkorDBSessionWrapper(self.graph, read_only=read_only)
+        return FalkorDBSessionWrapper(
+            self.graph,
+            read_only=read_only,
+            query_lock=self._query_lock,
+        )
 
     def close(self):
         """FalkorDB Lite doesn't need explicit close for sessions."""
@@ -573,11 +600,17 @@ class FalkorDBSessionWrapper:
     Wrapper class to provide Neo4j session-like interface for FalkorDB Lite.
     """
 
-    def __init__(self, graph, read_only: bool = False):
+    def __init__(self, graph, read_only: bool = False, query_lock=None):
         self.graph = graph
         self.read_only = read_only
+        self._query_lock = query_lock or _query_lock_for_graph(graph)
 
     def run(self, query, **parameters):
+        """Execute one graph operation under the shared per-graph lock."""
+        with self._query_lock:
+            return self._run(query, **parameters)
+
+    def _run(self, query, **parameters):
         """
         Execute a Cypher query on FalkorDB.
 

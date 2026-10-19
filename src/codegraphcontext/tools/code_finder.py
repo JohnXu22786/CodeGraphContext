@@ -1,5 +1,6 @@
 # src/codegraphcontext/tools/code_finder.py
 from __future__ import annotations
+from contextlib import contextmanager
 import logging
 from collections import Counter
 
@@ -12,6 +13,24 @@ from ..utils.path_ignore import cypher_path_not_under_ignore_dirs
 from ..utils.tool_limits import get_tool_result_limit
 
 logger = logging.getLogger(__name__)
+
+
+class RepositoryIndexInProgressError(RuntimeError):
+    """Raised when a query would read a graph while an index is incomplete."""
+
+
+class _ReadinessAwareDriver:
+    """Keep CodeFinder reads behind the persisted repository readiness marker."""
+
+    def __init__(self, code_finder, driver):
+        self._code_finder = code_finder
+        self._driver = driver
+
+    def __getattr__(self, name):
+        return getattr(self._driver, name)
+
+    def session(self, *args, **kwargs):
+        return self._code_finder._read_session(self._driver, *args, **kwargs)
 
 _MAX_TRAVERSAL_DEPTH = 20
 
@@ -235,7 +254,56 @@ class CodeFinder:
     @property
     def driver(self):
         """Returns driver for the active graph (set via graph_name params), or default."""
-        return self.db_manager.get_driver(self._active_graph)
+        return _ReadinessAwareDriver(
+            self,
+            self.db_manager.get_driver(self._active_graph),
+        )
+
+    def get_read_driver(self, graph_name: Optional[str] = None):
+        """Return a readiness-aware driver for the requested graph."""
+        self._active_graph = graph_name
+        return self.driver
+
+    @contextmanager
+    def _read_session(self, driver, *args, **kwargs):
+        """Run a CodeFinder read only when the graph has no building repository.
+
+        Embedded drivers expose a shared query lock, which is held from the
+        readiness check through the result query so a build cannot start
+        between the two. Drivers with transaction support run both reads in
+        one transaction.
+        """
+        lock = getattr(driver, "_write_lock", None) or getattr(driver, "_query_lock", None)
+        transaction = None
+        with driver.session(*args, **kwargs) as session:
+            if lock is not None:
+                lock.acquire()
+            try:
+                begin_transaction = getattr(session, "begin_transaction", None)
+                transaction = begin_transaction() if callable(begin_transaction) else None
+                query_session = transaction or session
+                building = query_session.run(
+                    "MATCH (r:Repository {index_state: 'building'}) "
+                    "RETURN r.path AS path LIMIT 1"
+                ).single()
+                if building is not None:
+                    repo_path = building.get("path") or "<unknown>"
+                    raise RepositoryIndexInProgressError(
+                        f"Repository indexing is in progress for {repo_path}; retry after it completes."
+                    )
+                yield query_session
+                if transaction is not None:
+                    transaction.commit()
+            except BaseException:
+                if transaction is not None:
+                    try:
+                        transaction.rollback()
+                    except Exception:
+                        logger.debug("Could not roll back CodeFinder read transaction", exc_info=True)
+                raise
+            finally:
+                if lock is not None:
+                    lock.release()
 
     def _normalize_repo_path_filter(self, repo_path: Optional[str]) -> Optional[str]:
         """Resolve a caller-supplied repo_path to the absolute path stored on indexed
@@ -1818,9 +1886,13 @@ class CodeFinder:
     def list_indexed_repositories(self, graph_name: str = None) -> List[Dict]:
         self._active_graph = graph_name
         """List all indexed repositories."""
-        with self.driver.session() as session:
+        # The list itself is the readiness query; don't reject it because
+        # another repository in the graph is still building.
+        driver = self.db_manager.get_driver(self._active_graph)
+        with driver.session() as session:
             result = session.run("""
                 MATCH (r:Repository)
+                WHERE r.index_state IS NULL OR r.index_state = 'ready'
                 RETURN r.name as name, r.path as path, r.is_dependency as is_dependency
                 ORDER BY r.name
             """)
