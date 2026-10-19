@@ -5,6 +5,7 @@ Handles reading, writing, and validating configuration settings.
 Also manages the context system (config.yaml) alongside the existing .env file.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -75,6 +76,74 @@ def _atomic_write_text(path: Path, content: str, *, secure: bool = False) -> Non
 CONFIG_DIR = get_cgc_home()
 CONFIG_FILE = CONFIG_DIR / ".env"
 
+# Values copied from a project dotenv into the process environment must be
+# distinguishable from shell/global settings when restoring the global context.
+_PROJECT_ENVIRONMENT_VALUES: Dict[str, str] = {}
+_GLOBAL_ENVIRONMENT_VALUES: Dict[str, str] = {}
+
+
+def _record_project_environment_values(
+    values: Dict[str, str], runtime_env: Dict[str, str]
+) -> None:
+    """Track project dotenv values that were promoted into ``os.environ``."""
+    for key, previous_value in list(_PROJECT_ENVIRONMENT_VALUES.items()):
+        if os.environ.get(key) != previous_value:
+            _PROJECT_ENVIRONMENT_VALUES.pop(key, None)
+
+    for key, value in values.items():
+        if key not in runtime_env and os.environ.get(key) == value:
+            _PROJECT_ENVIRONMENT_VALUES[key] = value
+
+
+def _record_global_environment_values(
+    values: Dict[str, str], runtime_env: Dict[str, str]
+) -> None:
+    """Retain global dotenv values hidden by project overrides in the process."""
+    _GLOBAL_ENVIRONMENT_VALUES.clear()
+    for key, value in values.items():
+        previous_project_value = _PROJECT_ENVIRONMENT_VALUES.get(key)
+        if (
+            key not in runtime_env
+            or runtime_env.get(key) == previous_project_value
+        ):
+            _GLOBAL_ENVIRONMENT_VALUES[key] = value
+
+
+@contextmanager
+def _global_context_environment():
+    """Temporarily expose global settings without project dotenv overrides."""
+    project_values = {
+        key: value
+        for key, value in _PROJECT_ENVIRONMENT_VALUES.items()
+        if os.environ.get(key) == value
+    }
+    missing = object()
+    original_values: Dict[str, object] = {}
+
+    def set_temporary(key: str, value: str) -> None:
+        if key not in original_values:
+            original_values[key] = os.environ.get(key, missing)
+        os.environ[key] = value
+
+    def remove_temporary(key: str) -> None:
+        if key not in original_values:
+            original_values[key] = os.environ.get(key, missing)
+        os.environ.pop(key, None)
+
+    for key in project_values:
+        remove_temporary(key)
+    for key, value in _GLOBAL_ENVIRONMENT_VALUES.items():
+        if key in project_values or key not in os.environ:
+            set_temporary(key, value)
+    try:
+        yield
+    finally:
+        for key, value in original_values.items():
+            if value is missing:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(value)
+
 # Keys that pin embedded DB directories; must not bleed across profiles via local .env
 DB_PATH_ENV_KEYS = frozenset({
     "FALKORDB_PATH", "FALKORDB_SOCKET_PATH", "KUZUDB_PATH", "LADYBUGDB_PATH",
@@ -90,7 +159,7 @@ DATABASE_CREDENTIAL_KEYS = {
 
 # Default configuration values
 DEFAULT_CONFIG = {
-    "DEFAULT_DATABASE": "falkordb",
+    "DEFAULT_DATABASE": "ladybugdb",
     "FALKORDB_PATH": str(CONFIG_DIR / "global" / "db" / "falkordb"),
     "FALKORDB_SOCKET_PATH": str(CONFIG_DIR / "global" / "db" / "falkordb.sock"),
     # Empty selects a deterministic port derived from each embedded DB socket.
@@ -425,6 +494,80 @@ def load_config(*, read_only: bool = False) -> Dict[str, str]:
     return config
 
 
+def _configured_default_database(*, read_only: bool = True) -> str:
+    """Return the configured default backend, falling back to LadybugDB."""
+    return load_config(read_only=read_only).get("DEFAULT_DATABASE") or "ladybugdb"
+
+
+def _has_explicit_database_default(
+    *,
+    read_only: bool = True,
+    include_runtime: bool = True,
+    include_project_env: bool = True,
+) -> bool:
+    """Whether the active config explicitly selected ``DEFAULT_DATABASE``."""
+    if os.getenv("DEFAULT_DATABASE") or (
+        include_runtime and os.getenv("CGC_RUNTIME_DB_TYPE")
+    ):
+        return True
+
+    sources = [CONFIG_FILE]
+    if include_project_env:
+        local_env = find_local_env(read_only=read_only)
+        if local_env is not None:
+            sources.append(local_env)
+
+    for source in sources:
+        try:
+            with open(source, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() == "DEFAULT_DATABASE" and value.strip():
+                        return True
+        except OSError:
+            continue
+    return False
+
+
+def _global_default_database(configured_default: str, *, read_only: bool = True) -> str:
+    """Resolve explicit, remote, or legacy global backends in precedence order."""
+    runtime_backend = os.getenv("CGC_RUNTIME_DB_TYPE")
+    if runtime_backend:
+        return runtime_backend
+    if _has_explicit_database_default(read_only=read_only):
+        return configured_default or "ladybugdb"
+
+    config = load_config(read_only=read_only)
+    if config.get("FALKORDB_HOST") or os.getenv("FALKORDB_HOST"):
+        return "falkordb-remote"
+
+    configured_falkordb_path = config.get("FALKORDB_PATH")
+    if configured_falkordb_path:
+        resolved_path = Path(
+            normalize_config_path(configured_falkordb_path, absolute=True)
+        )
+        try:
+            resolved_path.relative_to(CONFIG_DIR.resolve())
+        except ValueError:
+            pass
+        else:
+            if resolved_path.exists():
+                return "falkordb"
+
+    global_db_dir = CONFIG_DIR / "global" / "db"
+    # FalkorDB was the earlier global default; prefer it if both historical
+    # paths exist because there is no stored setting that can distinguish them.
+    for backend in ("falkordb", "kuzudb"):
+        if (global_db_dir / backend).exists() or (global_db_dir / f"{backend}.db").exists():
+            return backend
+    if _LEGACY_FALKORDB_PATH.exists():
+        return "falkordb"
+    return configured_default or "ladybugdb"
+
+
 def should_apply_project_dotenv(*, read_only: bool = False) -> bool:
     """True when the selected repository context's ``.env`` should merge globally.
 
@@ -487,13 +630,34 @@ def codegraphcontext_dotenv_at_cwd(cwd: Optional[Path] = None) -> Optional[Path]
     return candidate if candidate.exists() else None
 
 
-def save_config(config: Dict[str, str], preserve_db_credentials: bool = True):
+def save_config(
+    config: Dict[str, str],
+    preserve_db_credentials: bool = True,
+    *,
+    persist_default_database: Optional[bool] = None,
+):
     """
     Save configuration to file.
     If preserve_db_credentials is True, existing database credentials will be preserved.
     If preserve_db_credentials is False, credentials from config dict will be written.
     """
     ensure_config_dir()
+    config_to_write = config.copy()
+    if "DEFAULT_DATABASE" in config_to_write:
+        if persist_default_database is False:
+            config_to_write.pop("DEFAULT_DATABASE")
+        elif (
+            persist_default_database is None
+            and config_to_write["DEFAULT_DATABASE"]
+            == DEFAULT_CONFIG["DEFAULT_DATABASE"]
+            and not _has_explicit_database_default(
+                include_runtime=False, include_project_env=False
+            )
+        ):
+            # Keep LadybugDB as the in-memory default without pinning it into
+            # a generated .env. An explicit `cgc config set DEFAULT_DATABASE`
+            # still persists the selection.
+            config_to_write.pop("DEFAULT_DATABASE")
     
     # Determine which credentials to write
     credentials_to_write = {}
@@ -534,7 +698,7 @@ def save_config(config: Dict[str, str], preserve_db_credentials: bool = True):
                     lines.append(f"{key}={credentials_to_write[key]}")
             lines.append("")
         lines.append("# ===== Configuration Settings =====")
-        for key, value in sorted(config.items()):
+        for key, value in sorted(config_to_write.items()):
             if key in DATABASE_CREDENTIAL_KEYS:
                 continue
             description = CONFIG_DESCRIPTIONS.get(key, "")
@@ -688,7 +852,10 @@ def set_config_value(key: str, value: str) -> bool:
     # Load, update, and save
     config = load_config()
     config[key] = value
-    save_config(config)
+    save_config(
+        config,
+        persist_default_database=True if key == "DEFAULT_DATABASE" else None,
+    )
     
     console.print(f"[green]✅ Set {key} = {value}[/green]")
 
@@ -720,7 +887,11 @@ def reset_config():
         backup = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{stamp}.bak")
         shutil.copy2(CONFIG_FILE, backup)
         console.print(f"[dim]Backed up current config to {backup}[/dim]")
-    save_config(DEFAULT_CONFIG.copy(), preserve_db_credentials=True)
+    save_config(
+        DEFAULT_CONFIG.copy(),
+        preserve_db_credentials=True,
+        persist_default_database=False,
+    )
     console.print("[green]✅ Configuration reset to defaults[/green]")
     console.print("[cyan]Note: Database credentials were preserved[/cyan]")
 
@@ -775,7 +946,11 @@ def ensure_config_file():
     if CONFIG_FILE.exists():
         return False  # file already exists
 
-    save_config(DEFAULT_CONFIG.copy(), preserve_db_credentials=False)
+    save_config(
+        DEFAULT_CONFIG.copy(),
+        preserve_db_credentials=False,
+        persist_default_database=False,
+    )
     return True  # file was created
 
 
@@ -852,10 +1027,11 @@ VALID_MODES = ["global", "per-repo", "named"]
 class ContextInfo:
     """Metadata for a single named context."""
     name: str
-    database: str = "falkordb"          # neo4j | falkordb | kuzudb
+    database: str = "ladybugdb"        # neo4j | falkordb | kuzudb | ladybugdb
     db_path: str = ""                    # resolved at init if empty
     repos: List[str] = field(default_factory=list)
     cgcignore_path: str = ""            # resolved at init if empty
+    database_is_explicit: bool = True
 
 
 @dataclass
@@ -872,6 +1048,109 @@ def _default_db_path(context_name: str, database: str) -> str:
     return str(CONFIG_DIR / "contexts" / context_name / "db" / database)
 
 
+def _context_database_setting(context_path: Path) -> Optional[str]:
+    """Read an explicitly stored backend from a repository context, if present."""
+    local_yaml = Path(context_path) / "config.yaml"
+    if not local_yaml.exists():
+        return None
+    try:
+        with open(local_yaml, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        database = raw.get("database") if isinstance(raw, dict) else None
+        return str(database) if database else None
+    except Exception:
+        return None
+
+
+def _infer_legacy_context_database(
+    context_path: Path, default_database: str
+) -> str:
+    """Keep pre-backend-metadata repository contexts on existing graph data.
+
+    Before contexts persisted a backend setting, FalkorDB was the implicit
+    per-repository backend. Some contexts also used KùzuDB after FalkorDB
+    fallback. Prefer existing embedded storage over a newer installation's
+    LadybugDB default so those graphs remain visible. New contexts without
+    legacy storage use the configured default.
+    """
+    db_dir = Path(context_path) / "db"
+    if (db_dir / "kuzudb").exists() or (db_dir / "kuzudb.db").exists():
+        return "kuzudb"
+    if (db_dir / "falkordb").exists() or (db_dir / "falkordb.db").exists():
+        return "falkordb"
+    return default_database
+
+
+def _context_database_for_path(
+    context_path: Path, default_database: str
+) -> str:
+    """Resolve a repository context's stored or legacy backend consistently."""
+    return _context_database_and_path_for_path(context_path, default_database)[0]
+
+
+def _context_database_and_path_for_path(
+    context_path: Path, default_database: str
+) -> tuple[str, str]:
+    """Resolve both backend and existing database path for a repository context."""
+    database = _context_database_setting(context_path) or _infer_legacy_context_database(
+        context_path, default_database
+    )
+    return _existing_context_fallback_storage(context_path, database)
+
+
+def _existing_context_fallback_storage(
+    context_path: Path, database: str, db_path: Optional[str] = None
+) -> tuple[str, str]:
+    """Preserve existing KùzuDB paths and storage from historical fallbacks."""
+    requested_path = Path(db_path) if db_path else Path(context_path) / "db" / database
+    kuzu_path = Path(context_path) / "db" / "kuzudb"
+    kuzu_file_path = kuzu_path.with_suffix(".db")
+
+    if database == "kuzudb":
+        if (
+            requested_path == kuzu_path
+            and not requested_path.exists()
+            and kuzu_file_path.exists()
+        ):
+            requested_path = kuzu_file_path
+        return database, str(requested_path)
+
+    if database != "falkordb":
+        return database, str(requested_path)
+
+    canonical_falkordb_path = Path(context_path) / "db" / "falkordb"
+    if requested_path == canonical_falkordb_path and not requested_path.exists():
+        if kuzu_path.exists():
+            return "kuzudb", str(kuzu_path)
+        if kuzu_file_path.exists():
+            return "kuzudb", str(kuzu_file_path)
+    return database, str(requested_path)
+
+
+def _named_context_database_and_path(
+    context_name: str,
+    database: str,
+    db_path: str,
+    *,
+    database_is_explicit: bool,
+) -> tuple[str, str]:
+    """Resolve named-context storage, including an implicit prior fallback."""
+    context_path = CONFIG_DIR / "contexts" / context_name
+    canonical_db_path = _default_db_path(context_name, database)
+    if (
+        not database_is_explicit
+        and database == "ladybugdb"
+        and Path(db_path) == Path(canonical_db_path)
+    ):
+        # A previous run may have selected an installed embedded fallback
+        # while LadybugDB was unavailable. Keep opening that graph if the
+        # fallback's optional driver is available again on a later run.
+        database = _infer_legacy_context_database(context_path, database)
+        if database != "ladybugdb":
+            db_path = _default_db_path(context_name, database)
+    return _existing_context_fallback_storage(context_path, database, db_path)
+
+
 _LEGACY_FALKORDB_PATH = CONFIG_DIR / "global" / "falkordb.db"
 
 
@@ -881,8 +1160,8 @@ def _default_global_db_path(database: str, *, read_only: bool = False) -> str:
     New layout: ``CGC_HOME/global/db/<backend>/`` (default CGC_HOME is ~/.codegraphcontext)
     For backward-compat, we check:
     1. CGC_RUNTIME_DB_PATH environment variable (highest priority — works for all DBs)
-    2. FALKORDB_PATH in config (if database is falkordb)
-    3. Legacy flat path
+    2. FALKORDB_PATH or LADYBUGDB_PATH in config (within the active CGC_HOME profile)
+    3. Legacy FalkorDB flat path
     4. New layout default
     """
     # Generic env var override — highest priority for any backend.
@@ -891,15 +1170,28 @@ def _default_global_db_path(database: str, *, read_only: bool = False) -> str:
     env_override = os.environ.get("CGC_RUNTIME_DB_PATH")
     if env_override:
         return env_override
-    if database == "falkordb":
-        custom_path = load_config(read_only=read_only).get("FALKORDB_PATH")
+    config_key = {
+        "falkordb": "FALKORDB_PATH",
+        "ladybugdb": "LADYBUGDB_PATH",
+    }.get(database)
+    if config_key:
+        custom_path = load_config(read_only=read_only).get(config_key)
         if custom_path:
             resolved = Path(custom_path).resolve()
             # Ignore paths from another profile/repo that leaked via local .env
-            if str(resolved).startswith(str(CONFIG_DIR.resolve())):
+            try:
+                resolved.relative_to(CONFIG_DIR.resolve())
+            except ValueError:
+                pass
+            else:
                 return str(resolved)
-        if _LEGACY_FALKORDB_PATH.exists():
+        if database == "falkordb" and _LEGACY_FALKORDB_PATH.exists():
             return str(_LEGACY_FALKORDB_PATH)
+    if database == "kuzudb":
+        canonical_path = CONFIG_DIR / "global" / "db" / "kuzudb"
+        legacy_file_path = canonical_path.with_suffix(".db")
+        if not canonical_path.exists() and legacy_file_path.exists():
+            return str(legacy_file_path)
     return str(CONFIG_DIR / "global" / "db" / database)
 
 
@@ -937,6 +1229,10 @@ def load_context_config(*, create_if_missing: bool = True) -> ContextConfig:
         contexts: Dict[str, ContextInfo] = {}
         for name, meta in raw.get("contexts", {}).items():
             meta = meta or {}
+            # Contexts written before backend selection was persisted used
+            # FalkorDB as their implicit storage location. Keep sparse legacy
+            # records pointed at that data; newly created contexts use the
+            # LadybugDB default through ContextInfo/create_context.
             db = meta.get("database", "falkordb")
             ctx = ContextInfo(
                 name=name,
@@ -945,6 +1241,9 @@ def load_context_config(*, create_if_missing: bool = True) -> ContextConfig:
                 repos=[str(r) for r in meta.get("repos", [])],
                 cgcignore_path=meta.get("cgcignore_path") or str(
                     CONFIG_DIR / "contexts" / name / ".cgcignore"
+                ),
+                database_is_explicit=bool(
+                    meta.get("database_is_explicit", meta.get("database"))
                 ),
             )
             contexts[name] = ctx
@@ -966,12 +1265,15 @@ def save_context_config(cfg: ContextConfig) -> None:
 
     contexts_raw: Dict[str, Any] = {}
     for name, ctx in cfg.contexts.items():
-        contexts_raw[name] = {
+        context_raw = {
             "database": ctx.database,
             "db_path": ctx.db_path,
             "repos": ctx.repos,
             "cgcignore_path": ctx.cgcignore_path,
         }
+        if not ctx.database_is_explicit:
+            context_raw["database_is_explicit"] = False
+        contexts_raw[name] = context_raw
 
     # Read-merge the existing file first so that unrelated top-level sections
     # (e.g. ``workspace_mappings``) are preserved instead of being wiped out.
@@ -1010,6 +1312,7 @@ class ResolvedContext:
     db_path: str          # absolute path to the DB directory
     cgcignore_path: str   # path to the applicable .cgcignore
     is_local: bool = False  # True when a repository-local context was found
+    database_is_explicit: bool = False  # backend stored by this context, not inherited
 
 
 def find_local_cgc_dir(start: Optional[Path] = None) -> Optional[Path]:
@@ -1065,16 +1368,56 @@ def resolve_context(
                 f"Context '{cli_context}' is not registered. "
                 f"Create it with: cgc context create {cli_context}"
             )
+        database, db_path = _named_context_database_and_path(
+            cli_context,
+            ctx.database,
+            ctx.db_path,
+            database_is_explicit=ctx.database_is_explicit,
+        )
         return ResolvedContext(
             mode="named",
             context_name=cli_context,
-            database=ctx.database,
-            db_path=ctx.db_path,
+            database=database,
+            db_path=db_path,
             cgcignore_path=ctx.cgcignore_path,
+            database_is_explicit=ctx.database_is_explicit,
         )
 
     # --- 2. Repository-local context directory (per-repo mode only) ---
     local_cgc = find_local_cgc_dir(cwd) if cfg.mode == "per-repo" else None
+
+    # A saved workspace mapping can point at a context directory other than the
+    # repository's default location. Prefer it when there is no local context.
+    mapping = get_workspace_mapping(cwd) if local_cgc is None and cfg.mode == "per-repo" else None
+    if mapping:
+        mapped_ctx_path = Path(mapping["context_path"])
+        if mapped_ctx_path.exists() and mapped_ctx_path.is_dir():
+            mapped_db = mapping.get("database") or _context_database_for_path(
+                mapped_ctx_path, _configured_default_database()
+            )
+            mapped_database_is_explicit = (
+                bool(
+                    mapping.get("database_is_explicit", mapping.get("database"))
+                )
+                or _context_database_setting(mapped_ctx_path) is not None
+            )
+            if not mapped_database_is_explicit and mapped_db == "ladybugdb":
+                # An earlier run may have used an embedded backend after
+                # LadybugDB was unavailable. Keep opening that graph when a
+                # later run can use LadybugDB again.
+                mapped_db = _infer_legacy_context_database(mapped_ctx_path, mapped_db)
+            mapped_db, mapped_db_path = _existing_context_fallback_storage(
+                mapped_ctx_path, mapped_db
+            )
+            return ResolvedContext(
+                mode="per-repo",
+                context_name="",
+                database=mapped_db,
+                db_path=mapped_db_path,
+                cgcignore_path=str(mapped_ctx_path / ".cgcignore"),
+                is_local=True,
+                database_is_explicit=mapped_database_is_explicit,
+            )
     
     # In per-repo mode, resolve the path without creating it for read-only callers.
     if local_cgc is None and cfg.mode == "per-repo":
@@ -1083,7 +1426,7 @@ def resolve_context(
             local_cgc.mkdir(parents=True, exist_ok=True)
             (local_cgc / "db").mkdir(exist_ok=True)
 
-            inherited_db = load_config().get("DEFAULT_DATABASE", "falkordb")
+            inherited_db = load_config().get("DEFAULT_DATABASE", "ladybugdb")
 
             # Copy global .env into local context for easy per-repo tweaking.
             # Guard against the self-copy case: when cwd is the home directory,
@@ -1097,8 +1440,15 @@ def resolve_context(
 
             local_yaml = local_cgc / "config.yaml"
             if not local_yaml.exists():
+                local_config = (
+                    {"database": inherited_db}
+                    if _has_explicit_database_default(
+                        include_runtime=False, include_project_env=False
+                    )
+                    else {}
+                )
                 with open(local_yaml, "w", encoding="utf-8") as f:
-                    yaml.safe_dump({"database": inherited_db}, f)
+                    yaml.safe_dump(local_config, f)
 
             console.print(
                 f"[dim]Auto-initialized per-repo context at {local_cgc} "
@@ -1106,23 +1456,20 @@ def resolve_context(
             )
 
     if local_cgc is not None:
-        # Read local config.yaml if present
-        local_yaml = local_cgc / "config.yaml"
-        local_db = (
-            os.environ.get("CGC_RUNTIME_DB_TYPE")
-            or os.environ.get("DEFAULT_DATABASE")
-            or (load_config(read_only=True) if read_only else load_config()).get(
-                "DEFAULT_DATABASE", "falkordb"
-            )
+        runtime_db = os.environ.get("CGC_RUNTIME_DB_TYPE") or os.environ.get(
+            "DEFAULT_DATABASE"
         )
-        if local_yaml.exists():
-            try:
-                with open(local_yaml, encoding="utf-8") as f:
-                    local_raw = yaml.safe_load(f) or {}
-                local_db = local_raw.get("database", local_db)
-            except Exception:
-                pass
-        db_path = str(local_cgc / "db" / local_db)
+        default_db = (
+            load_config(read_only=True) if read_only else load_config()
+        ).get("DEFAULT_DATABASE", "ladybugdb")
+        local_db = _context_database_setting(local_cgc)
+        if local_db is None:
+            local_db = (
+                runtime_db
+                if runtime_db
+                else _infer_legacy_context_database(local_cgc, default_db)
+            )
+        local_db, db_path = _existing_context_fallback_storage(local_cgc, local_db)
         cgcignore = str(local_cgc / ".cgcignore")
         return ResolvedContext(
             mode="per-repo",
@@ -1131,28 +1478,14 @@ def resolve_context(
             db_path=db_path,
             cgcignore_path=cgcignore,
             is_local=True,
+            database_is_explicit=_context_database_setting(local_cgc) is not None,
         )
-
-    # --- 2b. Saved workspace mapping (per-repo mode only) ---
-    mapping = get_workspace_mapping(cwd) if cfg.mode == "per-repo" else None
-    if mapping:
-        mapped_ctx_path = Path(mapping["context_path"])
-        if mapped_ctx_path.exists() and mapped_ctx_path.is_dir():
-            mapped_db = mapping.get("database", "falkordb")
-            return ResolvedContext(
-                mode="per-repo",
-                context_name="",
-                database=mapped_db,
-                db_path=str(mapped_ctx_path / "db" / mapped_db),
-                cgcignore_path=str(mapped_ctx_path / ".cgcignore"),
-                is_local=True,
-            )
 
     # --- 3. Global config.yaml ---
     if cfg.mode == "named":
         ctx_name = cfg.default_context
         ctx = cfg.contexts.get(ctx_name) if ctx_name else None
-        db = ctx.database if ctx else "falkordb"
+        db = ctx.database if ctx else "ladybugdb"
         db_path = ctx.db_path if ctx else _default_db_path(ctx_name, db) if ctx_name else ""
         if not db_path:
             # No default context set — fall through to global
@@ -1163,17 +1496,26 @@ def resolve_context(
                 if ctx
                 else str(CONFIG_DIR / "contexts" / ctx_name / ".cgcignore")
             )
+            db, db_path = _named_context_database_and_path(
+                ctx_name,
+                db,
+                db_path,
+                database_is_explicit=(ctx.database_is_explicit if ctx else False),
+            )
             return ResolvedContext(
                 mode="named",
                 context_name=ctx_name,
                 database=db,
                 db_path=db_path,
                 cgcignore_path=cgcignore,
+                database_is_explicit=ctx.database_is_explicit if ctx else False,
             )
 
     # --- 4. Global fallback ---
     config = load_config(read_only=True) if read_only else load_config()
-    db = os.getenv("CGC_RUNTIME_DB_TYPE") or config.get("DEFAULT_DATABASE", "falkordb")
+    db = _global_default_database(
+        config.get("DEFAULT_DATABASE", "ladybugdb"), read_only=read_only
+    )
     return ResolvedContext(
         mode="global",
         context_name="",
@@ -1189,8 +1531,10 @@ def resolve_context(
 
 def create_context(
     name: str,
-    database: str = "falkordb",
+    database: str = "ladybugdb",
     db_path: Optional[str] = None,
+    *,
+    database_is_explicit: bool = True,
 ) -> bool:
     """Create a new named context. Returns True on success."""
     cfg = load_context_config()
@@ -1211,6 +1555,7 @@ def create_context(
         db_path=resolved_db_path,
         repos=[],
         cgcignore_path=cgcignore,
+        database_is_explicit=database_is_explicit,
     )
     save_context_config(cfg)
     console.print(f"[green]✅ Created context '{name}' (DB: {database})[/green]")
@@ -1246,7 +1591,7 @@ def register_repo_in_context(context_name: str, repo_path: str, auto_create: boo
         if not auto_create:
             console.print(f"[red]Context '{context_name}' not found. Create it first with 'cgc context create {context_name}'.[/red]")
             return False
-        create_context(context_name)
+        create_context(context_name, database_is_explicit=False)
         cfg = load_context_config()
         ctx = cfg.contexts.get(context_name)
         if ctx is None:
@@ -1315,6 +1660,7 @@ def discover_child_contexts(
     """
     start = (start or Path.cwd()).resolve()
     global_dir = CONFIG_DIR.resolve()
+    default_db = _configured_default_database()
     results: List[DiscoveredContext] = []
 
     def _scan(directory: Path, depth: int) -> None:
@@ -1329,21 +1675,15 @@ def discover_child_contexts(
                 continue
             candidate = get_repo_context_path(entry)
             if candidate.exists() and candidate.is_dir() and candidate.resolve() != global_dir:
-                local_db = "falkordb"
-                local_yaml = candidate / "config.yaml"
-                if local_yaml.exists():
-                    try:
-                        with open(local_yaml, encoding="utf-8") as f:
-                            raw = yaml.safe_load(f) or {}
-                        local_db = raw.get("database", "falkordb")
-                    except Exception:
-                        pass
+                local_db, local_db_path = _context_database_and_path_for_path(
+                    candidate, default_db
+                )
                 results.append(DiscoveredContext(
                     path=str(entry),
                     cgc_path=str(candidate),
                     repo_name=entry.name,
                     database=local_db,
-                    db_path=str(candidate / "db" / local_db),
+                    db_path=local_db_path,
                     cgcignore_path=str(candidate / ".cgcignore"),
                 ))
             if depth < max_depth:
@@ -1357,7 +1697,7 @@ def discover_child_contexts(
 # WORKSPACE MAPPINGS  (global persistence of CWD -> context path)
 # =============================================================================
 
-def _load_workspace_mappings() -> Dict[str, Dict[str, str]]:
+def _load_workspace_mappings() -> Dict[str, Dict[str, Any]]:
     """Load the ``workspace_mappings`` section from config.yaml."""
     if not CONTEXT_CONFIG_FILE.exists():
         return {}
@@ -1369,7 +1709,7 @@ def _load_workspace_mappings() -> Dict[str, Dict[str, str]]:
         return {}
 
 
-def _save_workspace_mappings(mappings: Dict[str, Dict[str, str]]) -> None:
+def _save_workspace_mappings(mappings: Dict[str, Dict[str, Any]]) -> None:
     """Write *mappings* back into the ``workspace_mappings`` key of config.yaml,
     preserving all other keys."""
     ensure_config_dir()
@@ -1390,32 +1730,38 @@ def _save_workspace_mappings(mappings: Dict[str, Dict[str, str]]) -> None:
         console.print(f"[red]Error saving workspace mappings: {e}[/red]")
 
 
-def get_workspace_mapping(cwd: Path) -> Optional[Dict[str, str]]:
+def get_workspace_mapping(cwd: Path) -> Optional[Dict[str, Any]]:
     """Look up a saved workspace mapping for *cwd*.
 
-    Returns a dict with ``context_path`` and ``database`` keys, or None.
+    Returns a dict with context path, database, and optional selection provenance.
     """
     mappings = _load_workspace_mappings()
     return mappings.get(str(cwd.resolve()))
 
 
-def save_workspace_mapping(cwd: Path, context_path: Path) -> None:
-    """Persist an association from *cwd* to a repository-context directory."""
+def save_workspace_mapping(
+    cwd: Path,
+    context_path: Path,
+    *,
+    database: Optional[str] = None,
+    database_is_explicit: bool = True,
+) -> None:
+    """Persist an association from *cwd* to a repository-context directory.
+
+    *database* may specify the backend actually selected after fallback. The
+    explicitness flag records whether that backend was selected by this context
+    or inherited from an automatic default.
+    """
     context_path = context_path.resolve()
-    local_db = "falkordb"
-    local_yaml = context_path / "config.yaml"
-    if local_yaml.exists():
-        try:
-            with open(local_yaml, encoding="utf-8") as f:
-                raw = yaml.safe_load(f) or {}
-            local_db = raw.get("database", "falkordb")
-        except Exception:
-            pass
+    local_db = database or _context_database_for_path(
+        context_path, _configured_default_database()
+    )
 
     mappings = _load_workspace_mappings()
     mappings[str(cwd.resolve())] = {
         "context_path": str(context_path),
         "database": local_db,
+        "database_is_explicit": database_is_explicit,
     }
     _save_workspace_mappings(mappings)
 
@@ -1431,6 +1777,6 @@ def remove_workspace_mapping(cwd: Path) -> bool:
     return False
 
 
-def list_workspace_mappings() -> Dict[str, Dict[str, str]]:
+def list_workspace_mappings() -> Dict[str, Dict[str, Any]]:
     """Return all saved workspace mappings."""
     return _load_workspace_mappings()

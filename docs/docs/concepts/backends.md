@@ -6,11 +6,12 @@ CodeGraphContext (CGC) implements a pluggable database architecture. A common in
 
 ## Backend Comparison Matrix
 
-| Feature / Metric | FalkorDB (Lite, Default) | KuzuDB | LadybugDB | FalkorDB (Remote) | Neo4j |
+| Feature / Metric | FalkorDB (Lite) | KuzuDB | LadybugDB (Default) | FalkorDB (Remote) | Neo4j / Nornic |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Type** | Embedded In-Memory | Embedded C++ | Embedded SQL | Remote Client | Remote Client |
 | **Operating System** | Linux / macOS | Cross-Platform | Cross-Platform | Cross-Platform | Cross-Platform |
 | **Setup Overhead** | None | None | None | Low (Docker) | Medium (Docker/Aura) |
+| **Availability** | Optional extra; Unix and Python 3.12+ | Optional extra | Included in the default install | Optional extra | Optional extra and an external service |
 | **Read Latency** | Extremely Low | Very Low | Low | Low | Medium |
 | **Max Capacity** | RAM-Bounded | Large | Medium | Unlimited | Unlimited |
 | **Visualization** | CLI / Custom Web UI | CLI / Custom Web UI | CLI / Custom Web UI | Neo4j Client (via Cypher) | Neo4j Browser Console |
@@ -31,10 +32,12 @@ KuzuDB is an in-process property graph database management system. It requires z
 | :--- | :--- | :--- |
 | `kuzu` | Not declared | `0.10.0`, `0.11.0`, `0.11.1`, `0.11.2`, `0.11.3` |
 
+KùzuDB 0.11.3 has no macOS or Windows Python 3.14 wheel; the `kuzu` extra is marked to avoid a source build on those targets.
+
 ### Setup
 Ensure the driver is installed:
 ```bash
-pip install kuzu
+python -m pip install 'codegraphcontext-fork[kuzu]'
 ```
 Select KuzuDB as the default backend:
 ```bash
@@ -45,7 +48,7 @@ cgc config db kuzudb
 
 ## 2. LadybugDB
 
-LadybugDB is an embedded graph database engine implemented over relational SQL drivers.
+LadybugDB is an embedded graph database engine included in the default installation.
 
 - **Concurreny Safe**: Thread-safe operations suitable for concurrent watcher tasks.
 - **Relational Backend**: Uses SQLite/relational queries underneath to simulate property graph operations.
@@ -83,10 +86,10 @@ Connects to an external Redis-compatible FalkorDB server instance running in a D
 Install the target drivers:
 ```bash
 # For FalkorDB Lite
-pip install falkordblite
+python -m pip install 'codegraphcontext-fork[falkordb-embedded]'
 
 # For FalkorDB Remote
-pip install falkordb
+python -m pip install 'codegraphcontext-fork[falkordb-remote]'
 ```
 Configure FalkorDB:
 ```bash
@@ -120,7 +123,7 @@ docker run -d --name neo4j-cgc -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/pas
 ```
 Install the Neo4j client library:
 ```bash
-pip install neo4j
+python -m pip install 'codegraphcontext-fork[neo4j]'
 ```
 Configure CGC to connect to Neo4j:
 ```bash
@@ -130,7 +133,7 @@ cgc config set NEO4J_USERNAME neo4j
 cgc config set NEO4J_PASSWORD password
 ```
 
-Or run the interactive wizard: `cgc neo4j setup`.
+The `neo4j` extra also provides the driver used by Nornic. Run `cgc neo4j setup` to configure Neo4j.
 
 ---
 
@@ -145,6 +148,8 @@ cgc config set NORNIC_USERNAME nornic
 cgc config set NORNIC_PASSWORD <password>
 ```
 
+Install the `neo4j` extra to provide the Bolt driver used by Nornic.
+
 Connection keys mirror the Neo4j section in [Configuration Reference](../reference/config.md).
 
 ---
@@ -158,5 +163,6 @@ When executing commands, CGC automatically resolves the active database connecti
 3. **Global Config File**: Reads the value set via `cgc config db`.
 4. **Fallback Auto-Detection**:
    - If `FALKORDB_HOST` env is present, connects to FalkorDB Remote.
-   - On Unix: Tries to initialize FalkorDB Lite -> KuzuDB -> Neo4j.
-   - On Windows: Tries to initialize KuzuDB -> Neo4j.
+   - Uses LadybugDB from the default installation.
+   - If LadybugDB's native engine is unavailable, automatically tries installed FalkorDB Lite, then KùzuDB. You can explicitly select either backend with `cgc config db`.
+   - `FALKORDB_HOST` selects the remote FalkorDB service; Neo4j and Nornic require the `neo4j` extra.

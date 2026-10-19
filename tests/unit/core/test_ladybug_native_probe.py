@@ -19,6 +19,9 @@ def _fresh_probe():
 
 
 def _fake_ladybug(monkeypatch, *, pybind, capi_error=None):
+    # A previous availability probe may have imported this extension before
+    # the fake package replaces ``ladybug`` and its backend loader.
+    monkeypatch.delitem(sys.modules, "ladybug._lbug", raising=False)
     pkg = types.ModuleType("ladybug")
     pkg.__path__ = []
     backend = types.ModuleType("ladybug._backend")

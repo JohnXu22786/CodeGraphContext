@@ -12,11 +12,12 @@ These three points are the most common sources of confusion in older docs and is
 
 | Platform | What CGC uses by default |
 | :--- | :--- |
-| **Unix (Linux/macOS), Python 3.12+** | **FalkorDB Lite** when `falkordblite` is installed (`DEFAULT_DATABASE=falkordb`) |
-| **Windows**, or FalkorDB Lite unavailable | **KuzuDB** as the automatic fallback |
+| **Default installation** | **LadybugDB**, the included embedded backend |
+| **FalkorDB Lite extra installed** | Select with `cgc config db falkordb` on Unix with Python 3.12+ |
+| **Kuzu extra installed** | Select with `cgc config db kuzudb` |
 | **Any platform** | Override anytime with `cgc config db <backend>` |
 
-KuzuDB is **not** the universal default—it is the cross-platform fallback when FalkorDB Lite cannot run.
+FalkorDB Lite, KùzuDB, Neo4j, and Nornic are optional backends. Install their named extras before selecting them; without an optional embedded backend, LadybugDB remains the working default.
 
 ### Neo4j username key
 
@@ -63,7 +64,11 @@ cgc config show
 Persists key-value settings to the global environment configuration file:
 
 ```bash
-# Set default database engine
+# LadybugDB is the standard install's default
+cgc config set DEFAULT_DATABASE ladybugdb
+
+# Optional backends require their extra before selection
+python -m pip install 'codegraphcontext-fork[falkordb-embedded]'
 cgc config set DEFAULT_DATABASE falkordb
 
 # Change file size threshold (in MB)
@@ -114,7 +119,7 @@ cgc config set ALLOW_DB_DELETION false
 
 | Config Key | Default | Description |
 | :--- | :--- | :--- |
-| **`DEFAULT_DATABASE`** | `falkordb` | Active database engine. Options: `kuzudb`, `ladybugdb`, `falkordb`, `falkordb-remote`, `neo4j`. |
+| **`DEFAULT_DATABASE`** | `ladybugdb` | Active database engine. Options: `ladybugdb`, `kuzudb`, `falkordb`, `falkordb-remote`, `neo4j`, `nornic`. |
 | **`ENABLE_AUTO_WATCH`** | `false` | When `true`, indexing a project automatically initializes a directory watcher. |
 | **`PARALLEL_WORKERS`** | `4` | Max thread pool size for parsing code files concurrently. Shared by full indexing and the file watcher. Values above 32 are clamped. An empty or invalid value falls back to 10 for a full index and 4 for the watcher. |
 | **`CACHE_ENABLED`** | `true` | Caches file hashes to support fast incremental scans. |

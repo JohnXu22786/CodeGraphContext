@@ -22,7 +22,7 @@ LADYBUG_SPEC = EmbeddedBackendSpec(
     path_env_var="LADYBUGDB_PATH",
     config_key="LADYBUGDB_PATH",
     default_dir="ladybugdb",
-    install_hint="Run 'pip install ladybug'",
+    install_hint="Run `python -m pip install 'codegraphcontext-fork[ladybug]'`",
 )
 
 
