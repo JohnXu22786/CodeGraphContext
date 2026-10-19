@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ...core.cgcignore import build_ignore_spec, parse_cgcignore_lines
-from ...core.jobs import JobManager, JobStatus
+from ...core.jobs import JobManager, JobStatus, wait_task_until_stopped
 from ...utils.debug_log import debug_log, error_logger, info_logger, warning_logger
 from ...utils.path_ignore import file_path_has_ignore_dir_segment
 from .constants import DEFAULT_IGNORE_PATTERNS
@@ -33,6 +33,10 @@ def name_from_symbol(symbol: str) -> str:
     return last or symbol
 
 
+class IncompleteScipIndexError(RuntimeError):
+    """Raised when SCIP cannot write every required file to the graph."""
+
+
 async def run_scip_index_async(
     path: Path,
     is_dependency: bool,
@@ -45,23 +49,39 @@ async def run_scip_index_async(
     scip_indexer_mod: Any,
     cgcignore_path: Optional[str] = None,
     index_summary: Optional[dict] = None,
+    repo_root: Optional[Path] = None,
 ) -> None:
     """Run blocking SCIP phases on one worker, including thread-local parsers.
 
     Cancellation stops subsequent phases when the current native/subprocess
-    call returns. It cannot roll back or interrupt an already-running write.
+    call returns. The caller waits for that operation to finish before graph
+    cleanup; the driver itself does not expose a portable interruption API.
     """
     cancelled = threading.Event()
-    try:
-        await asyncio.to_thread(
+    worker = asyncio.create_task(
+        asyncio.to_thread(
             _run_scip_index,
             path, is_dependency, job_id, lang, writer, job_manager,
             parsers_keys, get_parser, scip_indexer_mod, cgcignore_path,
-            index_summary, cancellation_event=cancelled,
+            index_summary, repo_root, cancellation_event=cancelled,
         )
+    )
+    try:
+        await asyncio.shield(worker)
     except asyncio.CancelledError:
+        if job_id:
+            # Let cancellation contend with complete_job's finalization gate
+            # before draining the worker. If cancellation wins, the worker's
+            # finalizer cannot publish COMPLETED after the caller was cancelled.
+            job_manager.request_cancel(job_id, reason="request_cancelled")
         cancelled.set()
+        await wait_task_until_stopped(worker)
         raise
+    if job_id:
+        job = job_manager.get_job(job_id)
+        if job is not None and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+            if not job_manager.complete_job(job_id, end_time=datetime.now()):
+                job_manager.raise_if_cancelled(job_id)
 
 
 def _run_scip_index(
@@ -76,26 +96,30 @@ def _run_scip_index(
     scip_indexer_mod: Any,
     cgcignore_path: Optional[str] = None,
     index_summary: Optional[dict] = None,
+    repo_root: Optional[Path] = None,
     *,
     cancellation_event: threading.Event,
 ) -> None:
     """Run SCIP CLI, write graph, supplement with Tree-sitter, write SCIP CALLS edges."""
 
     def check_cancelled():
-        job = job_manager.get_job(job_id) if job_id else None
-        if cancellation_event.is_set() or (job is not None and job.status == JobStatus.CANCELLED):
+        if job_id:
+            job_manager.raise_if_cancelled(job_id)
+        if cancellation_event.is_set():
             raise asyncio.CancelledError
 
     check_cancelled()
     ScipIndexer = scip_indexer_mod.ScipIndexer
     ScipIndexParser = scip_indexer_mod.ScipIndexParser
 
-    if job_id:
-        job_manager.update_job(job_id, status=JobStatus.RUNNING)
-
-    repo_root = path if path.is_dir() else path.parent.resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Index source path no longer exists: {path}")
+    repo_root = Path(repo_root).resolve() if repo_root is not None else (
+        path.resolve() if path.is_dir() else path.parent.resolve()
+    )
     check_cancelled()
-    writer.add_repository_to_graph(repo_root, is_dependency)
+    writer.add_repository_to_graph(repo_root, is_dependency, index_state="building")
+    check_cancelled()
     repo_name = repo_root.name
     index_root = path.resolve() if path.is_dir() else path.parent.resolve()
 
@@ -133,7 +157,9 @@ def _run_scip_index(
 
     try:
         with tempfile.TemporaryDirectory(prefix="cgc_scip_") as tmpdir:
+            check_cancelled()
             scip_file = ScipIndexer().run(path, lang, Path(tmpdir))
+            check_cancelled()
 
             if not scip_file:
                 warning_logger(
@@ -162,6 +188,8 @@ def _run_scip_index(
             job_manager.update_job(job_id, total_files=len(files_data))
 
         processed = 0
+        successful_file_writes = 0
+        file_write_failures = []
         for abs_path_str, file_data in files_data.items():
             check_cancelled()
             file_path = Path(abs_path_str)
@@ -228,17 +256,22 @@ def _run_scip_index(
             try:
                 check_cancelled()
                 writer.add_file_to_graph(file_data, repo_name, imports_map)
+                successful_file_writes += 1
             except Exception as e:
-                # One unwritable file must not abort the run, and it must
-                # still be accounted for — otherwise the graph stays short of
-                # the discovery census and `cgc index` reports "only N of M
-                # files indexed. Continuing." on every run, forever (#1673).
+                # Keep a minimal node when possible, but never treat it as a
+                # replacement for the full SCIP graph write. That write may
+                # have persisted only some symbols before raising; the caller
+                # must remove the partial repository before it can be ready.
+                file_write_failures.append({"path": abs_path_str, "error": str(e)})
                 warning_logger(f"SCIP file write failed for {abs_path_str}: {e}; recording minimal node")
                 try:
                     check_cancelled()
                     writer.add_minimal_file_node(Path(abs_path_str), index_root, is_dependency)
                 except Exception as e2:
                     debug_log(f"Minimal node fallback also failed for {abs_path_str}: {e2}")
+                    file_write_failures[-1]["error"] = (
+                        f"{e}; minimal node fallback failed: {e2}"
+                    )
 
             processed += 1
             if job_id:
@@ -294,6 +327,7 @@ def _run_scip_index(
                         is_dependency,
                     )
                     minimal_nodes += 1
+                    successful_file_writes += 1
                     processed += 1
                     if job_id:
                         job_manager.update_job(
@@ -301,6 +335,7 @@ def _run_scip_index(
                         )
                 except Exception as e:
                     debug_log(f"Minimal file node failed for {abs_str}: {e}")
+                    file_write_failures.append({"path": abs_str, "error": str(e)})
                 continue
             try:
                 ts_data = ts_parser.parse(repo_file, is_dependency, index_source=True)
@@ -311,13 +346,32 @@ def _run_scip_index(
                     check_cancelled()
                     writer.add_minimal_file_node(repo_file, index_root, is_dependency)
                     minimal_nodes += 1
+                    successful_file_writes += 1
                     processed += 1
                     continue
                 ts_data["repo_path"] = str(index_root)
                 ts_data.setdefault("function_calls_scip", [])
                 ts_data.setdefault("module_level_calls_scip", [])
-                check_cancelled()
-                writer.add_file_to_graph(ts_data, repo_name, imports_map)
+                try:
+                    check_cancelled()
+                    writer.add_file_to_graph(ts_data, repo_name, imports_map)
+                except Exception as e:
+                    # A minimal File node cannot stand in for a failed full
+                    # graph write: symbols may have been partially persisted.
+                    file_write_failures.append({"path": abs_str, "error": str(e)})
+                    debug_log(f"Tree-sitter supplement write failed for {abs_str}: {e}")
+                    try:
+                        check_cancelled()
+                        writer.add_minimal_file_node(repo_file, index_root, is_dependency)
+                        minimal_nodes += 1
+                    except Exception as e2:
+                        debug_log(f"Minimal node fallback also failed for {abs_str}: {e2}")
+                        file_write_failures[-1]["error"] = (
+                            f"{e}; minimal node fallback failed: {e2}"
+                        )
+                    processed += 1
+                    continue
+                successful_file_writes += 1
                 # Also include in files_data so inheritance/calls resolution sees them
                 files_data[abs_str] = ts_data
                 supplemented += 1
@@ -332,9 +386,11 @@ def _run_scip_index(
                     check_cancelled()
                     writer.add_minimal_file_node(repo_file, index_root, is_dependency)
                     minimal_nodes += 1
+                    successful_file_writes += 1
                     processed += 1
                 except Exception as e2:
                     debug_log(f"Minimal node fallback also failed for {abs_str}: {e2}")
+                    file_write_failures.append({"path": abs_str, "error": str(e2)})
         if supplemented:
             check_cancelled()
             # Re-run pre_scan with the expanded file list so imports_map is complete
@@ -346,6 +402,23 @@ def _run_scip_index(
         if minimal_nodes:
             info_logger(
                 f"[SCIP+TS] Recorded {minimal_nodes} non-code file(s) as minimal File nodes"
+            )
+
+        if file_write_failures:
+            if job_id:
+                job_manager.update_job(
+                    job_id,
+                    status_message=f"{len(file_write_failures)} file(s) could not be written to the graph",
+                )
+            if successful_file_writes == 0:
+                message = f"All {len(file_write_failures)} SCIP file write attempts failed"
+            else:
+                message = (
+                    f"{len(file_write_failures)} of {successful_file_writes + len(file_write_failures)} "
+                    "SCIP file writes failed"
+                )
+            raise IncompleteScipIndexError(
+                f"{message}; the partial repository index will be removed."
             )
 
         check_cancelled()
@@ -372,6 +445,7 @@ def _run_scip_index(
 
         check_cancelled()
         writer.write_scip_call_edges(files_data, name_from_symbol)
+        check_cancelled()
 
         # CLI-facing summary — the SCIP path never populated one, so
         # `cgc index` finished silently with no file/function/class report
@@ -393,18 +467,25 @@ def _run_scip_index(
                 "class_nodes": sum(len(fd.get("classes", [])) for fd in all_file_data),
                 "call_edges": sum(len(g) for g in resolved_calls),
                 "serialization_seconds": 0.0,
-                "failed_files": 0,
+                "failed_files": len(file_write_failures),
+                "failed_file_details": file_write_failures,
                 "minimal_file_nodes": minimal_nodes,
             })
 
         if job_id:
             check_cancelled()
-            job_manager.update_job(job_id, status=JobStatus.COMPLETED, end_time=datetime.now())
+            if not job_manager.complete_job(
+                job_id,
+                end_time=datetime.now(),
+                before_commit=lambda: writer.mark_repository_ready(repo_root),
+            ):
+                check_cancelled()
+        else:
+            writer.mark_repository_ready(repo_root)
 
     except RuntimeError:
         raise
     except Exception as e:
         check_cancelled()
         error_logger(f"SCIP indexing failed for {path}: {e}\n{traceback.format_exc()}")
-        if job_id:
-            job_manager.fail_job(job_id, e)
+        raise

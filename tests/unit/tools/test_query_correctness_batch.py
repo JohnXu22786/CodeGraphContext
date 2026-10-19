@@ -80,6 +80,10 @@ class _Recorder:
         return False
 
     def run(self, query, **params):
+        if "index_state: 'building'" in query:
+            res = MagicMock()
+            res.single.return_value = None
+            return res
         self.last_query = query
         res = MagicMock()
         res.data.return_value = self._rows

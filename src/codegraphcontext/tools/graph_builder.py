@@ -9,6 +9,7 @@ parsers, persistence, resolution, and schema management.
 from __future__ import annotations
 
 import asyncio
+import threading
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
@@ -16,7 +17,13 @@ from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 from ..cli.config_manager import get_config_value
 if TYPE_CHECKING:
     from ..core.database import DatabaseManager
-from ..core.jobs import JobManager, JobStatus
+from ..core.jobs import (
+    JobCancelledError,
+    JobManager,
+    JobStatus,
+    run_blocking_until_stopped,
+    wait_task_until_stopped,
+)
 from ..utils.debug_log import debug_log, error_logger, info_logger, warning_logger
 from .indexing.constants import DEFAULT_IGNORE_PATTERNS  # noqa: F401 - compatibility export
 from .indexing.persistence.writer import GraphWriter, sort_import_rows_for_metadata  # noqa: F401 - compatibility export
@@ -26,8 +33,17 @@ from .indexing.resolution.calls import build_function_call_groups, resolve_funct
 from .indexing.resolution.inheritance import build_inheritance_and_csharp_files
 from .indexing.sanitize import MAX_STR_LEN, sanitize_props
 from .indexing.schema import create_graph_schema
-from .indexing.scip_pipeline import name_from_symbol, run_scip_index_async
+from .indexing.scip_pipeline import (
+    IncompleteScipIndexError,
+    name_from_symbol,
+    run_scip_index_async,
+)
 from .tree_sitter_parser import TreeSitterParser
+
+_REPOSITORY_LOCKS_GUARD = threading.Lock()
+_RepositoryLockKey = Tuple[int, int, str]
+_REPOSITORY_LOCKS: Dict[_RepositoryLockKey, Tuple[Any, int]] = {}
+_REPOSITORY_ACTIVE_PATHS: Dict[Tuple[int, int], set[Path]] = {}
 
 PARSER_EXTENSIONS = {
     ".py": "python",
@@ -121,7 +137,6 @@ class GraphBuilder:
             "Dockerfile", "Makefile", ".gitignore", ".dockerignore", ".env"
         }
         
-        import threading
         self._parsed_cache = threading.local()
         self.create_schema()
 
@@ -193,7 +208,9 @@ class GraphBuilder:
 
 
     # Language-agnostic method
-    def add_repository_to_graph(self, repo_path: Path, is_dependency: bool = False) -> None:
+    def add_repository_to_graph(
+        self, repo_path: Path, is_dependency: bool = False, index_state: str = "ready"
+    ) -> None:
         """Add a repository node to the graph.
 
         Delegates to :meth:`GraphWriter.add_repository_to_graph`.
@@ -205,7 +222,7 @@ class GraphBuilder:
         is_dependency : bool, optional
             Whether this repository is a dependency (default ``False``).
         """
-        self._writer.add_repository_to_graph(repo_path, is_dependency)
+        self._writer.add_repository_to_graph(repo_path, is_dependency, index_state=index_state)
 
     def add_file_to_graph(
         self, file_data: Dict, repo_name: str, imports_map: dict, repo_path_str: str = None
@@ -579,7 +596,13 @@ class GraphBuilder:
             return None
 
     async def _build_graph_from_scip(
-        self, path: Path, is_dependency: bool, job_id: Optional[str], lang: str, cgcignore_path: Optional[str] = None
+        self,
+        path: Path,
+        is_dependency: bool,
+        job_id: Optional[str],
+        lang: str,
+        cgcignore_path: Optional[str] = None,
+        repo_root: Optional[Path] = None,
     ):
         from . import scip_indexer
 
@@ -598,7 +621,151 @@ class GraphBuilder:
             scip_indexer,
             cgcignore_path,
             index_summary=self.last_index_summary,
+            repo_root=repo_root,
         )
+
+    async def _cleanup_partial_index(
+        self,
+        repo_root: Path,
+        *,
+        only_if_building: bool = False,
+        propagate_cancellation: bool = True,
+    ) -> Optional[Exception]:
+        """Remove an incomplete repository after its active DB operation drains."""
+        repo_root = Path(repo_root).resolve()
+
+        def delete_partial_index() -> None:
+            if (
+                only_if_building
+                and self._writer.get_repository_index_state(repo_root) != "building"
+            ):
+                return
+            self._writer.delete_repository_from_graph(
+                str(repo_root), preserve_nested_repositories=True
+            )
+
+        cleanup_task = asyncio.create_task(
+            asyncio.to_thread(delete_partial_index)
+        )
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            # The blocking database call cannot be interrupted. Drain it and
+            # inspect its result before either propagating this new caller
+            # cancellation or returning to a caller already handling one.
+            await wait_task_until_stopped(cleanup_task)
+            if cleanup_task.cancelled():
+                cleanup_error = RuntimeError("partial graph cleanup worker was cancelled")
+            else:
+                cleanup_error = cleanup_task.exception()
+            if cleanup_error is not None:
+                if isinstance(cleanup_error, Exception):
+                    error_logger(f"Failed to remove partial index for {repo_root}: {cleanup_error}")
+                else:
+                    cleanup_error = RuntimeError(
+                        f"partial graph cleanup worker failed: {cleanup_error}"
+                    )
+            if propagate_cancellation:
+                raise
+            if cleanup_error is not None:
+                return cleanup_error
+        except Exception as exc:  # noqa: BLE001 - preserve cleanup diagnostics
+            error_logger(f"Failed to remove partial index for {repo_root}: {exc}")
+            return exc
+        return None
+
+    async def _remove_stale_partial_index(self, repo_root: Path) -> None:
+        """Remove an earlier incomplete graph before retrying that repository."""
+        state = await run_blocking_until_stopped(
+            self._writer.get_repository_index_state, repo_root
+        )
+        if state != "building":
+            return
+        cleanup_error = await self._cleanup_partial_index(repo_root)
+        if cleanup_error is not None:
+            raise RuntimeError(
+                f"Previous partial index for {repo_root} could not be removed: {cleanup_error}"
+            ) from cleanup_error
+
+    def _get_repository_lock(self, repo_root: Path) -> Tuple[_RepositoryLockKey, Any]:
+        """Share a path lock across builders targeting the same database graph."""
+        db_manager = getattr(self, "db_manager", None)
+        writer = getattr(self, "_writer", None)
+        driver = getattr(writer, "driver", None)
+        if driver is not None:
+            # Managers may ignore aliases or map None to their configured
+            # default. Key on the selected graph/database handle so builders
+            # addressing the same store share one lock.
+            for attribute in ("graph", "db", "_driver"):
+                graph_handle = getattr(driver, attribute, None)
+                if graph_handle is not None:
+                    driver = graph_handle
+                    break
+            graph_identity = id(driver)
+        else:
+            graph_identity = id(getattr(self, "job_manager", self))
+        key = (
+            id(db_manager) if db_manager is not None else id(self.job_manager),
+            graph_identity,
+            repo_root.resolve().as_posix(),
+        )
+        with _REPOSITORY_LOCKS_GUARD:
+            entry = _REPOSITORY_LOCKS.get(key)
+            if entry is None:
+                lock, users = threading.Lock(), 0
+            else:
+                lock, users = entry
+            _REPOSITORY_LOCKS[key] = (lock, users + 1)
+        return key, lock
+
+    @staticmethod
+    def _try_acquire_repository_lock(
+        key: _RepositoryLockKey, lock: Any
+    ) -> bool:
+        """Acquire the graph's index lock when no repository is active.
+
+        Repository deletion also purges dangling pathless nodes shared across
+        repositories. Keep indexing jobs on one graph serialized so cleanup
+        cannot remove a sibling job's nodes between their creation and links.
+        """
+        graph_key = key[:2]
+        repo_path = Path(key[2])
+        with _REPOSITORY_LOCKS_GUARD:
+            active_paths = _REPOSITORY_ACTIVE_PATHS.get(graph_key, set())
+            if active_paths:
+                return False
+            if not lock.acquire(blocking=False):
+                return False
+            _REPOSITORY_ACTIVE_PATHS.setdefault(graph_key, set()).add(repo_path)
+            return True
+
+    @staticmethod
+    def _release_repository_lock(
+        key: _RepositoryLockKey, lock: Any
+    ) -> None:
+        """Release a path lock and its overlapping-path reservation."""
+        graph_key = key[:2]
+        repo_path = Path(key[2])
+        with _REPOSITORY_LOCKS_GUARD:
+            lock.release()
+            active_paths = _REPOSITORY_ACTIVE_PATHS.get(graph_key)
+            if active_paths is not None:
+                active_paths.discard(repo_path)
+                if not active_paths:
+                    _REPOSITORY_ACTIVE_PATHS.pop(graph_key, None)
+
+    @staticmethod
+    def _release_repository_lock_reference(key: _RepositoryLockKey, lock: Any) -> None:
+        """Drop an unused keyed lock without removing locks that have waiters."""
+        with _REPOSITORY_LOCKS_GUARD:
+            entry = _REPOSITORY_LOCKS.get(key)
+            if entry is None or entry[0] is not lock:
+                return
+            users = entry[1] - 1
+            if users <= 0 and not lock.locked():
+                del _REPOSITORY_LOCKS[key]
+            else:
+                _REPOSITORY_LOCKS[key] = (lock, max(users, 0))
 
     def _name_from_symbol(self, symbol: str) -> str:
         """Extract a human-readable name from a SCIP symbol string.
@@ -618,7 +785,59 @@ class GraphBuilder:
     async def build_graph_from_path_async(
         self, path: Path, is_dependency: bool = False, job_id: str = None, cgcignore_path: str = None
     ):
+        # Preserve the indexed root before any worker can observe source removal.
+        # Re-detecting it during cleanup could otherwise mistake a removed
+        # repository directory for a file and delete its parent graph instead.
+        repo_root = path.resolve() if path.is_dir() else path.parent.resolve()
+        lock_key, repo_lock = self._get_repository_lock(repo_root)
+        repo_lock_acquired = False
         try:
+            while not self._try_acquire_repository_lock(lock_key, repo_lock):
+                if job_id:
+                    self.job_manager.raise_if_cancelled(job_id)
+                await asyncio.sleep(0.01)
+            repo_lock_acquired = True
+            # Keep queued work PENDING. Cancellation while it waits can finish
+            # without cleanup, which must never erase the active job's graph.
+            if job_id and not self.job_manager.start_job(job_id, asyncio.current_task()):
+                return
+            await self._build_graph_from_path_async_locked(
+                path, is_dependency, job_id, cgcignore_path, repo_root
+            )
+        except JobCancelledError:
+            if not repo_lock_acquired and job_id:
+                self.job_manager.finish_cancelled(job_id)
+        except asyncio.CancelledError:
+            if not repo_lock_acquired and job_id:
+                accepted = self.job_manager.request_cancel(job_id, reason="request_cancelled")
+                job = self.job_manager.get_job(job_id)
+                if accepted and job is not None and job.status != JobStatus.COMPLETED:
+                    self.job_manager.finish_cancelled(job_id)
+            raise
+        finally:
+            if repo_lock_acquired:
+                self._release_repository_lock(lock_key, repo_lock)
+            self._release_repository_lock_reference(lock_key, repo_lock)
+
+    async def _build_graph_from_path_async_locked(
+        self,
+        path: Path,
+        is_dependency: bool,
+        job_id: Optional[str],
+        cgcignore_path: Optional[str],
+        repo_root: Path,
+    ) -> None:
+        """Build an index while holding the canonical repository lock."""
+        if not path.exists():
+            error = FileNotFoundError(f"Index source path no longer exists: {path}")
+            if job_id:
+                self.job_manager.fail_job(job_id, error)
+                return
+            raise error
+        try:
+            if job_id:
+                self.job_manager.raise_if_cancelled(job_id)
+            await self._remove_stale_partial_index(repo_root)
             scip_enabled = (get_config_value("SCIP_INDEXER") or "false").lower() == "true"
             if scip_enabled:
                 from .scip_indexer import ScipIndexer, detect_project_lang, is_scip_available
@@ -646,11 +865,35 @@ class GraphBuilder:
                 if detected_lang and is_scip_available(detected_lang):
                     info_logger(f"SCIP_INDEXER=true — using SCIP for language: {detected_lang}")
                     try:
-                        await self._build_graph_from_scip(path, is_dependency, job_id, detected_lang, cgcignore_path)
+                        await self._build_graph_from_scip(
+                            path, is_dependency, job_id, detected_lang, cgcignore_path, repo_root
+                        )
+                        job = self.job_manager.get_job(job_id) if job_id else None
+                        if job is not None and job.status == JobStatus.FAILED:
+                            cleanup_error = await self._cleanup_partial_index(
+                                repo_root, only_if_building=True
+                            )
+                            if cleanup_error is not None:
+                                self.job_manager.fail_cleanup_job(job_id, cleanup_error)
+                            else:
+                                self.job_manager.finish_job(job_id)
                         return
+                    except IncompleteScipIndexError:
+                        raise
                     except Exception as e:
+                        if job_id:
+                            self.job_manager.raise_if_cancelled(job_id)
+                        cleanup_error = await self._cleanup_partial_index(
+                            repo_root, only_if_building=True
+                        )
+                        if cleanup_error is not None:
+                            raise RuntimeError(
+                                f"SCIP indexing failed and partial graph cleanup failed: "
+                                f"{e}; {cleanup_error}"
+                            ) from e
                         warning_logger(
                             f"SCIP indexing failed for {path}: {e}. "
+                            "Removed partial SCIP data; "
                             "Falling back to Tree-sitter."
                         )
                 elif detected_lang:
@@ -664,6 +907,8 @@ class GraphBuilder:
                         "Falling back to Tree-sitter."
                     )
 
+            if job_id:
+                self.job_manager.raise_if_cancelled(job_id)
             self.last_call_resolution_diagnostics = []
             self.last_index_summary = {}
             await run_tree_sitter_index_async(
@@ -679,21 +924,93 @@ class GraphBuilder:
                 self.add_minimal_file_node,
                 call_resolution_diagnostics=self.last_call_resolution_diagnostics,
                 index_summary=self.last_index_summary,
+                repo_root=repo_root,
             )
+        except JobCancelledError:
+            try:
+                cleanup_error = await self._cleanup_partial_index(
+                    repo_root, only_if_building=True
+                )
+            except asyncio.CancelledError:
+                cleanup_error = await self._cleanup_partial_index(
+                    repo_root,
+                    only_if_building=True,
+                    propagate_cancellation=False,
+                )
+                if job_id:
+                    if cleanup_error is not None:
+                        self.job_manager.fail_cleanup_job(job_id, cleanup_error)
+                    else:
+                        self.job_manager.finish_cancelled(job_id)
+                raise
+            if job_id:
+                if cleanup_error is not None:
+                    self.job_manager.fail_cleanup_job(job_id, cleanup_error)
+                else:
+                    self.job_manager.finish_cancelled(job_id)
+        except asyncio.CancelledError:
+            cancel_accepted = not job_id or self.job_manager.request_cancel(
+                job_id, reason="request_cancelled"
+            )
+            job = self.job_manager.get_job(job_id) if job_id else None
+            if job is not None and job.status == JobStatus.COMPLETED and not cancel_accepted:
+                # Completion already won atomically; keep its complete graph.
+                raise
+            cleanup_error = await self._cleanup_partial_index(
+                repo_root,
+                only_if_building=True,
+                propagate_cancellation=False,
+            )
+            if job_id:
+                if cleanup_error is not None:
+                    self.job_manager.fail_cleanup_job(job_id, cleanup_error)
+                else:
+                    self.job_manager.finish_cancelled(job_id)
+            raise
         except Exception as e:
             error_message = str(e)
             error_logger(f"Failed to build graph for path {path}: {error_message}\n{traceback.format_exc()}")
+            try:
+                cleanup_error = await self._cleanup_partial_index(
+                    repo_root, only_if_building=True
+                )
+            except asyncio.CancelledError:
+                cancel_accepted = not job_id or self.job_manager.request_cancel(
+                    job_id, reason="request_cancelled"
+                )
+                job = self.job_manager.get_job(job_id) if job_id else None
+                if job is not None and job.status == JobStatus.COMPLETED and not cancel_accepted:
+                    raise
+                cleanup_error = await self._cleanup_partial_index(
+                    repo_root,
+                    only_if_building=True,
+                    propagate_cancellation=False,
+                )
+                if job_id:
+                    if cleanup_error is not None:
+                        self.job_manager.fail_cleanup_job(job_id, cleanup_error)
+                    else:
+                        self.job_manager.finish_cancelled(job_id, error=e)
+                raise
             if job_id:
-                if (
-                    "no such file found" in error_message
-                    or "deleted" in error_message
-                    or "not found" in error_message
+                if self.job_manager.is_cancel_requested(job_id):
+                    if cleanup_error is not None:
+                        self.job_manager.fail_cleanup_job(job_id, cleanup_error)
+                    else:
+                        self.job_manager.finish_cancelled(job_id, error=e)
+                elif any(
+                    phrase in error_message.lower()
+                    for phrase in ("no such file found", "deleted", "not found")
                 ):
-                    status = JobStatus.CANCELLED
+                    self.job_manager.request_cancel(job_id, reason="source_removed")
+                    if cleanup_error is not None:
+                        self.job_manager.fail_cleanup_job(job_id, cleanup_error)
+                    else:
+                        self.job_manager.finish_cancelled(job_id, error=e)
                 else:
-                    status = JobStatus.FAILED
-
-                self.job_manager.fail_job(job_id, e, status=status)
+                    if cleanup_error is not None:
+                        e = RuntimeError(f"{e}; partial index cleanup failed: {cleanup_error}")
+                    self.job_manager.fail_job(job_id, e)
 
     def add_minimal_file_node(self, file_path: Path, repo_path: Path, is_dependency: bool = False) -> None:
         """Create a minimal File node without parsing (for unsupported file types).

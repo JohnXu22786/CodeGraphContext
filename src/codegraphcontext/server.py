@@ -7,6 +7,7 @@ import sys
 import traceback
 import os
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 from dataclasses import asdict
@@ -15,7 +16,11 @@ from typing import Any, Dict, Coroutine, Optional, List, Set
 
 from .prompts import LLM_SYSTEM_PROMPT, build_system_prompt
 from .core import get_database_manager
-from .core.jobs import JobManager, JobStatus
+from .core.jobs import (
+    JobManager,
+    JobStatus,
+    wait_task_until_stopped,
+)
 from .core.watcher import CodeWatcher
 from .tools.graph_builder import GraphBuilder
 from .tools.code_finder import CodeFinder
@@ -51,6 +56,22 @@ from .tools.handlers import (
 
 DEFAULT_EDIT_DISTANCE = 2
 DEFAULT_FUZZY_SEARCH = False
+
+
+def _cancel_stdio_tool_request(request_id, active_requests, cancelling_requests):
+    """Cancel an active stdio request once without relying on newer Task APIs."""
+    try:
+        tool_task = active_requests.get(request_id)
+    except TypeError:
+        return
+    if (
+        tool_task is not None
+        and not tool_task.done()
+        and request_id not in cancelling_requests
+    ):
+        cancelling_requests.add(request_id)
+        tool_task.cancel()
+
 
 def _teardown_db_manager(db_manager) -> None:
     """Release DB resources; stop FalkorDB Lite worker when switching contexts."""
@@ -93,6 +114,7 @@ class MCPServer:
         self.discovered_child_contexts: List[dict] = []
         self._context_note_pending = False
         self.disabled_tools: Set[str] = set()
+        self._context_transition_lock = threading.RLock()
 
         try:
             ctx = resolve_context(cwd=self.cwd)
@@ -270,6 +292,9 @@ class MCPServer:
 
     def check_job_status_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.check_job_status(self.job_manager, **args)
+
+    def cancel_indexing_job_tool(self, **args) -> Dict[str, Any]:
+        return management_handlers.cancel_indexing_job(self.job_manager, **args)
     
     def list_jobs_tool(self, **args: Any) -> Dict[str, Any]:
         return management_handlers.list_jobs(self.job_manager)
@@ -281,22 +306,26 @@ class MCPServer:
         return watcher_handlers.unwatch_directory(self.code_watcher, **args)
 
     def add_code_to_graph_tool(self, **args) -> Dict[str, Any]:
-        return indexing_handlers.add_code_to_graph(
-            self.graph_builder, 
-            self.job_manager, 
-            self.loop, 
-            self.list_indexed_repositories_tool, # Pass the wrapper or bound method so it executes correctly
-            **args
-        )
+        # Register the pending job before a concurrent context switch can pass
+        # its active-job guard and tear down the DB this handler is preparing to use.
+        with self._context_transition_lock:
+            return indexing_handlers.add_code_to_graph(
+                self.graph_builder,
+                self.job_manager,
+                self.loop,
+                self.list_indexed_repositories_tool,
+                **args
+            )
     
     def add_package_to_graph_tool(self, **args) -> Dict[str, Any]:
-        return indexing_handlers.add_package_to_graph(
-            self.graph_builder, 
-            self.job_manager, 
-            self.loop, 
-            self.list_indexed_repositories_tool, 
-            **args
-        )
+        with self._context_transition_lock:
+            return indexing_handlers.add_package_to_graph(
+                self.graph_builder,
+                self.job_manager,
+                self.loop,
+                self.list_indexed_repositories_tool,
+                **args
+            )
 
     def watch_directory_tool(self, **args) -> Dict[str, Any]:
         # watch_directory needs to call metadata tools.
@@ -505,6 +534,10 @@ class MCPServer:
         }
 
     def switch_context_tool(self, **args) -> Dict[str, Any]:
+        with self._context_transition_lock:
+            return self._switch_context_tool_locked(**args)
+
+    def _switch_context_tool_locked(self, **args) -> Dict[str, Any]:
         raw_path = args.get("context_path", "")
         should_save = args.get("save", True)
 
@@ -667,6 +700,7 @@ class MCPServer:
             "execute_cypher_query": self.execute_cypher_query_tool,
             "add_code_to_graph": self.add_code_to_graph_tool,
             "check_job_status": self.check_job_status_tool,
+            "cancel_indexing_job": self.cancel_indexing_job_tool,
             "list_jobs": self.list_jobs_tool,
             "calculate_cyclomatic_complexity": self.calculate_cyclomatic_complexity_tool,
             "find_most_complex_functions": self.find_most_complex_functions_tool,
@@ -691,7 +725,28 @@ class MCPServer:
         }
         handler = tool_map.get(tool_name)
         if handler:
-            result = await asyncio.to_thread(handler, **args)
+            if tool_name == "cancel_indexing_job":
+                job_id = args.get("job_id")
+                result = (
+                    await self.job_manager.cancel_job_async(str(job_id))
+                    if job_id
+                    else {"error": "Job ID is a required argument."}
+                )
+            else:
+                handler_task = asyncio.create_task(asyncio.to_thread(handler, **args))
+                try:
+                    result = await asyncio.shield(handler_task)
+                except asyncio.CancelledError:
+                    await wait_task_until_stopped(handler_task)
+                    try:
+                        result = handler_task.result()
+                    except BaseException:
+                        result = None
+                    if tool_name in ("add_code_to_graph", "add_package_to_graph") and isinstance(result, dict):
+                        job_id = result.get("job_id")
+                        if job_id:
+                            await self.job_manager.cancel_job_async(job_id)
+                    raise
 
             if self._context_note_pending and tool_name not in (
                 "discover_codegraph_contexts", "switch_context"
@@ -732,6 +787,52 @@ class MCPServer:
 
     async def _run_loop(self, loop):
         request_count = 0
+        active_requests = {}
+        cancelling_requests = set()
+        pending_tool_requests = set()
+
+        async def dispatch_stdio_tool_call(request_id, tool_name, args):
+            try:
+                result = await dispatch_tool_call(self, tool_name, args)
+                if request_id is None:
+                    return
+                if result.error_kind == "tool":
+                    response = {
+                        "jsonrpc": "2.0", "id": request_id,
+                        "error": {"code": -32000, "message": "Tool execution error", "data": result.payload}
+                    }
+                elif result.error_kind == "invalid_params":
+                    response = {
+                        "jsonrpc": "2.0", "id": request_id,
+                        "error": {"code": -32602, "message": result.error_message}
+                    }
+                else:
+                    response_text = encode_tool_payload(tool_name, result.payload)
+                    response = {
+                        "jsonrpc": "2.0", "id": request_id,
+                        "result": {"content": [{"type": "text", "text": response_text}]}
+                    }
+                print(json.dumps(response), flush=True)
+            except asyncio.CancelledError:
+                if request_id is not None:
+                    print(
+                        json.dumps({
+                            "jsonrpc": "2.0", "id": request_id,
+                            "error": {"code": -32800, "message": "Request cancelled"},
+                        }),
+                        flush=True,
+                    )
+            except Exception as e:
+                error_logger(f"Error processing request: {e}\n{traceback.format_exc()}")
+                if request_id is not None:
+                    print(
+                        json.dumps({
+                            "jsonrpc": "2.0", "id": request_id,
+                            "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
+                        }),
+                        flush=True,
+                    )
+
         while True:
             # Reset per iteration: on a parse error `request` would otherwise
             # still hold the PREVIOUS request, and the error response would
@@ -745,6 +846,8 @@ class MCPServer:
                 line = await loop.run_in_executor(None, sys.stdin.readline)
                 if not line:
                     debug_logger("Client disconnected (EOF received). Shutting down.")
+                    if pending_tool_requests:
+                        await asyncio.gather(*pending_tool_requests, return_exceptions=True)
                     break
                 
                 request = json.loads(line.strip())
@@ -780,27 +883,40 @@ class MCPServer:
                         "result": {"tools": list(self.tools.values())}
                     }
                 elif method == 'tools/call':
-                    # Execute a tool call and return the result.
+                    # Dispatch independently so the loop can read a cancellation
+                    # notification while a long-running tool is still active.
                     tool_name = params.get('name')
                     args = params.get('arguments', {})
-                    result = await dispatch_tool_call(self, tool_name, args)
+                    tool_task = asyncio.create_task(
+                        dispatch_stdio_tool_call(request_id, tool_name, args)
+                    )
+                    pending_tool_requests.add(tool_task)
+                    if request_id is not None:
+                        cancelling_requests.discard(request_id)
+                        active_requests[request_id] = tool_task
 
-                    if result.error_kind == "tool":
-                        response = {
-                            "jsonrpc": "2.0", "id": request_id,
-                            "error": {"code": -32000, "message": "Tool execution error", "data": result.payload}
-                        }
-                    elif result.error_kind == "invalid_params":
-                        response = {
-                            "jsonrpc": "2.0", "id": request_id,
-                            "error": {"code": -32602, "message": result.error_message}
-                        }
-                    else:
-                        response_text = encode_tool_payload(tool_name, result.payload)
-                        response = {
-                            "jsonrpc": "2.0", "id": request_id,
-                            "result": {"content": [{"type": "text", "text": response_text}]}
-                        }
+                    def _forget_tool_request(task, req_id=request_id):
+                        pending_tool_requests.discard(task)
+                        if req_id is not None and active_requests.get(req_id) is task:
+                            del active_requests[req_id]
+                            cancelling_requests.discard(req_id)
+                        # A task canceled before its coroutine's first step
+                        # cannot run the cancellation response handler above.
+                        if task.cancelled() and req_id is not None:
+                            print(
+                                json.dumps({
+                                    "jsonrpc": "2.0", "id": req_id,
+                                    "error": {"code": -32800, "message": "Request cancelled"},
+                                }),
+                                flush=True,
+                            )
+
+                    tool_task.add_done_callback(_forget_tool_request)
+                elif method == 'notifications/cancelled':
+                    target_request_id = params.get("requestId") if isinstance(params, dict) else None
+                    _cancel_stdio_tool_request(
+                        target_request_id, active_requests, cancelling_requests
+                    )
                 elif method == 'notifications/initialized':
                     # This is a notification, no response needed.
                     pass

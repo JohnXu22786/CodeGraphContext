@@ -378,7 +378,9 @@ class GraphWriter:
             "SpringDataRepository", "Mixin", "Extension", "Object",
         })
 
-    def add_repository_to_graph(self, repo_path: Path, is_dependency: bool = False) -> None:
+    def add_repository_to_graph(
+        self, repo_path: Path, is_dependency: bool = False, index_state: str = "ready"
+    ) -> None:
         repo_name = repo_path.name
         # Use _normalize_path so the stored path always uses forward slashes,
         # making STARTS WITH queries work on Windows too.
@@ -394,12 +396,17 @@ class GraphWriter:
                 MERGE (r:Repository {path: $path})
                 SET r.name = $name,
                     r.is_dependency = $is_dependency,
-                    r.indexed_at = $indexed_at
+                    r.indexed_at = $indexed_at,
+                    r.index_state = CASE
+                        WHEN r.index_state = 'building' THEN 'building'
+                        ELSE $index_state
+                    END
                 """,
                 path=repo_path_str,
                 name=repo_name,
                 is_dependency=is_dependency,
                 indexed_at=indexed_at,
+                index_state=index_state,
             )
             if commit_hash:
                 session.run(
@@ -412,6 +419,37 @@ class GraphWriter:
                 )
 
         execute_write_operation(self.driver, backend, _work)
+
+    def mark_repository_ready(self, repo_path: Path) -> None:
+        """Make a fully written repository visible in indexed-repository lists."""
+        repo_path_str = _normalize_path(repo_path)
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            result = session.run(
+                "MATCH (r:Repository {path: $path}) "
+                "SET r.index_state = 'ready' RETURN r.path AS path",
+                path=repo_path_str,
+            ).single()
+            if result is None:
+                raise RuntimeError(f"Repository node missing before ready commit: {repo_path_str}")
+            return result["path"]
+
+        execute_write_operation(self.driver, backend, _work)
+
+    def get_repository_index_state(self, repo_path: Path) -> Optional[str]:
+        """Return the persisted readiness state for a repository, if present."""
+        repo_path_str = _normalize_path(repo_path)
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            result = session.run(
+                "MATCH (r:Repository {path: $path}) RETURN r.index_state AS state",
+                path=repo_path_str,
+            ).single()
+            return result["state"] if result is not None else None
+
+        return execute_read_operation(self.driver, backend, _work)
     def add_file_to_graph(
         self,
         file_data: Dict[str, Any],
@@ -1887,7 +1925,9 @@ class GraphWriter:
                                     ref_line=edge["ref_line"],
                                 )
                             except Exception as e:
-                                warning_logger(f"Failed to write SCIP call edge: {e}")
+                                if _is_binder_exception(e):
+                                    continue
+                                raise
 
                 for edge in file_data.get("module_level_calls_scip", []):
                     for calab in callee_labels:
@@ -1904,7 +1944,9 @@ class GraphWriter:
                                 ref_line=edge["ref_line"],
                             )
                         except Exception as e:
-                            warning_logger(f"Failed to write SCIP module-level call edge: {e}")
+                            if _is_binder_exception(e):
+                                continue
+                            raise
 
         execute_write_operation(self.driver, backend, _work)
     def delete_file_from_graph(self, path: str) -> None:
@@ -2454,7 +2496,10 @@ class GraphWriter:
         written = execute_write_operation(self.driver, backend, _work)
         info_logger(f"[SPRING_DATA] Written {written} READS/WRITES derived-query edges")
 
-    def delete_repository_from_graph(self, repo_path: str) -> bool:
+    def delete_repository_from_graph(
+        self, repo_path: str, *, preserve_nested_repositories: bool = False
+    ) -> bool:
+        """Delete a repository and its contents, optionally preserving ready nested roots."""
         # Normalize to forward slashes — paths are always stored normalized.
         # The old .replace("\\", "/") band-aid is replaced by _normalize_path
         # which uses Path.resolve().as_posix() for consistent cross-platform output.
@@ -2495,17 +2540,56 @@ class GraphWriter:
             warning_logger(f"Attempted to delete non-existent repository: {repo_path}")
             return False
 
+        nested_paths = []
+        if preserve_nested_repositories:
+            def _nested_roots(session):
+                result = session.run(
+                    "MATCH (r:Repository) "
+                    "WHERE r.path STARTS WITH $prefix "
+                    "AND (r.index_state IS NULL OR r.index_state = 'ready') "
+                    "RETURN r.path AS path",
+                    prefix=path_prefix,
+                )
+                return [row["path"] for row in result.data() if row.get("path")]
+
+            nested_paths = execute_read_operation(self.driver, backend, _nested_roots)
+
+        nested_path_params = {}
+        nested_path_exclusions = []
+        if preserve_nested_repositories:
+            for index, nested_path in enumerate(nested_paths):
+                nested_path_param = f"nested_path_{index}"
+                nested_prefix_param = f"nested_prefix_{index}"
+                separator = "\\" if "\\" in nested_path and "/" not in nested_path else "/"
+                nested_path_params[nested_path_param] = nested_path
+                nested_path_params[nested_prefix_param] = nested_path.rstrip("/\\") + separator
+                nested_path_exclusions.append((nested_path_param, nested_prefix_param))
+
+        def owned_path_condition(path_expression: str) -> str:
+            condition = (
+                f"({path_expression} STARTS WITH $prefix OR {path_expression} = $path)"
+            )
+            for nested_path_param, nested_prefix_param in nested_path_exclusions:
+                condition = (
+                    f"({condition} AND {path_expression} <> ${nested_path_param} "
+                    f"AND NOT ({path_expression} STARTS WITH ${nested_prefix_param}))"
+                )
+            return condition
+
+        delete_params = {"prefix": path_prefix, "path": repo_path_str}
+        delete_params.update(nested_path_params)
+
         for rel_type in ("CALLS", "INHERITS", "IMPORTS", "INCLUDES"):
             while True:
                 backend = get_backend_type(self.driver, self._db_manager)
                 def _work(session):
+                    source_path = owned_path_condition("a.path")
+                    target_path = owned_path_condition("b.path")
                     result = session.run(
                         f"MATCH (a)-[r:{rel_type}]->(b) "
-                        "WHERE a.path STARTS WITH $prefix OR a.path = $path "
-                        "OR b.path STARTS WITH $prefix OR b.path = $path "
+                        f"WHERE {source_path} OR {target_path} "
                         "WITH r LIMIT 5000 DELETE r RETURN count(r) AS deleted",
-                        prefix=path_prefix,
-                        path=repo_path_str,
+                        **delete_params,
                     ).single()
                     return result["deleted"] if result else 0
                 deleted = execute_write_operation(self.driver, backend, _work)
@@ -2516,12 +2600,12 @@ class GraphWriter:
         while True:
             backend = get_backend_type(self.driver, self._db_manager)
             def _work(session):
+                source_path = owned_path_condition("a.path")
                 result = session.run(
                     "MATCH (a)-[r:CONTAINS]->(b) "
-                    "WHERE a.path STARTS WITH $prefix OR a.path = $path "
+                    f"WHERE {source_path} "
                     "WITH r LIMIT 10000 DELETE r RETURN count(r) AS deleted",
-                    prefix=path_prefix,
-                    path=repo_path_str,
+                    **delete_params,
                 ).single()
                 return result["deleted"] if result else 0
             deleted = execute_write_operation(self.driver, backend, _work)
@@ -2532,14 +2616,18 @@ class GraphWriter:
         all_labels = self._get_all_node_labels()
 
         for label in all_labels:
+            if label == "Repository":
+                # Keep the building marker visible until all partial descendants
+                # are gone. The root is deleted atomically in the final step.
+                continue
             while True:
                 backend = get_backend_type(self.driver, self._db_manager)
                 def _work(session):
+                    node_path = owned_path_condition("n.path")
                     result = session.run(
-                        f"MATCH (n:{label}) WHERE n.path STARTS WITH $prefix OR n.path = $path "
+                        f"MATCH (n:{label}) WHERE {node_path} "
                         "WITH n LIMIT 10000 DETACH DELETE n RETURN count(n) AS deleted",
-                        prefix=path_prefix,
-                        path=repo_path_str,
+                        **delete_params,
                     ).single()
                     return result["deleted"] if result else 0
                 deleted = execute_write_operation(self.driver, backend, _work)
@@ -2551,12 +2639,27 @@ class GraphWriter:
 
         backend = get_backend_type(self.driver, self._db_manager)
 
+        while True:
+            def _delete_nested_repo_nodes(session):
+                repository_path = owned_path_condition("r.path")
+                result = session.run(
+                    "MATCH (r:Repository) "
+                    f"WHERE {repository_path} AND r.path <> $path "
+                    "WITH r LIMIT 10000 DETACH DELETE r RETURN count(r) AS deleted",
+                    **delete_params,
+                ).single()
+                return result["deleted"] if result else 0
+
+            deleted = execute_write_operation(self.driver, backend, _delete_nested_repo_nodes)
+            if deleted == 0:
+                break
+            info_logger(f"[DELETE] Removed {deleted} nested Repository nodes for {repo_path_str}")
+
         def _delete_repo_node(session):
-            session.run("""
-MATCH (r:Repository {path: $path})
-OPTIONAL MATCH (r)-[:CONTAINS*]->(n)
-DETACH DELETE r, n
-""", path=repo_path_str)
+            session.run(
+                "MATCH (r:Repository {path: $path}) DETACH DELETE r",
+                path=repo_path_str,
+            )
         execute_write_operation(self.driver, backend, _delete_repo_node)
         info_logger(f"Deleted repository and its contents from graph: {repo_path_str}")
         return True

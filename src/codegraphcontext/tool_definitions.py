@@ -22,6 +22,11 @@ TOOLS = {
                     "description": "Whether this code is a dependency.",
                     "default": False
                 },
+                "timeout_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional indexing deadline in seconds. A deadline stops the job at the next safe database boundary."
+                },
                 "graph_name": _GRAPH_NAME_PROP
             },
             "required": ["repo_path"]
@@ -37,6 +42,24 @@ TOOLS = {
                 "job_id": {
                     "type": "string",
                     "description": "Job ID from a previous tool call"
+                }
+            },
+            "required": ["job_id"]
+        }
+    },
+
+    "cancel_indexing_job": {
+        "name": "cancel_indexing_job",
+        "description": (
+            "Cancel an indexing job and wait until it has stopped and its partial graph data is removed. "
+            "A database operation already in progress must return before cancellation is complete."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Job ID returned by add_code_to_graph or add_package_to_graph"
                 }
             },
             "required": ["job_id"]
@@ -182,6 +205,11 @@ TOOLS = {
                 "is_dependency": {
                     "type": "boolean",
                     "default": True
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional indexing deadline in seconds. A deadline stops the job at the next safe database boundary."
                 },
                 "graph_name": _GRAPH_NAME_PROP
             },

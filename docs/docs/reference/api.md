@@ -51,6 +51,8 @@ The server loads credentials from the same configuration chain as the CLI (`CGC_
 
 Interactive OpenAPI documentation is available at `/docs` while the server is running.
 
+`POST /api/v1/index` accepts an optional positive `timeout_seconds` in its JSON body. If the deadline expires during an active database call, the job stops at the next safe boundary and removes the incomplete repository graph; if cleanup fails, it reports `failed` and the partial repository stays out of indexed-repository lists. While any repository is building, graph search and read-only Cypher tools report that indexing is in progress instead of returning partial graph results. The final ready-marker write is the commit point: once it starts, a successful write completes the job even if the deadline passes during that call. Database drivers do not expose a portable way to interrupt a call already in progress.
+
 ---
 
 ## Example: Health Check

@@ -1,6 +1,6 @@
 # MCP Tool Reference
 
-When running the CodeGraphContext (CGC) MCP server, it registers a suite of **29 JSON-RPC tools** that AI assistants can use to analyze and query the code graph.
+When running the CodeGraphContext (CGC) MCP server, it registers a suite of **30 JSON-RPC tools** that AI assistants can use to analyze and query the code graph.
 
 The Python distribution release version is managed separately in package metadata. MCP `initialize.serverInfo.version` is server metadata, currently **0.1.0** for both stdio and HTTP; clients negotiate the MCP protocol version independently.
 
@@ -13,6 +13,7 @@ Indexes a local directory or file into the active database context.
 - **Parameters**:
   - `path` (string, required): Absolute filesystem path.
   - `is_dependency` (boolean, optional): Marks the code as an external library.
+  - `timeout_seconds` (number, optional): Positive maximum runtime. Cancellation is handled at the next safe boundary; once the final ready-marker write starts, a successful write completes the job even if the deadline passes during that write.
 
 ### `add_package_to_graph`
 Discovers, downloads (if needed), and indexes a third-party package.
@@ -20,6 +21,7 @@ Discovers, downloads (if needed), and indexes a third-party package.
   - `package_name` (string, required): Name of the package (e.g., `requests`, `express`).
   - `language` (string, required): Language syntax parser (`python`, `javascript`, `typescript`, `java`, `c`, `go`, `ruby`, `php`, `cpp`).
   - `is_dependency` (boolean, optional): Marks the package as an external library (default: true).
+  - `timeout_seconds` (number, optional): Positive maximum runtime. Cancellation is handled at the next safe boundary; once the final ready-marker write starts, a successful write completes the job even if the deadline passes during that write.
 
 ### `watch_directory`
 Launches a directory watcher for incremental updates.
@@ -63,6 +65,13 @@ Lists all background jobs and their execution states.
 Queries progress and logs for a specific job.
 - **Parameters**:
   - `job_id` (string, required): Target job ID.
+
+### `cancel_indexing_job`
+Requests cancellation of an indexing job and waits for its active work and cleanup to stop.
+- **Parameters**:
+  - `job_id` (string, required): Target job ID.
+
+Cancellation stops additional work at safe boundaries and removes the repository's incomplete graph before reporting `cancelled`. If cleanup fails, the job reports `failed` and the partial repository stays out of indexed-repository lists. While any repository is building, graph search and read-only Cypher tools report that indexing is in progress instead of returning partial graph results. Database drivers do not expose a portable way to interrupt an active write call, so cancellation may wait for that call to finish. At the final ready-marker write, a successful write commits the completed job even if a deadline passes during the call. The same cleanup applies when `timeout_seconds` expires before that final commit begins.
 
 ---
 

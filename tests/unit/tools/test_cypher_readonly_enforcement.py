@@ -26,6 +26,11 @@ class _MockResult:
     result_set = [[1]]
 
 
+class _EmptyMockResult:
+    header = []
+    result_set = []
+
+
 class MockFalkorGraph:
     name = "test"
 
@@ -35,10 +40,14 @@ class MockFalkorGraph:
 
     def query(self, q, params=None, timeout=None):
         self.query_calls.append(q)
+        if "index_state" in q:
+            return _EmptyMockResult()
         return _MockResult()
 
     def ro_query(self, q, params=None, timeout=None):
         self.ro_query_calls.append(q)
+        if "index_state" in q:
+            return _EmptyMockResult()
         return _MockResult()
 
 
@@ -64,7 +73,7 @@ def test_falkordb_read_session_uses_ro_query():
     assert session.read_only is True
 
     session.run("MATCH (n) RETURN n LIMIT 1")
-    assert graph.ro_query_calls == ["MATCH (n) RETURN n LIMIT 1"]
+    assert graph.ro_query_calls[-1:] == ["MATCH (n) RETURN n LIMIT 1"]
     assert graph.query_calls == []  # the write-capable path was never touched
 
 
@@ -92,7 +101,7 @@ def test_execute_cypher_query_falkordb_reads_via_ro_query():
 
     assert result.get("success") is True, f"Expected success, got: {result}"
     # The query reached the server through the server-enforced read-only path.
-    assert graph.ro_query_calls == ["MATCH (n) RETURN n LIMIT 1"]
+    assert graph.ro_query_calls[-1:] == ["MATCH (n) RETURN n LIMIT 1"]
     assert graph.query_calls == []
 
 
@@ -125,4 +134,4 @@ def test_execute_cypher_query_falkordb_var_named_created_allowed():
         manager, cypher_query="MATCH (n) RETURN n.created AS created LIMIT 1"
     )
     assert result.get("success") is True, f"Expected success, got: {result}"
-    assert graph.ro_query_calls == ["MATCH (n) RETURN n.created AS created LIMIT 1"]
+    assert graph.ro_query_calls[-1:] == ["MATCH (n) RETURN n.created AS created LIMIT 1"]

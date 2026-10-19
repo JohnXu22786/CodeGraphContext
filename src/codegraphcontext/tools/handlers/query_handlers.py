@@ -10,6 +10,7 @@ except ImportError:  # neo4j driver not installed (FalkorDB/Kuzu-only setups)
 from ...utils.cypher_readonly import is_read_only_cypher, read_only_rejection_message
 from ...utils.debug_log import debug_log
 from ...utils.tool_limits import get_tool_result_limit
+from ..code_finder import CodeFinder
 
 
 def execute_cypher_query(db_manager, **args) -> Dict[str, Any]:
@@ -43,7 +44,8 @@ def execute_cypher_query(db_manager, **args) -> Dict[str, Any]:
 
     try:
         debug_log(f"Executing Cypher query: {cypher_query}")
-        with db_manager.get_driver(graph_name).session(**session_kwargs) as session:
+        driver = CodeFinder(db_manager).get_read_driver(graph_name)
+        with driver.session(**session_kwargs) as session:
             # Unpack as kwargs: Neo4j accepts them, and the FalkorDB/Kuzu
             # session shims only accept parameters via **kwargs.
             result = session.run(cypher_query, **params)

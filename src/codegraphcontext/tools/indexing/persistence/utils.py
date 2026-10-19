@@ -17,8 +17,8 @@ def execute_write_operation(driver: Any, backend: str, work_fn: callable) -> Any
     to automatically retry on transient errors and group all operations in a single block.
     For other backends (e.g. KuzuDB, FalkorDB), passes through the standard session.
     """
-    if backend in ("neo4j", "nornic"):
-        with driver.session() as session:
+    def _execute_with_session(session):
+        if backend in ("neo4j", "nornic"):
             # Prefer execute_write (Neo4j driver 5+), fallback to write_transaction (<5)
             if hasattr(session, "execute_write"):
                 return session.execute_write(work_fn)
@@ -26,9 +26,21 @@ def execute_write_operation(driver: Any, backend: str, work_fn: callable) -> Any
                 return session.write_transaction(work_fn)
             else:
                 return work_fn(session)
-    else:
-        with driver.session() as session:
-            return work_fn(session)
+        return work_fn(session)
+
+    # CodeFinder holds this same lock from its readiness probe through the
+    # query. Locking each managed write callback prevents a Neo4j READ COMMITTED
+    # transaction from observing a new building marker between those reads.
+    write_lock = getattr(driver, "_write_lock", None) or getattr(driver, "_query_lock", None)
+
+    # Sessions can reserve pooled connections when opened. Acquire the session
+    # before the shared lock so readers that use the same session-before-lock
+    # order cannot hold every connection while a lock holder waits for one.
+    with driver.session() as session:
+        if write_lock is None:
+            return _execute_with_session(session)
+        with write_lock:
+            return _execute_with_session(session)
 
 
 def execute_read_operation(driver: Any, backend: str, work_fn: callable) -> Any:

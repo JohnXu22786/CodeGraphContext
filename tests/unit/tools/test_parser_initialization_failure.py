@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codegraphcontext.core.jobs import JobManager, JobStatus
+import codegraphcontext.tools.graph_builder as graph_builder_module
+from codegraphcontext.tools import scip_indexer
 from codegraphcontext.tools.graph_builder import GraphBuilder
 from codegraphcontext.utils import tree_sitter_manager as manager
 
@@ -42,6 +44,33 @@ async def test_initialization_failure_cannot_complete_a_hollow_graph(tmp_path):
     assert job.status == JobStatus.FAILED
     assert 'cache owned by uid 0' in job.errors[0]
     indexer._writer.add_file_to_graph.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_runtime_scip_failure_falls_back_to_tree_sitter(tmp_path, monkeypatch):
+    indexer = builder()
+    indexer.last_call_resolution_diagnostics = []
+    indexer.last_index_summary = {}
+    job_id = indexer.job_manager.create_job(str(tmp_path))
+    tree_sitter_calls = []
+
+    async def fail_scip(*_args, **_kwargs):
+        raise ValueError("malformed SCIP output")
+
+    async def run_tree_sitter(*_args, **_kwargs):
+        tree_sitter_calls.append(True)
+        indexer.job_manager.complete_job(job_id)
+
+    monkeypatch.setattr(graph_builder_module, "get_config_value", lambda *_args, **_kwargs: "true")
+    monkeypatch.setattr(scip_indexer, "detect_project_lang", lambda *_args: "python")
+    monkeypatch.setattr(scip_indexer, "is_scip_available", lambda *_args: True)
+    monkeypatch.setattr(indexer, "_build_graph_from_scip", fail_scip)
+    monkeypatch.setattr(graph_builder_module, "run_tree_sitter_index_async", run_tree_sitter)
+
+    await indexer.build_graph_from_path_async(tmp_path, job_id=job_id)
+
+    assert tree_sitter_calls == [True]
+    assert indexer.job_manager.get_job(job_id).status == JobStatus.COMPLETED
 
 
 def test_dependency_import_does_not_download_unrelated_python_grammar(monkeypatch):

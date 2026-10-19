@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codegraphcontext.core.jobs import JobManager
+from codegraphcontext.tools.indexing.persistence import writer as writer_module
+from codegraphcontext.tools.indexing.persistence.writer import GraphWriter
 from codegraphcontext.tools.indexing.scip_pipeline import run_scip_index_async
 
 
@@ -105,3 +109,287 @@ async def test_scip_pipeline_runs_build_function_call_groups(tmp_path: Path):
     job_manager.update_job.assert_any_call(
         "job-1", status_message="Resolving function CALLS edges..."
     )
+
+
+def test_scip_call_edge_database_errors_propagate(monkeypatch):
+    writer = GraphWriter(
+        driver=MagicMock(),
+        db_manager=SimpleNamespace(get_backend_type=lambda: "neo4j"),
+    )
+    session = MagicMock()
+    session.run.side_effect = OSError("database unavailable")
+    monkeypatch.setattr(
+        writer_module,
+        "execute_write_operation",
+        lambda _driver, _backend, work: work(session),
+    )
+
+    with pytest.raises(OSError, match="database unavailable"):
+        writer.write_scip_call_edges(
+            {
+                "app.py": {
+                    "function_calls_scip": [
+                        {
+                            "caller_symbol": "app/main",
+                            "caller_file": "/repo/app.py",
+                            "caller_line": 1,
+                            "callee_name": "helper",
+                            "callee_file": "/repo/lib.py",
+                            "ref_line": 2,
+                        }
+                    ],
+                    "module_level_calls_scip": [],
+                }
+            },
+            lambda symbol: symbol,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_scip_call_edge_write_does_not_publish_ready(tmp_path, monkeypatch):
+    import threading
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "app.py"
+    source.write_text("def main(): pass\n", encoding="utf-8")
+    _FakeScipIndexParser.files_data = {
+        str(source.resolve()): {
+            "path": str(source.resolve()),
+            "functions": [{"name": "main", "line_number": 1}],
+            "classes": [],
+            "imports": [],
+            "function_calls_scip": [],
+            "module_level_calls_scip": [],
+        },
+    }
+    fake_parser_mod = SimpleNamespace(
+        ScipIndexer=_FakeScipIndexer,
+        ScipIndexParser=_FakeScipIndexParser,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    writer = MagicMock()
+
+    def block_call_edge_write(*_args):
+        entered.set()
+        assert release.wait(timeout=2)
+
+    writer.write_scip_call_edges.side_effect = block_call_edge_write
+    monkeypatch.setattr(
+        "codegraphcontext.tools.indexing.scip_pipeline.pre_scan_for_imports",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        "codegraphcontext.tools.indexing.scip_pipeline.build_function_call_groups",
+        lambda *_args: ([], [], [], [], [], [], [], [], [], []),
+    )
+    task = asyncio.create_task(
+        run_scip_index_async(
+            repo,
+            is_dependency=False,
+            job_id=None,
+            lang="python",
+            writer=writer,
+            job_manager=JobManager(),
+            parsers_keys={".py"},
+            get_parser=lambda _suffix: _FakeParser(),
+            scip_indexer_mod=fake_parser_mod,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0.02)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    writer.write_scip_call_edges.assert_called_once()
+    writer.mark_repository_ready.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scip_fails_if_file_and_minimal_node_writes_both_fail(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "app.py"
+    source.write_text("def main(): pass\n", encoding="utf-8")
+    _FakeScipIndexParser.files_data = {
+        str(source.resolve()): {
+            "path": str(source.resolve()),
+            "functions": [{"name": "main", "line_number": 1}],
+            "classes": [],
+            "imports": [],
+        },
+    }
+    fake_parser_mod = SimpleNamespace(
+        ScipIndexer=_FakeScipIndexer,
+        ScipIndexParser=_FakeScipIndexParser,
+    )
+    writer = MagicMock()
+    writer.add_file_to_graph.side_effect = RuntimeError("SCIP graph write failed")
+    writer.add_minimal_file_node.side_effect = RuntimeError("minimal node write failed")
+
+    with patch(
+        "codegraphcontext.tools.indexing.scip_pipeline.pre_scan_for_imports",
+        return_value={},
+    ), pytest.raises(RuntimeError, match="All 1 SCIP file write attempts failed"):
+        await run_scip_index_async(
+            repo,
+            is_dependency=False,
+            job_id=None,
+            lang="python",
+            writer=writer,
+            job_manager=JobManager(),
+            parsers_keys={".py"},
+            get_parser=lambda _suffix: None,
+            scip_indexer_mod=fake_parser_mod,
+        )
+
+    writer.add_file_to_graph.assert_called_once()
+    writer.add_minimal_file_node.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_scip_file_write_failure_is_incomplete_even_if_minimal_fallback_succeeds(
+    tmp_path: Path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "app.py"
+    source.write_text("def main(): pass\n", encoding="utf-8")
+    _FakeScipIndexParser.files_data = {
+        str(source.resolve()): {
+            "path": str(source.resolve()),
+            "functions": [{"name": "main", "line_number": 1}],
+            "classes": [],
+            "imports": [],
+        },
+    }
+    fake_parser_mod = SimpleNamespace(
+        ScipIndexer=_FakeScipIndexer,
+        ScipIndexParser=_FakeScipIndexParser,
+    )
+    writer = MagicMock()
+    writer.add_file_to_graph.side_effect = RuntimeError("SCIP graph write failed")
+
+    with patch(
+        "codegraphcontext.tools.indexing.scip_pipeline.pre_scan_for_imports",
+        return_value={},
+    ), pytest.raises(RuntimeError, match="All 1 SCIP file write attempts failed"):
+        await run_scip_index_async(
+            repo,
+            is_dependency=False,
+            job_id=None,
+            lang="python",
+            writer=writer,
+            job_manager=JobManager(),
+            parsers_keys={".py"},
+            get_parser=lambda _suffix: None,
+            scip_indexer_mod=fake_parser_mod,
+        )
+
+    writer.add_minimal_file_node.assert_called_once_with(source.resolve(), repo.resolve(), False)
+    writer.mark_repository_ready.assert_not_called()
+    writer.write_scip_call_edges.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_supplementary_write_failure_is_incomplete_if_minimal_fallback_succeeds(
+    tmp_path: Path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "supplementary.py"
+    source.write_text("def main(): pass\n", encoding="utf-8")
+    _FakeScipIndexParser.files_data = {}
+    fake_parser_mod = SimpleNamespace(
+        ScipIndexer=_FakeScipIndexer,
+        ScipIndexParser=_FakeScipIndexParser,
+    )
+    writer = MagicMock()
+    writer.add_file_to_graph.side_effect = RuntimeError("Tree-sitter graph write failed")
+
+    with patch(
+        "codegraphcontext.tools.indexing.scip_pipeline.pre_scan_for_imports",
+        return_value={},
+    ), patch(
+        "codegraphcontext.tools.indexing.discovery.discover_files_to_index",
+        return_value=([source], []),
+    ), pytest.raises(RuntimeError, match="All 1 SCIP file write attempts failed"):
+        await run_scip_index_async(
+            repo,
+            is_dependency=False,
+            job_id=None,
+            lang="python",
+            writer=writer,
+            job_manager=JobManager(),
+            parsers_keys={".py"},
+            get_parser=lambda _suffix: _FakeParser(),
+            scip_indexer_mod=fake_parser_mod,
+        )
+
+    writer.add_minimal_file_node.assert_called_once_with(source, repo.resolve(), False)
+    writer.mark_repository_ready.assert_not_called()
+    writer.write_scip_call_edges.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scip_fails_when_one_file_is_unwritten_after_another_succeeds(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    good_file = repo / "good.py"
+    failed_file = repo / "failed.py"
+    good_file.write_text("def good(): pass\n", encoding="utf-8")
+    failed_file.write_text("def failed(): pass\n", encoding="utf-8")
+    _FakeScipIndexParser.files_data = {
+        str(good_file.resolve()): {
+            "path": str(good_file.resolve()),
+            "functions": [{"name": "good", "line_number": 1}],
+            "classes": [],
+            "imports": [],
+        },
+        str(failed_file.resolve()): {
+            "path": str(failed_file.resolve()),
+            "functions": [{"name": "failed", "line_number": 1}],
+            "classes": [],
+            "imports": [],
+        },
+    }
+    fake_parser_mod = SimpleNamespace(
+        ScipIndexer=_FakeScipIndexer,
+        ScipIndexParser=_FakeScipIndexParser,
+    )
+    writer = MagicMock()
+
+    def selective_write(file_data, *_args, **_kwargs):
+        if Path(file_data["path"]).name == failed_file.name:
+            raise RuntimeError("SCIP graph write failed")
+
+    def fail_minimal_for_required_file(path: Path, *_args, **_kwargs):
+        if path.name == failed_file.name:
+            raise RuntimeError("minimal node write failed")
+
+    writer.add_file_to_graph.side_effect = selective_write
+    writer.add_minimal_file_node.side_effect = fail_minimal_for_required_file
+
+    with patch(
+        "codegraphcontext.tools.indexing.scip_pipeline.pre_scan_for_imports",
+        return_value={},
+    ), pytest.raises(RuntimeError, match="1 of 2 SCIP file writes failed"):
+        await run_scip_index_async(
+            repo,
+            is_dependency=False,
+            job_id=None,
+            lang="python",
+            writer=writer,
+            job_manager=JobManager(),
+            parsers_keys={".py"},
+            get_parser=lambda _suffix: None,
+            scip_indexer_mod=fake_parser_mod,
+        )
+
+    assert writer.add_file_to_graph.call_count == 2
+    writer.add_minimal_file_node.assert_called_once_with(failed_file.resolve(), repo.resolve(), False)
+    writer.write_scip_call_edges.assert_not_called()

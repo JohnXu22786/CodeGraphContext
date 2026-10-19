@@ -353,7 +353,7 @@ class EmbeddedGraphManager(GraphQueryInterface):
         # but we can wrap in try-except or check metadata.
         
         node_tables = [
-            ("Repository", "path STRING, name STRING, is_dependency BOOLEAN, indexed_at STRING, commit_hash STRING, PRIMARY KEY (path)"),
+            ("Repository", "path STRING, name STRING, is_dependency BOOLEAN, indexed_at STRING, commit_hash STRING, index_state STRING, PRIMARY KEY (path)"),
             ("File", "path STRING, name STRING, relative_path STRING, package_name STRING, language STRING, is_dependency BOOLEAN, PRIMARY KEY (path)"),
             ("Directory", "path STRING, name STRING, PRIMARY KEY (path)"),
             ("Module", "name STRING, lang STRING, full_import_name STRING, path STRING, line_number INT64, PRIMARY KEY (name)"),
@@ -565,6 +565,7 @@ class EmbeddedGraphManager(GraphQueryInterface):
             ("Object", "occurrence_index", "INT64"),
             ("Repository", "indexed_at", "STRING"),
             ("Repository", "commit_hash", "STRING"),
+            ("Repository", "index_state", "STRING"),
             # Spring endpoint properties on Function
             ("Function", "is_composable", "BOOLEAN"),
             ("Function", "http_method", "STRING"),
@@ -1226,7 +1227,7 @@ class EmbeddedSessionWrapper:
         
         # 0. Define Schema Map (Strict property filtering)
         SCHEMA_MAP = {
-            'Repository': {'path', 'name', 'is_dependency', 'indexed_at', 'commit_hash'},
+            'Repository': {'path', 'name', 'is_dependency', 'indexed_at', 'commit_hash', 'index_state'},
             'File': {'path', 'name', 'relative_path', 'package_name', 'language', 'is_dependency'},
             'Directory': {'path', 'name'},
             'Module': {'name', 'lang', 'full_import_name', 'path', 'line_number'},

@@ -6,11 +6,32 @@ import os
 import re
 import socket
 import threading
+import weakref
 from urllib.parse import urlparse
 from typing import Optional, Tuple
 from neo4j import GraphDatabase, Driver
 
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
+
+
+_DRIVER_QUERY_LOCKS = weakref.WeakKeyDictionary()
+_DRIVER_QUERY_LOCKS_GUARD = threading.Lock()
+_FALLBACK_QUERY_LOCK = threading.RLock()
+
+
+def _query_lock_for_driver(driver):
+    """Return a query/write coordination lock shared by wrappers of a driver."""
+    try:
+        with _DRIVER_QUERY_LOCKS_GUARD:
+            lock = _DRIVER_QUERY_LOCKS.get(driver)
+            if lock is None:
+                lock = threading.RLock()
+                _DRIVER_QUERY_LOCKS[driver] = lock
+            return lock
+    except TypeError:
+        # Unhashable or non-weak-referenceable driver objects use one shared
+        # fallback lock so independently created wrappers still coordinate.
+        return _FALLBACK_QUERY_LOCK
 
 
 class Neo4jConnectionError(Exception):
@@ -33,9 +54,10 @@ class Neo4jDriverWrapper:
     """
     A simple wrapper around the Neo4j Driver to inject a database name into session() calls.
     """
-    def __init__(self, driver: Driver, database: str = None):
+    def __init__(self, driver: Driver, database: str = None, query_lock=None):
         self._driver = driver
         self._database = database
+        self._query_lock = query_lock or _query_lock_for_driver(driver)
 
     def session(self, **kwargs):
         """Proxy method to get a session from the underlying driver."""

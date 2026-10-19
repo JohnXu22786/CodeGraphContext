@@ -18,6 +18,10 @@ class _RecordingDriver:
         return False
 
     def run(self, query, **params):
+        if "index_state: 'building'" in query:
+            result = MagicMock()
+            result.single.return_value = None
+            return result
         self.query = " ".join(query.split())
         self.params = params
         result = MagicMock()
