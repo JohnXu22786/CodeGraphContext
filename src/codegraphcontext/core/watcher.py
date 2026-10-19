@@ -4,6 +4,7 @@ It observes directories for changes and triggers updates to the code graph.
 """
 
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -17,10 +18,21 @@ if typing.TYPE_CHECKING:
     from pathspec import PathSpec
     from ..tools.graph_builder import GraphBuilder
 
-from .cgcignore import build_ignore_spec, parse_cgcignore_lines
+from .cgcignore import (
+    CGCIgnoreMatcher,
+    build_ignore_spec,
+    find_cgcignore,
+    find_gitignore,
+    parse_cgcignore_lines,
+)
 from ..tools.indexing.constants import DEFAULT_IGNORE_PATTERNS
 from ..cli.config_manager import DEFAULT_CGCIGNORE_PATTERNS, get_config_value
 from ..utils.debug_log import debug_log, info_logger, error_logger, warning_logger
+from ..utils.git_utils import (
+    get_repo_branch_name,
+    get_repo_commit_hash,
+    has_unborn_git_head,
+)
 
 
 POLLING_ENV_VAR = "CGC_WATCH_POLLING"
@@ -51,6 +63,9 @@ class RepositoryEventHandler(FileSystemEventHandler):
         super().__init__()
         self.graph_builder = graph_builder
         self.repo_path = repo_path.resolve()
+        self._watch_update_lock = threading.RLock()
+        self.git_metadata_dirs = self._discover_git_metadata_dirs()
+        self._git_head_snapshot = self._read_git_head_snapshot()
         self.debounce_interval = debounce_interval
         # Keep one pending action per path and process it on one worker. The
         # map is capped so a burst of unique paths cannot create one Timer
@@ -67,7 +82,19 @@ class RepositoryEventHandler(FileSystemEventHandler):
 
         self.ignore_root = self.repo_path
         self.ignore_spec = ignore_spec
+        self._provided_ignore_spec = ignore_spec is not None
         self.cgcignore_path = cgcignore_path
+        self.configured_ignore_path = None
+        self.explicit_ignore_path = None
+        self.local_cgcignore_path = None
+        self.local_gitignore_path = None
+        self.local_ignore_targets = ()
+        if cgcignore_path:
+            explicit_path = Path(cgcignore_path)
+            if not explicit_path.is_absolute():
+                explicit_path = self.repo_path / explicit_path
+            self.configured_ignore_path = Path(os.path.abspath(explicit_path))
+            self._refresh_explicit_ignore_path()
         self._load_ignore_spec(cgcignore_path)
 
         self.all_file_data = []
@@ -78,23 +105,175 @@ class RepositoryEventHandler(FileSystemEventHandler):
         elif perform_initial_scan:
             self._initial_scan()
 
-    def _load_ignore_spec(self, cgcignore_path: str = None) -> None:
-        if self.ignore_spec is not None:
-            return
+    def _discover_git_metadata_dirs(self) -> tuple[Path, ...]:
+        """Return this worktree's Git directory and shared common directory."""
         try:
-            self.ignore_spec, resolved = build_ignore_spec(
+            git_dir = Path(
+                subprocess.check_output(
+                    ["git", "rev-parse", "--absolute-git-dir"],
+                    cwd=self.repo_path,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                ).strip()
+            ).resolve()
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            return ()
+
+        common_dir = git_dir
+        commondir_file = git_dir / "commondir"
+        if commondir_file.is_file():
+            try:
+                common_path = Path(commondir_file.read_text(encoding="utf-8").strip())
+                common_dir = (
+                    common_path if common_path.is_absolute() else git_dir / common_path
+                ).resolve()
+            except (OSError, RuntimeError):
+                common_dir = git_dir
+        return tuple(dict.fromkeys((git_dir, common_dir)))
+
+    def _is_git_refs_directory_event(self, path: str | Path | None) -> bool:
+        """Whether *path* is the shared refs directory watched for linked worktrees."""
+        if not path:
+            return False
+        try:
+            candidate = Path(os.path.abspath(path))
+        except (OSError, RuntimeError):
+            return False
+        metadata_dirs = getattr(self, "git_metadata_dirs", ())
+        return bool(metadata_dirs) and candidate == metadata_dirs[-1] / "refs"
+
+    def _refresh_git_metadata_for_event(self, path: str | Path | None) -> bool:
+        """Discover Git metadata when its entry is created or removed."""
+        if not path:
+            return False
+        try:
+            candidate = Path(os.path.abspath(path))
+            git_entry = self.repo_path / ".git"
+            try:
+                candidate.relative_to(git_entry)
+                in_repository_git_entry = True
+            except ValueError:
+                in_repository_git_entry = False
+            cached_git_dirs = getattr(self, "git_metadata_dirs", ())
+            refs_directory_event = bool(cached_git_dirs) and candidate == cached_git_dirs[-1] / "refs"
+            removed_git_dir = False
+            for git_dir in cached_git_dirs:
+                if candidate != git_dir:
+                    continue
+                try:
+                    git_dir.stat()
+                except FileNotFoundError:
+                    removed_git_dir = True
+                except OSError:
+                    pass
+                break
+        except (OSError, RuntimeError):
+            return False
+        if not in_repository_git_entry and not removed_git_dir and not refs_directory_event:
+            return False
+
+        # Once Git metadata has been discovered, child events use the cached
+        # directories below. Re-discover only for the .git entry itself or a
+        # removed cached metadata directory; while the repository is not
+        # initialized, any first child event can reveal initialization.
+        if candidate != git_entry and cached_git_dirs and not removed_git_dir and not refs_directory_event:
+            return False
+
+        with self._watch_update_lock:
+            if self._stopped:
+                return False
+            previous_dirs = self.git_metadata_dirs
+            previous_snapshot = self._git_head_snapshot
+            if refs_directory_event and not candidate.is_dir():
+                # A missing refs root makes Git commands fail until it is
+                # recreated. Keep the known admin dirs/snapshot so the create
+                # event can restore the recursive watch without losing scope.
+                current_dirs = previous_dirs
+                current_snapshot = previous_snapshot
+            else:
+                current_dirs = self._discover_git_metadata_dirs()
+                current_snapshot = self._read_git_head_snapshot()
+                if refs_directory_event and not current_dirs:
+                    current_dirs = previous_dirs
+                    current_snapshot = previous_snapshot
+            state_changed = current_dirs != previous_dirs or current_snapshot != previous_snapshot
+
+            self.git_metadata_dirs = current_dirs
+            self._git_head_snapshot = current_snapshot
+            refresh_watches = getattr(self, "_refresh_git_metadata_watches", None)
+        if callable(refresh_watches) and (state_changed or refs_directory_event):
+            refresh_watches()
+        return state_changed
+
+    def _load_ignore_spec(self, cgcignore_path: str = None, *, force: bool = False) -> None:
+        if self.ignore_spec is not None and (not force or getattr(self, "_provided_ignore_spec", False)):
+            return
+
+        def build_spec(*, raise_on_gitignore_error: bool, raise_on_cgcignore_error: bool = True):
+            return build_ignore_spec(
                 ignore_root=self.ignore_root,
                 default_patterns=DEFAULT_IGNORE_PATTERNS,
                 explicit_path=cgcignore_path,
-                missing_explicit_defaults=parse_cgcignore_lines(
-                    DEFAULT_CGCIGNORE_PATTERNS.splitlines()
-                ),
+                missing_explicit_defaults=parse_cgcignore_lines(DEFAULT_CGCIGNORE_PATTERNS.splitlines()),
+                raise_on_gitignore_error=raise_on_gitignore_error,
+                raise_on_cgcignore_error=raise_on_cgcignore_error,
             )
-            if resolved:
-                debug_log(f"Watcher using ignore file: {resolved}")
-        except OSError as e:
-            self.ignore_spec = None
+
+        try:
+            self.ignore_spec, resolved = build_spec(raise_on_gitignore_error=True)
+        except (OSError, UnicodeError) as e:
+            # Keep the last successful rules so an I/O error cannot broaden
+            # a later repository scan to include previously ignored files.
             warning_logger(f"Could not load ignore rules: {e}")
+            if self.ignore_spec is not None or self._provided_ignore_spec:
+                return
+            try:
+                # At startup there is no previous matcher to preserve. Build a
+                # safe default/.cgcignore matcher while skipping only unreadable
+                # .gitignore rules, rather than accepting every file.
+                self.ignore_spec, resolved = build_spec(
+                    raise_on_gitignore_error=False,
+                    raise_on_cgcignore_error=False,
+                )
+            except (OSError, UnicodeError) as fallback_error:
+                warning_logger(f"Could not load fallback ignore rules: {fallback_error}")
+                default_patterns = DEFAULT_IGNORE_PATTERNS + parse_cgcignore_lines(
+                    DEFAULT_CGCIGNORE_PATTERNS.splitlines()
+                )
+                self.ignore_spec = CGCIgnoreMatcher(default_patterns, self.ignore_root)
+                resolved = find_cgcignore(self.ignore_root, explicit_path=cgcignore_path)
+
+        self.local_cgcignore_path = resolved
+        self.local_gitignore_path = find_gitignore(self.ignore_root)
+        self._refresh_ignore_metadata_targets()
+        if resolved:
+            debug_log(f"Watcher using ignore file: {resolved}")
+
+    def _refresh_explicit_ignore_path(self) -> None:
+        """Refresh the configured file's current symlink target, if any."""
+        configured_path = getattr(self, "configured_ignore_path", None)
+        if configured_path is None:
+            return
+        try:
+            self.explicit_ignore_path = configured_path.resolve()
+        except (OSError, RuntimeError):
+            self.explicit_ignore_path = configured_path
+
+    def _refresh_ignore_metadata_targets(self) -> None:
+        """Refresh resolved targets for local and explicitly configured rules."""
+        self._refresh_explicit_ignore_path()
+        targets = []
+        for path in (
+            getattr(self, "local_cgcignore_path", None),
+            getattr(self, "local_gitignore_path", None),
+        ):
+            if path is None:
+                continue
+            try:
+                targets.append(path.resolve())
+            except (OSError, RuntimeError):
+                targets.append(path)
+        self.local_ignore_targets = tuple(dict.fromkeys(targets))
 
     def _should_ignore(self, path: str | Path) -> bool:
         path_obj = Path(path).resolve()
@@ -195,27 +374,39 @@ class RepositoryEventHandler(FileSystemEventHandler):
     def synchronize_with_disk(self) -> None:
         info_logger(f"Syncing: {self.repo_path}")
 
+        # Ignore files define which files belong in the graph. Re-read them
+        # before reconciling the repository so newly ignored files are pruned
+        # and newly included files are indexed with the same rules as a clean
+        # build. A caller-supplied matcher remains authoritative.
+        self._refresh_explicit_ignore_path()
+        self._load_ignore_spec(self.cgcignore_path, force=True)
+        refresh_watches = getattr(self, "_refresh_ignore_watches", None)
+        if callable(refresh_watches):
+            refresh_watches()
+
         current_files = self._iter_supported_files()
         current_paths = {p.resolve().as_posix() for p in current_files}
         # Normalize stored paths lexically only: older Windows indexes stored
         # backslash paths, but resolving a foreign-platform path against the
         # local filesystem would prefix cwd and mark every file stale.
-        indexed = {
-            p.replace("\\", "/")
-            for p in self.graph_builder.get_repo_file_paths(self.repo_path)
-        }
+        indexed = {p.replace("\\", "/") for p in self.graph_builder.get_repo_file_paths(self.repo_path)}
 
         self.imports_map = self.graph_builder.pre_scan_imports(current_files)
 
-        for stale in indexed - current_paths:
+        stale_paths = sorted(indexed - current_paths)
+        # update_file_in_graph replaces every current file, which detaches
+        # incoming CALLS edges as well as edges for files removed from disk.
+        # Save outside-repository callers before either kind of replacement.
+        replaced_paths = sorted(set(stale_paths) | current_paths)
+        callers_of_replaced_files = self.graph_builder.get_caller_file_paths_for_files(replaced_paths)
+
+        for stale in stale_paths:
             self.graph_builder.delete_file_from_graph(stale)
 
         refreshed = []
         refreshed_paths: list[str] = []
         for p in current_files:
-            fd = self.graph_builder.update_file_in_graph(
-                p, self.repo_path, self.imports_map
-            )
+            fd = self.graph_builder.update_file_in_graph(p, self.repo_path, self.imports_map)
             if fd and "error" not in fd:
                 refreshed.append(fd)
                 refreshed_paths.append(p.resolve().as_posix())
@@ -228,7 +419,55 @@ class RepositoryEventHandler(FileSystemEventHandler):
             self.graph_builder.link_function_calls(refreshed, self.imports_map)
             self.graph_builder.link_inheritance(refreshed, self.imports_map)
 
+        self._relink_external_callers(caller_paths=callers_of_replaced_files)
+
+        # A disk reconciliation may follow a branch/commit switch even when
+        # the repository's files are otherwise identical. Keep Repository
+        # metadata aligned with the state represented by the refreshed files.
+        self.graph_builder.add_repository_to_graph(self.repo_path, is_dependency=None)
+        self._git_head_snapshot = self._read_git_head_snapshot()
         info_logger("Sync complete")
+
+    def _relink_external_callers(self, caller_paths: set[str]) -> None:
+        """Refresh callers outside this repository whose callees were removed."""
+        callers_by_repo: dict[Path, set[str]] = {}
+        for caller_path in caller_paths:
+            path = Path(caller_path)
+            if not path.is_file():
+                continue
+            try:
+                path.resolve().relative_to(self.repo_path)
+                continue
+            except (OSError, RuntimeError, ValueError):
+                pass
+
+            repo_path = self.graph_builder.get_repository_path_for_file(caller_path)
+            if repo_path:
+                callers_by_repo.setdefault(Path(repo_path), set()).add(path.resolve().as_posix())
+
+        for repo_path, affected_paths in callers_by_repo.items():
+            if not repo_path.is_dir():
+                continue
+            repo_files = sorted(
+                Path(path) for path in self.graph_builder.get_repo_file_paths(repo_path) if Path(path).is_file()
+            )
+            imports_map = self.graph_builder.pre_scan_imports(repo_files)
+            refreshed_callers = []
+            refreshed_paths = []
+            for caller_path in sorted(affected_paths):
+                parsed = self.graph_builder.parse_file(repo_path, Path(caller_path))
+                if parsed and "error" not in parsed:
+                    refreshed_callers.append(parsed)
+                    refreshed_paths.append(caller_path)
+            if not refreshed_callers:
+                continue
+
+            self.graph_builder.delete_outgoing_calls_from_files(refreshed_paths)
+            self.graph_builder.link_function_calls(
+                refreshed_callers,
+                imports_map,
+                self.graph_builder.get_repo_class_lookup(repo_path),
+            )
 
     def _debounce(self, event_path, action, *, coalesce_key=None):
         with self._event_condition:
@@ -554,30 +793,108 @@ class RepositoryEventHandler(FileSystemEventHandler):
         info_logger(f"[INCREMENTAL] Done. Graph refresh for {event_path_str} complete! ✅")
 
     def on_created(self, event):
+        if self._refresh_git_metadata_for_event(getattr(event, "src_path", None)):
+            self._require_disk_resync()
+            return
+        if self._is_git_metadata_path(getattr(event, "src_path", None)):
+            self._debounce(event.src_path, self._require_disk_resync)
+            return
+        if event.is_directory and self._is_external_ignore_parent_directory(event.src_path):
+            self._queue_ignore_metadata_resync(event.src_path)
+            return
+        if not event.is_directory and self._is_ignore_metadata_path(event.src_path):
+            self._queue_ignore_metadata_resync(event.src_path)
+            return
         if not event.is_directory and self._is_supported_event_file(event.src_path):
             self._debounce(event.src_path, lambda: self._handle_modification(event.src_path))
 
     def on_modified(self, event):
+        if self._refresh_git_metadata_for_event(getattr(event, "src_path", None)):
+            self._require_disk_resync()
+            return
+        if self._is_git_metadata_path(getattr(event, "src_path", None)):
+            self._debounce(event.src_path, self._require_disk_resync)
+            return
+        if not event.is_directory and self._is_ignore_metadata_path(event.src_path):
+            self._queue_ignore_metadata_resync(event.src_path)
+            return
         if not event.is_directory and self._is_supported_event_file(event.src_path):
             self._debounce(event.src_path, lambda: self._handle_modification(event.src_path))
 
     def on_deleted(self, event):
+        if self._refresh_git_metadata_for_event(getattr(event, "src_path", None)):
+            self._require_disk_resync()
+            return
+        if self._is_git_refs_directory_event(getattr(event, "src_path", None)):
+            return
+        if self._is_git_metadata_path(getattr(event, "src_path", None)):
+            self._debounce(event.src_path, self._require_disk_resync)
+            return
+        if event.is_directory:
+            deleted_path = Path(getattr(event, "src_path", ""))
+            try:
+                deleted_path.resolve().relative_to(self.repo_path)
+            except (OSError, RuntimeError, ValueError):
+                if self._is_external_ignore_parent_directory(deleted_path):
+                    self._require_disk_resync()
+                return
+            if not self._should_ignore(deleted_path):
+                self._require_disk_resync()
+            return
+        if not event.is_directory and self._is_ignore_metadata_path(event.src_path):
+            self._queue_ignore_metadata_resync(event.src_path)
+            return
         if not event.is_directory and self._is_supported_event_path(event.src_path):
             self._debounce(event.src_path, lambda: self._handle_modification(event.src_path))
 
     def on_moved(self, event):
+        src_path = getattr(event, "src_path", None)
+        dest_path = getattr(event, "dest_path", None)
+        if self._refresh_git_metadata_for_event(src_path) or self._refresh_git_metadata_for_event(dest_path):
+            self._require_disk_resync()
+            return
+        if self._is_git_metadata_path(src_path) or self._is_git_metadata_path(dest_path):
+            metadata_path = src_path or dest_path
+            self._debounce(
+                metadata_path,
+                self._require_disk_resync,
+                coalesce_key=(src_path, dest_path),
+            )
+            return
         if event.is_directory:
             endpoints = [getattr(event, name, None) for name in ("src_path", "dest_path")]
-            if not all(path and self._should_ignore(path) for path in endpoints):
-                self._require_disk_resync()
+            for path in endpoints:
+                if not path:
+                    continue
+                try:
+                    Path(path).resolve().relative_to(self.repo_path)
+                except (OSError, RuntimeError, ValueError):
+                    if self._is_external_ignore_parent_directory(path):
+                        self._require_disk_resync()
+                        break
+                    continue
+                if not self._should_ignore(path):
+                    self._require_disk_resync()
+                    break
+            return
+        ignore_metadata_path = next(
+            (
+                path
+                for path in (src_path, dest_path)
+                if self._is_ignore_metadata_path(path)
+            ),
+            None,
+        )
+        if ignore_metadata_path:
+            self._queue_ignore_metadata_resync(
+                ignore_metadata_path, coalesce_key=(src_path, dest_path)
+            )
             return
         # Both endpoints matter. Only dest_path was handled, so the node for
         # the *old* path and all of its symbols stayed in the graph forever:
         # every rename duplicated every symbol in the file, and a normal
         # refactoring session or a `git checkout` between branches accumulated
         # them indefinitely until find_callers started returning dead paths.
-        src_path = getattr(event, "src_path", None)
-        dest_path = getattr(event, "dest_path", None)
         source_supported = src_path and self._is_supported_event_path(src_path)
         destination_supported = dest_path and self._is_supported_event_path(dest_path)
 
@@ -596,6 +913,115 @@ class RepositoryEventHandler(FileSystemEventHandler):
             self._debounce(src_path, lambda: self._handle_removal(src_path))
         elif destination_supported:
             self._debounce(dest_path, lambda: self._handle_modification(dest_path))
+
+    def _is_git_metadata_path(self, path: str | Path | None) -> bool:
+        """Whether a Git event changed the commit indexed for this repository."""
+        if not path:
+            return False
+        try:
+            candidate = Path(path).resolve()
+        except (OSError, RuntimeError):
+            return False
+        for git_dir in getattr(self, "git_metadata_dirs", ()):
+            try:
+                relative = candidate.relative_to(git_dir)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            parts = relative.parts
+            if (
+                not parts
+                or parts in (("HEAD",), ("packed-refs",))
+                or parts[:2] in (("refs", "heads"), ("reftable", "tables.list"))
+            ):
+                current_snapshot = self._read_git_head_snapshot()
+                if current_snapshot is None:
+                    changed = self._git_head_snapshot is not None
+                    self._git_head_snapshot = None
+                    return changed
+                changed = current_snapshot != self._git_head_snapshot
+                self._git_head_snapshot = current_snapshot
+                return changed
+        return False
+
+    def _read_git_head_snapshot(self):
+        branch_name = get_repo_branch_name(self.repo_path)
+        commit_hash = get_repo_commit_hash(self.repo_path)
+        if commit_hash:
+            return ("commit", commit_hash, branch_name)
+        if has_unborn_git_head(self.repo_path):
+            return ("unborn", branch_name)
+        return None
+
+    def _queue_ignore_metadata_resync(
+        self, path: str | Path, *, coalesce_key=None
+    ) -> None:
+        """Refresh the explicit file target and watches before reconciliation."""
+        self._refresh_ignore_metadata_targets()
+        refresh_watches = getattr(self, "_refresh_ignore_watches", None)
+        if callable(refresh_watches):
+            refresh_watches()
+        self._debounce(
+            path, self._require_disk_resync, coalesce_key=coalesce_key
+        )
+
+    def _is_ignore_metadata_path(self, path: str | Path | None) -> bool:
+        """Whether a path can change this repository's ignore rules."""
+        if not path:
+            return False
+        try:
+            configured_candidate = Path(os.path.abspath(path))
+            candidate = Path(path).resolve()
+        except (OSError, RuntimeError):
+            return False
+        local_paths = (
+            getattr(self, "local_cgcignore_path", None),
+            getattr(self, "local_gitignore_path", None),
+        )
+        if configured_candidate in local_paths:
+            return True
+        configured_path = getattr(self, "configured_ignore_path", None)
+        if configured_path is not None and configured_candidate == configured_path:
+            return True
+        explicit_path = getattr(self, "explicit_ignore_path", None)
+        local_targets = getattr(self, "local_ignore_targets", ())
+        if (explicit_path is not None and candidate == explicit_path) or candidate in local_targets:
+            return True
+        if configured_candidate.name not in {".cgcignore", ".gitignore"}:
+            return False
+        try:
+            configured_candidate.relative_to(self.repo_path)
+        except ValueError:
+            return False
+        return True
+
+    def _is_external_ignore_parent_directory(self, path: str | Path | None) -> bool:
+        """Whether *path* is an external ignore parent or its ancestor."""
+        if not path:
+            return False
+        try:
+            candidate = Path(path).resolve()
+        except (OSError, RuntimeError):
+            return False
+
+        ignore_paths = (
+            getattr(self, "configured_ignore_path", None),
+            getattr(self, "explicit_ignore_path", None),
+            getattr(self, "local_cgcignore_path", None),
+            getattr(self, "local_gitignore_path", None),
+            *getattr(self, "local_ignore_targets", ()),
+        )
+        for ignore_path in ignore_paths:
+            if ignore_path is None:
+                continue
+            try:
+                parent = Path(ignore_path).parent.resolve()
+                parent.relative_to(self.repo_path)
+            except ValueError:
+                if parent == candidate or parent.is_relative_to(candidate):
+                    return True
+            except (OSError, RuntimeError):
+                continue
+        return False
 
     def _handle_move(self, src_path: str, dest_path: str) -> None:
         """Index the moved file before removing its old path and relinking callers."""
@@ -628,9 +1054,24 @@ class CodeWatcher:
         observer_cls = PollingObserver if should_use_polling_observer(use_polling) else Observer
         self.observer = observer_cls()
 
+        self._watch_lock = threading.RLock()
+        self._stop_lock = threading.Lock()
+        self._stopping = False
         self.watched_paths = set()
         self.watches = {}
         self.handlers = {}
+
+    def _unschedule_if_unshared(self, handler, watch) -> None:
+        """Detach one handler and stop a Watchdog registration after its final owner."""
+        with self._watch_lock:
+            self.observer.remove_handler_for_watch(handler, watch)
+            for owner_watches in self.watches.values():
+                if isinstance(owner_watches, (list, tuple)):
+                    if watch in owner_watches:
+                        return
+                elif owner_watches == watch:
+                    return
+            self.observer.unschedule(watch)
 
     def watch_directory(
         self,
@@ -642,8 +1083,11 @@ class CodeWatcher:
         path_obj = Path(path).resolve()
         path_str = str(path_obj)
 
-        if path_str in self.watched_paths:
-            return {"message": "Already watching"}
+        with self._watch_lock:
+            if self._stopping:
+                return {"message": "Watcher is stopping"}
+            if path_str in self.watched_paths:
+                return {"message": "Already watching"}
 
         handler = RepositoryEventHandler(
             self.graph_builder,
@@ -653,9 +1097,93 @@ class CodeWatcher:
             cgcignore_path=cgcignore_path,
         )
 
-        watch = self.observer.schedule(handler, path_str, recursive=True)
+        return self._register_watch_handler(path_obj, path_str, handler)
 
-        self.watches[path_str] = watch
+    def _register_watch_handler(self, path_obj: Path, path_str: str, handler: RepositoryEventHandler):
+        with self._watch_lock:
+            if self._stopping:
+                handler.stop()
+                return {"message": "Watcher is stopping"}
+            if path_str in self.watched_paths:
+                handler.stop()
+                return {"message": "Already watching"}
+            return self._register_watch_handler_locked(path_obj, path_str, handler)
+
+    def _register_watch_handler_locked(self, path_obj: Path, path_str: str, handler: RepositoryEventHandler):
+        watches = [self.observer.schedule(handler, path_str, recursive=True)]
+        external_watches = {}
+
+        def is_within(path: Path, parent: Path) -> bool:
+            try:
+                path.relative_to(parent)
+                return True
+            except ValueError:
+                return False
+
+        def refresh_external_watches() -> None:
+            with self._watch_lock:
+                refresh_external_watches_locked()
+
+        def refresh_external_watches_locked() -> None:
+            with handler._watch_update_lock:
+                if getattr(handler, "_stopped", False):
+                    return
+
+                desired_watches = set()
+                git_metadata_dirs = getattr(handler, "git_metadata_dirs", ())
+                if isinstance(git_metadata_dirs, (list, tuple)):
+                    for metadata_dir in git_metadata_dirs:
+                        if not is_within(metadata_dir, path_obj):
+                            desired_watches.add((metadata_dir, False))
+
+                    if git_metadata_dirs:
+                        refs_dir = git_metadata_dirs[-1] / "refs"
+                        if refs_dir.is_dir() and not is_within(refs_dir, path_obj):
+                            desired_watches.add((refs_dir, True))
+                        reftable_dir = git_metadata_dirs[-1] / "reftable"
+                        if reftable_dir.is_dir() and not is_within(reftable_dir, path_obj):
+                            desired_watches.add((reftable_dir, False))
+
+                ignore_paths = (
+                    getattr(handler, "configured_ignore_path", None),
+                    getattr(handler, "explicit_ignore_path", None),
+                    getattr(handler, "local_cgcignore_path", None),
+                    getattr(handler, "local_gitignore_path", None),
+                    *getattr(handler, "local_ignore_targets", ()),
+                )
+                for ignore_path in ignore_paths:
+                    if ignore_path is None:
+                        continue
+                    watch_path = Path(ignore_path).parent.resolve()
+                    if is_within(watch_path, path_obj):
+                        continue
+                    while not watch_path.is_dir():
+                        existing_parent = watch_path.parent
+                        if existing_parent == watch_path:
+                            break
+                        watch_path = existing_parent
+                    if watch_path.is_dir():
+                        desired_watches.add((watch_path, False))
+
+                for watch_key in set(external_watches) - desired_watches:
+                    watch = external_watches.pop(watch_key)
+                    watches.remove(watch)
+                    self._unschedule_if_unshared(handler, watch)
+
+                for watch_key in sorted(
+                    desired_watches - set(external_watches),
+                    key=lambda item: (str(item[0]), item[1]),
+                ):
+                    watch_path, recursive = watch_key
+                    watch = self.observer.schedule(handler, str(watch_path), recursive=recursive)
+                    external_watches[watch_key] = watch
+                    watches.append(watch)
+
+        handler._refresh_ignore_watches = refresh_external_watches
+        handler._refresh_git_metadata_watches = refresh_external_watches
+        refresh_external_watches()
+
+        self.watches[path_str] = watches
         self.handlers[path_str] = handler
         self.watched_paths.add(path_str)
 
@@ -664,17 +1192,29 @@ class CodeWatcher:
     def unwatch_directory(self, path: str):
         path_str = str(Path(path).resolve())
 
-        watch = self.watches.pop(path_str, None)
-        handler = self.handlers.pop(path_str, None)
-        try:
-            if watch:
-                self.observer.unschedule(watch)
-        finally:
+        with self._watch_lock:
+            handler = self.handlers.get(path_str)
+        if handler:
+            handler.stop()
+
+        def release_watches() -> None:
+            watch = self.watches.pop(path_str, None)
+            registered_handler = self.handlers.pop(path_str, None)
             try:
-                if handler:
-                    handler.stop()
+                watch_list = watch if isinstance(watch, (list, tuple)) else [watch]
+                for scheduled_watch in watch_list:
+                    if scheduled_watch:
+                        self._unschedule_if_unshared(registered_handler, scheduled_watch)
             finally:
                 self.watched_paths.discard(path_str)
+
+        if handler:
+            with self._watch_lock:
+                with handler._watch_update_lock:
+                    release_watches()
+        else:
+            with self._watch_lock:
+                release_watches()
 
         return {"message": f"Stopped watching {path_str}"}
 
@@ -682,24 +1222,41 @@ class CodeWatcher:
         return list(self.watched_paths)
 
     def start(self):
-        if not self.observer.is_alive():
-            self.observer.start()
+        with self._watch_lock:
+            if not self._stopping and not self.observer.is_alive():
+                self.observer.start()
 
     def stop(self):
-        observer_was_alive = self.observer.is_alive()
-        if observer_was_alive:
-            self.observer.stop()
+        with self._stop_lock:
+            with self._watch_lock:
+                if self._stopping:
+                    return
+                self._stopping = True
+                handlers = list(self.handlers.values())
 
-        for h in self.handlers.values():
-            h.stop()
-        self.handlers.clear()
+            # Let active reconciliations finish their dynamic watch updates
+            # before the Observer stops accepting registrations.
+            for handler in handlers:
+                handler.stop()
 
-        # A stopped watchdog Observer cannot be restarted, so the watch state
-        # must not survive it: a stale entry makes watch_directory answer
-        # "Already watching" for a dead observer and the graph silently goes
-        # stale (#1519).
-        self.watched_paths.clear()
-        self.watches.clear()
+            observer_was_alive = self.observer.is_alive()
+            with self._watch_lock:
+                for handler in handlers:
+                    handler._watch_update_lock.acquire()
+                try:
+                    if observer_was_alive:
+                        self.observer.stop()
 
-        if observer_was_alive:
-            self.observer.join()
+                    self.handlers.clear()
+                    # A stopped watchdog Observer cannot be restarted, so the
+                    # watch state must not survive it: a stale entry makes
+                    # watch_directory answer "Already watching" for a dead
+                    # observer and the graph silently goes stale (#1519).
+                    self.watched_paths.clear()
+                    self.watches.clear()
+                finally:
+                    for handler in reversed(handlers):
+                        handler._watch_update_lock.release()
+
+            if observer_was_alive:
+                self.observer.join()
