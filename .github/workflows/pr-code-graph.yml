@@ -46,6 +46,7 @@ jobs:
       - name: Analyze PR Code Graph
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGC_RUNTIME_DB_TYPE: falkordb
         run: |
           # Extract owner/repo/pr from the event context
           OWNER="${{ github.repository_owner }}"

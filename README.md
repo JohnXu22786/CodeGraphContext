@@ -176,7 +176,7 @@ flowchart LR
 -   **Interactive Setup:** A user-friendly command-line wizard for easy setup.
 -   **Dual Mode:** Works as a standalone **CLI toolkit** for developers and as an **MCP server** for AI agents.
 -   **Multi-Language Support:** Full support for 23 programming languages.
--   **Flexible Database Backend:** FalkorDB Lite (Default), KuzuDB, LadybugDB, FalkorDB Remote, Nornic DB, or Neo4j (all platforms via Docker/native).
+-   **Flexible Database Backend:** LadybugDB (default embedded backend), optional FalkorDB Lite, KuzuDB, FalkorDB Remote, Nornic DB, or Neo4j.
 
 
 ---
@@ -243,11 +243,11 @@ CodeGraphContext supports multiple graph database backends to suit your environm
 
 | Feature | KuzuDB | LadybugDB | FalkorDB Lite | Neo4j / Nornic DB |
 | :--- | :--- | :--- | :--- | :--- |
-| **Typical default** | Cross-platform fallback when FalkorDB Lite is unavailable | Optional embedded backend | **Default on Unix** (Python 3.12+, when `falkordblite` is installed) | When explicitly configured via `cgc config db` |
+| **Typical default** | Optional embedded backend | **Default embedded backend** | Optional on Unix (Python 3.12+, when its extra is installed) | When explicitly configured via `cgc config db` |
 | **Setup** | Zero-config / Embedded | Zero-config / Embedded | Zero-config / In-process | Docker / External |
-| **Platform** | **All (Windows Native, macOS, Linux)** | **All (Windows Native, macOS, Linux)** | Unix-only (Linux/macOS/WSL) | All Platforms |
+| **Platform** | Linux/macOS/Windows (no macOS/Windows Python 3.14 wheel) | **All (Windows Native, macOS, Linux)** | Unix-only (Linux/macOS/WSL) | All Platforms |
 | **Use Case** | Desktop, IDE, Local development | Custom research projects | Specialized Unix development | Enterprise, Massive graphs |
-| **Requirement**| `pip install kuzu` | `pip install ladybug` | `pip install falkordblite` | Neo4j Server / Docker / Nornic Cloud |
+| **Requirement**| `python -m pip install 'codegraphcontext-fork[kuzu]'` | Included in the default install | `python -m pip install 'codegraphcontext-fork[falkordb-embedded]'` | Neo4j Server / Docker / Nornic Cloud plus `python -m pip install 'codegraphcontext-fork[neo4j]'` |
 | **Speed** | ⚡ Extremely Fast | ⚡ Fast | 🚀 Scalable | 🌐 Network-dependent |
 | **Persistence**| Yes (to disk) | Yes (to disk) | Yes (to disk) | Yes (server-side) |
 
@@ -281,7 +281,6 @@ _If you’re using CodeGraphContext in your project, feel free to open a PR and 
 
 ## Dependencies
 
-- `neo4j>=5.15.0`
 - `watchdog>=3.0.0`
 - `stdlibs>=2023.11.18`
 - `typer>=0.9.0`
@@ -289,18 +288,18 @@ _If you’re using CodeGraphContext in your project, feel free to open a PR and 
 - `inquirerpy>=0.3.4`
 - `python-dotenv>=1.0.0`
 - `tree-sitter>=0.24.0,<0.26.0`
-- `tree-sitter-language-pack>=1.6,<2.0`
+- `tree-sitter-language-pack>=1.6,<1.21.0`
 - `pyyaml`
 - `pathspec>=0.12.1`
-- `falkordb>=1.0,<1.6`
-- `falkordblite>=0.7,<0.10` (Unix only, Python 3.12+)
-- `kuzu` (KuzuDB engine)
+- `ladybug>=0.19,<0.20` (default embedded database)
 - `fastapi>=0.100.0`
 - `uvicorn>=0.22.0`
 - `requests>=2.28.0`
 - `protobuf>=3.20,<3.21`
 
 **Note:** Python 3.10-3.14 is supported.
+
+Optional database backends can be installed separately with `codegraphcontext-fork[falkordb-embedded]`, `codegraphcontext-fork[falkordb-remote]`, `codegraphcontext-fork[kuzu]`, or `codegraphcontext-fork[neo4j]` (Neo4j and Nornic).
 
 ---
 
@@ -323,10 +322,11 @@ The commands below use Bash on macOS/Linux. In PowerShell, activate the environm
     If the `codegraphcontext` command is not found, reactivate `.venv` in this shell using the activation command above. On Windows, use the PowerShell or Command Prompt activation command shown above.
 
 3.  **Database Setup (Automatic):**
-    CodeGraphContext uses an embedded graph database by default.
-    - **FalkorDB Lite:** Default backend.
-    - **KuzuDB:** Cross-platform embedded backend.
-    - **Neo4j:** Run `codegraphcontext neo4j setup` to use an external server.
+    CodeGraphContext uses the included LadybugDB embedded backend by default.
+    - **FalkorDB Lite:** Optional on Unix with Python 3.12+; install `codegraphcontext-fork[falkordb-embedded]` and select it with `cgc config db falkordb`.
+    - **KuzuDB:** Optional embedded backend; Python 3.14 support is Linux-only because macOS and Windows wheels are unavailable. Install `codegraphcontext-fork[kuzu]`.
+    - **Neo4j or Nornic:** Install `codegraphcontext-fork[neo4j]`; run `codegraphcontext neo4j setup` for Neo4j.
+    - **Data-source ingestion:** Install `codegraphcontext-fork[datasources]` to use the MySQL, Cassandra, or Redis ingestion commands.
 
 ### 🧪 Local Development Setup
 

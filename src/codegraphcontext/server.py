@@ -10,7 +10,7 @@ import re
 import threading
 from datetime import datetime
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from typing import Any, Dict, Coroutine, Optional, List, Set
 
@@ -32,6 +32,14 @@ from .cli.config_manager import (
     save_workspace_mapping,
     get_workspace_mapping,
     _default_global_db_path,
+    _global_default_database,
+    _has_explicit_database_default,
+    _existing_context_fallback_storage,
+    _infer_legacy_context_database,
+    _context_database_and_path_for_path,
+    _context_database_setting,
+    _global_context_environment,
+    ResolvedContext,
     CONFIG_DIR,
     load_config,
 )
@@ -58,6 +66,51 @@ DEFAULT_EDIT_DISTANCE = 2
 DEFAULT_FUZZY_SEARCH = False
 
 
+def _resolve_global_context_for_restore() -> ResolvedContext:
+    """Resolve the global backend independently of a selected repository context."""
+    previous_ignore_project_env = os.environ.get("CGC_IGNORE_PROJECT_ENV")
+    previous_default_database = os.environ.get("DEFAULT_DATABASE")
+    context_selected_default = os.environ.get(
+        "CGC_DB_SELECTION_SOURCE", ""
+    ).startswith("context (") and not os.environ.get("CGC_RUNTIME_DB_TYPE")
+    with _global_context_environment():
+        os.environ["CGC_IGNORE_PROJECT_ENV"] = "1"
+        if context_selected_default:
+            os.environ.pop("DEFAULT_DATABASE", None)
+        try:
+            config = load_config(read_only=True)
+            if (
+                (config.get("FALKORDB_HOST") or os.environ.get("FALKORDB_HOST"))
+                and not _has_explicit_database_default(read_only=True)
+            ):
+                database = "falkordb-remote"
+            else:
+                database = _global_default_database(
+                    config.get("DEFAULT_DATABASE", "ladybugdb"), read_only=True
+                )
+            db_path = os.environ.get("CGC_RUNTIME_DB_PATH") or _default_global_db_path(
+                database, read_only=True
+            )
+        finally:
+            if previous_ignore_project_env is None:
+                os.environ.pop("CGC_IGNORE_PROJECT_ENV", None)
+            else:
+                os.environ["CGC_IGNORE_PROJECT_ENV"] = previous_ignore_project_env
+            if context_selected_default:
+                if previous_default_database is None:
+                    os.environ.pop("DEFAULT_DATABASE", None)
+                else:
+                    os.environ["DEFAULT_DATABASE"] = previous_default_database
+
+    return ResolvedContext(
+        mode="global",
+        context_name="",
+        database=database,
+        db_path=db_path,
+        cgcignore_path=str(CONFIG_DIR / "global" / ".cgcignore"),
+    )
+
+
 def _cancel_stdio_tool_request(request_id, active_requests, cancelling_requests):
     """Cancel an active stdio request once without relying on newer Task APIs."""
     try:
@@ -79,6 +132,14 @@ def _teardown_db_manager(db_manager) -> None:
         db_manager.close_driver(teardown=True)
     else:
         db_manager.close_driver()
+
+
+def _set_runtime_db_type(database: Optional[str]) -> None:
+    """Set or clear the process runtime backend while preserving an unset value."""
+    if database is None:
+        os.environ.pop("CGC_RUNTIME_DB_TYPE", None)
+    else:
+        os.environ["CGC_RUNTIME_DB_TYPE"] = database
 
 
 class MCPServer:
@@ -111,6 +172,27 @@ class MCPServer:
                 liveness can remain available during a remote outage.
         """
         self.cwd = (cwd or Path.cwd()).resolve()
+        # Context switches temporarily replace the runtime backend. Retain the
+        # value from process startup so returning to global restores the caller's
+        # explicit override (or lets the configured global default take effect).
+        # Project dotenv values may have been promoted to os.environ by the
+        # CLI. Snapshot the global view so those values do not pin the backend
+        # when this server later switches back from a repository context.
+        with _global_context_environment():
+            self._runtime_db_type_before_context_switch = os.environ.get(
+                "CGC_RUNTIME_DB_TYPE"
+            )
+            self._runtime_db_path_before_context_switch = os.environ.get(
+                "CGC_RUNTIME_DB_PATH"
+            )
+        self._clear_context_default_database_on_global_restore = (
+            self._runtime_db_type_before_context_switch is None
+            and os.environ.get("DEFAULT_DATABASE") is not None
+            and os.environ.get("CGC_DB_SELECTION_SOURCE", "").startswith(
+                "context ("
+            )
+        )
+        self._startup_global_context: Optional[ResolvedContext] = None
         self.discovered_child_contexts: List[dict] = []
         self._context_note_pending = False
         self.disabled_tools: Set[str] = set()
@@ -119,12 +201,46 @@ class MCPServer:
         try:
             ctx = resolve_context(cwd=self.cwd)
             self.resolved_context = ctx
+            global_context_for_restore = (
+                _resolve_global_context_for_restore()
+                if ctx.mode != "global"
+                else None
+            )
 
-            if ctx.database and not os.environ.get('CGC_RUNTIME_DB_TYPE'):
+            # Keep only an inherited LadybugDB default implicit so the factory
+            # can auto-detect remote FalkorDB or choose an installed fallback.
+            if (
+                ctx.database
+                and not os.environ.get('CGC_RUNTIME_DB_TYPE')
+                and not (
+                    ctx.database == "ladybugdb"
+                    and not ctx.database_is_explicit
+                    and not os.environ.get("DEFAULT_DATABASE")
+                )
+            ):
                 os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
 
             runtime_db_path = os.environ.get('CGC_RUNTIME_DB_PATH')
             self.db_manager = get_database_manager(db_path=runtime_db_path or ctx.db_path)
+            selected_database = getattr(
+                self.db_manager, "get_backend_type", lambda: ctx.database
+            )()
+            if isinstance(selected_database, str) and selected_database:
+                ctx.database = selected_database
+                os.environ["CGC_RUNTIME_DB_TYPE"] = selected_database
+            selected_db_path = getattr(self.db_manager, "db_path", None)
+            if (
+                isinstance(selected_db_path, str)
+                and selected_db_path
+                and not runtime_db_path
+            ):
+                ctx.db_path = selected_db_path
+            if ctx.mode == "global":
+                self._startup_global_context = replace(
+                    ctx, db_path=runtime_db_path or ctx.db_path
+                )
+            elif global_context_for_restore is not None:
+                self._startup_global_context = global_context_for_restore
             if initialize_database:
                 self.db_manager.get_driver()
 
@@ -549,6 +665,16 @@ class MCPServer:
             blocked = self._active_jobs_block_context_switch()
             if blocked:
                 return blocked
+            runtime_db_type_before_switch = os.environ.get("CGC_RUNTIME_DB_TYPE")
+            default_database_before_switch = os.environ.get("DEFAULT_DATABASE")
+            clear_context_default_database = getattr(
+                self, "_clear_context_default_database_on_global_restore", False
+            )
+            global_runtime_db_type = getattr(
+                self,
+                "_runtime_db_type_before_context_switch",
+                runtime_db_type_before_switch,
+            )
             try:
                 watcher_was_running = self._stop_current_watcher()
                 close_error = self._close_db_manager_for_context_switch(
@@ -560,10 +686,43 @@ class MCPServer:
                 # Resolve global DB path directly — do NOT use resolve_context()
                 # because that checks CWD for a local repository context and may
                 # return per-repo instead of global.
-                db = os.getenv("CGC_RUNTIME_DB_TYPE") or load_config().get("DEFAULT_DATABASE", "falkordb")
-                global_db_path = _default_global_db_path(db)
-                new_manager = get_database_manager(db_path=global_db_path)
-                new_manager.get_driver()
+                _set_runtime_db_type(global_runtime_db_type)
+                startup_global_context = getattr(self, "_startup_global_context", None)
+                if startup_global_context is not None:
+                    db = global_runtime_db_type or startup_global_context.database
+                    global_db_path = getattr(
+                        self, "_runtime_db_path_before_context_switch", None
+                    ) or startup_global_context.db_path
+                else:
+                    resolved_global_context = _resolve_global_context_for_restore()
+                    db = global_runtime_db_type or resolved_global_context.database
+                    global_db_path = getattr(
+                        self, "_runtime_db_path_before_context_switch", None
+                    ) or resolved_global_context.db_path
+                if clear_context_default_database:
+                    # CLI credential loading can promote the selected repo
+                    # backend to DEFAULT_DATABASE. The global snapshot already
+                    # resolved the caller's global config without that value.
+                    os.environ.pop("DEFAULT_DATABASE", None)
+                with _global_context_environment():
+                    # Leave the implicit LadybugDB default unset so the factory
+                    # can use an installed embedded fallback or global remote
+                    # configuration while project settings are masked.
+                    if global_runtime_db_type or db != "ladybugdb":
+                        _set_runtime_db_type(db)
+                    new_manager = get_database_manager(db_path=global_db_path)
+                    new_manager.get_driver()
+
+                    selected_database = getattr(
+                        new_manager, "get_backend_type", lambda: db
+                    )()
+                    if isinstance(selected_database, str) and selected_database:
+                        db = selected_database
+                    selected_db_path = getattr(new_manager, "db_path", None)
+                    if isinstance(selected_db_path, str) and selected_db_path:
+                        global_db_path = selected_db_path
+
+                _set_runtime_db_type(db)
 
                 self.db_manager = new_manager
                 self.resolved_context = type(self.resolved_context)(
@@ -589,6 +748,12 @@ class MCPServer:
                     "db_path": global_db_path,
                 }
             except Exception as e:
+                _set_runtime_db_type(runtime_db_type_before_switch)
+                if clear_context_default_database:
+                    if default_database_before_switch is None:
+                        os.environ.pop("DEFAULT_DATABASE", None)
+                    else:
+                        os.environ["DEFAULT_DATABASE"] = default_database_before_switch
                 return {"error": f"Failed to switch to global context: {e}"}
 
         # --- Normal path-based switch ---
@@ -610,31 +775,101 @@ class MCPServer:
         if blocked:
             return blocked
 
-        local_db = "falkordb"
-        local_yaml = cgc_dir / "config.yaml"
-        if local_yaml.exists():
-            try:
-                import yaml
-                with open(local_yaml) as f:
-                    raw = yaml.safe_load(f) or {}
-                local_db = raw.get("database", "falkordb")
-            except Exception:
-                pass
-
-        new_db_path = str(cgc_dir / "db" / local_db)
+        runtime_db_type_before_switch = os.environ.get("CGC_RUNTIME_DB_TYPE")
+        default_database_before_switch = os.environ.get("DEFAULT_DATABASE")
+        clear_context_default_database = getattr(
+            self, "_clear_context_default_database_on_global_restore", False
+        )
 
         try:
+            if clear_context_default_database:
+                # A prior per-repo/named context may have promoted its backend
+                # into DEFAULT_DATABASE. Resolve an unconfigured path context
+                # from global config instead of inheriting that stale choice.
+                os.environ.pop("DEFAULT_DATABASE", None)
+            local_default_db = load_config(read_only=True).get("DEFAULT_DATABASE") or "ladybugdb"
+            workspace_mapping = get_workspace_mapping(self.cwd)
+            mapped_context_path = (
+                workspace_mapping.get("context_path") if workspace_mapping else None
+            )
+            mapping_matches_context = bool(mapped_context_path) and (
+                Path(mapped_context_path).resolve() == cgc_dir.resolve()
+            )
+            mapped_database = (
+                workspace_mapping.get("database")
+                if mapping_matches_context and workspace_mapping
+                else None
+            )
+            context_database = _context_database_setting(cgc_dir)
+            if mapped_database:
+                mapping_database_is_explicit = bool(
+                    workspace_mapping.get(
+                        "database_is_explicit", mapped_database
+                    )
+                )
+                if (
+                    not mapping_database_is_explicit
+                    and context_database is None
+                    and str(mapped_database).lower() == "ladybugdb"
+                ):
+                    mapped_database = _infer_legacy_context_database(
+                        cgc_dir, str(mapped_database)
+                    )
+                local_db, new_db_path = _existing_context_fallback_storage(
+                    cgc_dir, str(mapped_database)
+                )
+            else:
+                local_db, new_db_path = _context_database_and_path_for_path(
+                    cgc_dir, local_default_db
+                )
+                mapping_database_is_explicit = False
+            local_database_is_explicit = context_database is not None or (
+                mapping_database_is_explicit
+                if mapping_matches_context and mapped_database
+                else _has_explicit_database_default(
+                    read_only=True,
+                    include_runtime=False,
+                    include_project_env=False,
+                )
+            )
+
             watcher_was_running = self._stop_current_watcher()
             # Tear down old connection
             close_error = self._close_db_manager_for_context_switch(
                 watcher_was_running
             )
             if close_error:
+                if clear_context_default_database and default_database_before_switch:
+                    os.environ["DEFAULT_DATABASE"] = default_database_before_switch
                 return close_error
 
-            os.environ['CGC_RUNTIME_DB_TYPE'] = local_db
+            startup_runtime_db_type = getattr(
+                self,
+                "_runtime_db_type_before_context_switch",
+                runtime_db_type_before_switch,
+            )
+            if (
+                str(local_db).lower() == "ladybugdb"
+                and not local_database_is_explicit
+                and startup_runtime_db_type is None
+                and not os.getenv("DEFAULT_DATABASE")
+            ):
+                # An unconfigured path context inherits the default. Clear a
+                # backend selected for the previous context so the factory can
+                # apply its normal optional fallback.
+                _set_runtime_db_type(None)
+            else:
+                os.environ['CGC_RUNTIME_DB_TYPE'] = local_db
             new_manager = get_database_manager(db_path=new_db_path)
             new_manager.get_driver()
+
+            selected_database = getattr(new_manager, "get_backend_type", lambda: local_db)()
+            if isinstance(selected_database, str) and selected_database:
+                local_db = selected_database
+            selected_db_path = getattr(new_manager, "db_path", None)
+            if isinstance(selected_db_path, str) and selected_db_path:
+                new_db_path = selected_db_path
+            os.environ['CGC_RUNTIME_DB_TYPE'] = local_db
 
             self.db_manager = new_manager
             self.resolved_context = type(self.resolved_context)(
@@ -644,6 +879,7 @@ class MCPServer:
                 db_path=new_db_path,
                 cgcignore_path=str(cgc_dir / ".cgcignore"),
                 is_local=True,
+                database_is_explicit=local_database_is_explicit,
             )
 
             # Rebuild dependent components with the new DB manager
@@ -653,7 +889,12 @@ class MCPServer:
             self._start_watcher_if(watcher_was_running)
 
             if should_save:
-                save_workspace_mapping(self.cwd, cgc_dir)
+                save_workspace_mapping(
+                    self.cwd,
+                    cgc_dir,
+                    database=local_db,
+                    database_is_explicit=local_database_is_explicit,
+                )
 
             self._context_note_pending = False
 
@@ -665,6 +906,12 @@ class MCPServer:
                 "saved": should_save,
             }
         except Exception as e:
+            _set_runtime_db_type(runtime_db_type_before_switch)
+            if clear_context_default_database:
+                if default_database_before_switch is None:
+                    os.environ.pop("DEFAULT_DATABASE", None)
+                else:
+                    os.environ["DEFAULT_DATABASE"] = default_database_before_switch
             return {"error": f"Failed to switch context: {e}"}
 
 

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from typing import Optional, Tuple
 from neo4j import GraphDatabase, Driver
 
+from .database_errors import Neo4jConnectionError
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
 
 
@@ -33,22 +34,6 @@ def _query_lock_for_driver(driver):
         # fallback lock so independently created wrappers still coordinate.
         return _FALLBACK_QUERY_LOCK
 
-
-class Neo4jConnectionError(Exception):
-    """Raised when Neo4j cannot be reached or authenticated with actionable guidance."""
-
-    def __init__(self, message: str, reason: Optional[str] = None, source: Optional[str] = None, suggestions: Optional[list] = None):
-        super().__init__(message)
-        self.reason = reason or message
-        self.source = source or "unknown"
-        self.suggestions = suggestions or []
-
-    def __str__(self) -> str:
-        base = f"Neo4j connection failed (source: {self.source}). Reason: {self.reason}"
-        if not self.suggestions:
-            return base
-        suggestion_block = "\n" + "\n".join(f"  - {s}" for s in self.suggestions)
-        return f"{base}\nSuggested fixes:{suggestion_block}"
 
 class Neo4jDriverWrapper:
     """

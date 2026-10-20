@@ -39,29 +39,35 @@ python -m pip install codegraphcontext-fork
 
 ## 2. Database Driver Setup
 
-CGC requires Python driver bindings for your selected database backend. On **Unix with Python 3.12+**, FalkorDB Lite is the default when `falkordblite` is installed; on **Windows** (or when FalkorDB Lite is unavailable), CGC falls back to **KuzuDB**. See [Important defaults](../reference/config.md#important-defaults-read-this-first).
+The default installation includes **LadybugDB**, so an embedded database is ready without extra setup. FalkorDB Lite, KùzuDB, and remote database drivers are optional extras. See [Important defaults](../reference/config.md#important-defaults-read-this-first).
 
 ### Installing KuzuDB Drivers
 KuzuDB is embedded and runs directly inside the Python process.
 ```bash
-pip install kuzu
+python -m pip install 'codegraphcontext-fork[kuzu]'
 ```
 
 ### Installing FalkorDB Drivers (Optional)
 If using the FalkorDB backend:
 - **Embedded Lite** (Unix and Python 3.12+ only):
   ```bash
-  pip install falkordblite
+  python -m pip install 'codegraphcontext-fork[falkordb-embedded]'
   ```
 - **Remote Server Client**:
   ```bash
-  pip install falkordb
+  python -m pip install 'codegraphcontext-fork[falkordb-remote]'
   ```
 
 ### Installing Neo4j Drivers (Optional)
 If connecting to a standalone Neo4j instance:
 ```bash
-pip install neo4j
+python -m pip install 'codegraphcontext-fork[neo4j]'
+```
+
+### Installing Data-source Ingestion Drivers (Optional)
+For MySQL, Cassandra, or Redis ingestion with `cgc datasource`:
+```bash
+python -m pip install 'codegraphcontext-fork[datasources]'
 ```
 
 ---
@@ -71,12 +77,12 @@ pip install neo4j
 Set your preferred default database backend in the global configuration:
 
 ```bash
-cgc config db falkordb          # FalkorDB Lite (default on Unix when falkordblite is installed)
-cgc config db kuzudb          # KuzuDB (cross-platform fallback)
-cgc config db ladybugdb       # LadybugDB
-cgc config db falkordb-remote # Remote FalkorDB server
-cgc config db neo4j           # Neo4j
-cgc config db nornic          # Nornic (Neo4j-compatible)
+cgc config db ladybugdb       # LadybugDB (default embedded backend)
+cgc config db falkordb        # FalkorDB Lite (requires the falkordb-embedded extra)
+cgc config db kuzudb          # KùzuDB (requires the kuzu extra)
+cgc config db falkordb-remote # Remote FalkorDB (requires the falkordb-remote extra)
+cgc config db neo4j           # Neo4j (requires the neo4j extra)
+cgc config db nornic          # Nornic (also requires the neo4j extra)
 ```
 
 For remote databases (FalkorDB Remote, Neo4j), refer to the database connection properties in the [Configuration Reference](../reference/config.md).

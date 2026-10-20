@@ -5,10 +5,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from codegraphcontext.cli import config_manager, setup_wizard
+from codegraphcontext import core
+from codegraphcontext.cli import config_manager, main as cli_main, setup_wizard
 from codegraphcontext.runtime_paths import (
     bootstrap_instance_environment,
     get_cgc_home,
@@ -191,7 +193,9 @@ def test_project_context_override_ignores_upstream_marker(tmp_path, monkeypatch)
         "load_context_config",
         lambda: config_manager.ContextConfig(mode="per-repo"),
     )
-    monkeypatch.setattr(config_manager, "load_config", lambda: {"DEFAULT_DATABASE": "falkordb"})
+    monkeypatch.setattr(
+        config_manager, "load_config", lambda **_kwargs: {"DEFAULT_DATABASE": "falkordb"}
+    )
 
     resolved = config_manager.resolve_context(cwd=repo)
     fork_context = repo / ".codegraphcontext-fork"
@@ -201,6 +205,71 @@ def test_project_context_override_ignores_upstream_marker(tmp_path, monkeypatch)
 
     contexts = config_manager.discover_child_contexts(tmp_path)
     assert [Path(context.cgc_path) for context in contexts] == [fork_context]
+
+
+def _read_only_database_preview(tmp_path, monkeypatch, *, remote_host=None):
+    output = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(config_manager, "CONFIG_FILE", tmp_path / "global.env")
+    monkeypatch.setattr(
+        config_manager, "should_apply_project_dotenv", lambda **_kwargs: False
+    )
+    monkeypatch.setattr(
+        config_manager,
+        "resolve_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            mode="global", context_name="", database="ladybugdb"
+        ),
+    )
+    monkeypatch.setattr(cli_main, "console", SimpleNamespace(print=output.append))
+    monkeypatch.setattr(
+        core,
+        "get_database_manager",
+        lambda **_kwargs: pytest.fail("read-only preview must not construct a database manager"),
+    )
+    for name in (
+        "CGC_RUNTIME_DB_TYPE",
+        "CGC_RUNTIME_DB_PATH",
+        "DEFAULT_DATABASE",
+        "DATABASE_TYPE",
+        "CGC_SELECTED_DATABASE",
+        "CGC_DB_SELECTION_SOURCE",
+        "FALKORDB_HOST",
+        "NEO4J_URI",
+        "NEO4J_USERNAME",
+        "NEO4J_PASSWORD",
+        "NORNIC_URI",
+        "NORNIC_USERNAME",
+        "NORNIC_PASSWORD",
+    ):
+        monkeypatch.setenv(name, "__test_value_to_remove__")
+        monkeypatch.delenv(name, raising=False)
+    if remote_host:
+        monkeypatch.setenv("FALKORDB_HOST", remote_host)
+    cli_main._load_credentials(read_only=True)
+    return output
+
+
+def test_read_only_backend_preview_selects_remote_falkordb(tmp_path, monkeypatch):
+    output = _read_only_database_preview(
+        tmp_path, monkeypatch, remote_host="graph.example"
+    )
+
+    assert os.environ["CGC_SELECTED_DATABASE"] == "falkordb-remote"
+    assert any("falkordb-remote" in line for line in output)
+
+
+def test_read_only_backend_preview_discloses_falkordb_startup_fallback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(core, "_is_ladybugdb_available", lambda: False)
+    monkeypatch.setattr(core, "is_falkordb_usable", lambda: True)
+    monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
+
+    output = _read_only_database_preview(tmp_path, monkeypatch)
+
+    assert os.environ["CGC_SELECTED_DATABASE"] == "falkordb"
+    assert any("kuzudb" in line and "startup" in line.lower() for line in output)
 
 
 def test_mcp_registration_carries_isolation_and_uses_current_interpreter(tmp_path, monkeypatch):
@@ -213,7 +282,7 @@ def test_mcp_registration_carries_isolation_and_uses_current_interpreter(tmp_pat
     monkeypatch.setenv("CGC_IGNORE_PROJECT_ENV", "1")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(config_manager, "CONFIG_FILE", isolated_home / ".env")
-    monkeypatch.setattr(config_manager, "load_config", lambda: {})
+    monkeypatch.setattr(config_manager, "load_config", lambda **_kwargs: {})
     monkeypatch.setattr(setup_wizard, "_configure_ide", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         setup_wizard.shutil,

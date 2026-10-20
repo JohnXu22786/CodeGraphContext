@@ -1,9 +1,8 @@
 """Tests for API /health endpoint (BUG-008)."""
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock
-from types import SimpleNamespace
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,6 +14,7 @@ from codegraphcontext.core.database_ownership import (
     find_active_gateway,
     register_configured_gateway,
 )
+from codegraphcontext.cli.config_manager import ResolvedContext
 from codegraphcontext.api.app import create_app
 import codegraphcontext.server as server_module
 
@@ -29,6 +29,7 @@ def test_health_endpoint_returns_ok():
 def test_remote_database_outage_does_not_block_api_liveness_startup(
     monkeypatch, tmp_path
 ):
+    previous_runtime_db_type = os.environ.pop("CGC_RUNTIME_DB_TYPE", None)
     connect_calls = []
 
     class UnavailableRemoteManager:
@@ -40,9 +41,12 @@ def test_remote_database_outage_does_not_block_api_liveness_startup(
             pass
 
     manager = UnavailableRemoteManager()
-    context = SimpleNamespace(
-        database=None,
-        db_path=tmp_path / "remote-db",
+    context = ResolvedContext(
+        mode="global",
+        context_name="",
+        database="falkordb-remote",
+        db_path=str(tmp_path / "remote-db"),
+        cgcignore_path="",
         is_local=True,
     )
     monkeypatch.setattr(
@@ -56,10 +60,16 @@ def test_remote_database_outage_does_not_block_api_liveness_startup(
     monkeypatch.setattr(api_app, "shutdown_server", lambda: None)
     monkeypatch.setattr(api_router, "_server_instance", None)
 
-    with TestClient(create_app()) as client:
-        assert client.get("/health").status_code == 200
+    try:
+        with TestClient(create_app()) as client:
+            assert client.get("/health").status_code == 200
+    finally:
+        os.environ.pop("CGC_RUNTIME_DB_TYPE", None)
+        if previous_runtime_db_type is not None:
+            os.environ["CGC_RUNTIME_DB_TYPE"] = previous_runtime_db_type
 
     assert connect_calls == []
+    assert os.environ.get("CGC_RUNTIME_DB_TYPE") == previous_runtime_db_type
     api_router._server_instance = None
 
 

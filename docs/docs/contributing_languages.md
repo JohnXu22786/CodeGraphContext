@@ -112,6 +112,8 @@ Emacs Lisp support uses the `elisp` grammar already distributed by `tree-sitter-
 
 To smoke-test the checked-in two-file fixture against an isolated Kuzu database:
 
+Install the Kuzu extra in the development environment first with `uv sync --extra kuzu`.
+
 ```bash
 tmpdir=$(mktemp -d)
 export PYTHONPATH=src
@@ -135,6 +137,8 @@ Expected results include `foo-core.el` and `foo-ui.el`, function nodes such as `
 ### Solidity smoke check
 
 Solidity support uses the `solidity` grammar from `tree-sitter-language-pack` (JoranHonig/tree-sitter-solidity). There is no SCIP indexer in v1 — Tree-sitter only.
+
+This smoke check also uses the optional Kuzu backend; install it first with `uv sync --extra kuzu`.
 
 ```bash
 tmpdir=$(mktemp -d)
