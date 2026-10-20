@@ -12,7 +12,10 @@ from ...type_utils import strip_type_modifiers
 from ....utils.debug_log import info_logger
 
 
-@lru_cache(maxsize=None)
+_RESOLVED_POSIX_CACHE_SIZE = 8192
+
+
+@lru_cache(maxsize=_RESOLVED_POSIX_CACHE_SIZE)
 def _resolved_posix(path: str) -> str:
     """Memoized ``Path(path).resolve().as_posix()``.
 
@@ -21,7 +24,8 @@ def _resolved_posix(path: str) -> str:
     every call. The mapping from a path string to its resolved POSIX form is
     deterministic for the duration of an index run, so memoizing it is exact.
     ``build_function_call_groups`` clears this cache on entry to stay fresh
-    across runs in long-lived processes.
+    across runs in long-lived processes. The fixed capacity bounds memory for
+    large repositories whose path count exceeds the recent working set.
     """
     return Path(path).resolve().as_posix()
 

@@ -168,7 +168,7 @@ CONFIG_DESCRIPTIONS = {
     "COMPLEXITY_THRESHOLD": "Cyclomatic complexity warning threshold",
     "MAX_DEPTH": "Maximum directory depth for indexing (unlimited or number)",
     "PARALLEL_WORKERS": "Parallel parse workers for indexing and the file watcher (clamped to 32)",
-    "CACHE_ENABLED": "Enable caching for faster re-indexing",
+    "CACHE_ENABLED": "Reserved compatibility setting; no file-hash or parsed-file cache currently reads this value",
     "IGNORE_DIRS": "Comma-separated list of directory names to ignore during indexing",
     "INDEX_SOURCE": "Store full source code in graph database (for faster indexing use false, for better performance use true)",
     "SCIP_INDEXER": "Use SCIP-based indexing for higher accuracy call/inheritance resolution (requires scip-<lang> tools installed)",

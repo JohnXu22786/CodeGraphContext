@@ -16,6 +16,9 @@ def _bare_watcher():
     w.graph_builder = MagicMock()
     w.observer = MagicMock()
     w.observer.is_alive.return_value = True
+    w._watch_lock = threading.RLock()
+    w._stop_lock = threading.Lock()
+    w._stopping = False
     w.watched_paths = {"/repo/a"}
     w.watches = {"/repo/a": object()}
     handler = MagicMock()

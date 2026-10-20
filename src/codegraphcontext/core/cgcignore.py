@@ -318,6 +318,8 @@ def build_ignore_spec(
     explicit_path: Optional[str] = None,
     create_default_cgcignore: bool = True,
     missing_explicit_defaults: Optional[list[str]] = None,
+    raise_on_gitignore_error: bool = False,
+    raise_on_cgcignore_error: bool = True,
 ) -> Tuple[CGCIgnoreMatcher, Optional[Path]]:
     """Build CGCIgnoreMatcher using defaults, .gitignore, and user .cgcignore rules.
 
@@ -346,16 +348,24 @@ def build_ignore_spec(
     merged_user_patterns: list[str] = []
     merged_user_sources: list[str] = []
     if local_cgcignore_path.is_file():
-        local_patterns = _read_user_cgcignore_patterns(local_cgcignore_path, default_patterns)
+        try:
+            local_patterns = _read_user_cgcignore_patterns(local_cgcignore_path, default_patterns)
+        except (OSError, UnicodeError) as e:
+            if raise_on_cgcignore_error:
+                raise
+            warning_logger(f"Failed to read {local_cgcignore_path}: {e}")
+            local_patterns = []
         merged_user_patterns.extend(local_patterns)
         merged_user_sources.extend([".cgcignore"] * len(local_patterns))
 
-    if (
-        explicit_cgcignore_path
-        and explicit_cgcignore_path.exists()
-        and explicit_cgcignore_path != local_cgcignore_path
-    ):
-        explicit_lines = explicit_cgcignore_path.read_text(encoding="utf-8").splitlines()
+    if explicit_cgcignore_path and explicit_cgcignore_path.exists() and explicit_cgcignore_path != local_cgcignore_path:
+        try:
+            explicit_lines = explicit_cgcignore_path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as e:
+            if raise_on_cgcignore_error:
+                raise
+            warning_logger(f"Failed to read {explicit_cgcignore_path}: {e}")
+            explicit_lines = []
         explicit_patterns = parse_cgcignore_lines(explicit_lines)
         if (
             explicit_lines
@@ -372,10 +382,10 @@ def build_ignore_spec(
     gitignore_path = find_gitignore(ignore_root)
     if gitignore_path is not None:
         try:
-            gitignore_patterns = parse_cgcignore_lines(
-                gitignore_path.read_text(encoding="utf-8").splitlines()
-            )
-        except OSError as e:
+            gitignore_patterns = parse_cgcignore_lines(gitignore_path.read_text(encoding="utf-8").splitlines())
+        except (OSError, UnicodeError) as e:
+            if raise_on_gitignore_error:
+                raise
             warning_logger(f"Failed to read {gitignore_path}: {e}")
 
     # Defaults first, user patterns last: matching is last-match-wins (see
