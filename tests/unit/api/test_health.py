@@ -1,5 +1,6 @@
 """Tests for API /health endpoint (BUG-008)."""
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock
 import pytest
@@ -28,6 +29,7 @@ def test_health_endpoint_returns_ok():
 def test_remote_database_outage_does_not_block_api_liveness_startup(
     monkeypatch, tmp_path
 ):
+    previous_runtime_db_type = os.environ.pop("CGC_RUNTIME_DB_TYPE", None)
     connect_calls = []
 
     class UnavailableRemoteManager:
@@ -58,10 +60,16 @@ def test_remote_database_outage_does_not_block_api_liveness_startup(
     monkeypatch.setattr(api_app, "shutdown_server", lambda: None)
     monkeypatch.setattr(api_router, "_server_instance", None)
 
-    with TestClient(create_app()) as client:
-        assert client.get("/health").status_code == 200
+    try:
+        with TestClient(create_app()) as client:
+            assert client.get("/health").status_code == 200
+    finally:
+        os.environ.pop("CGC_RUNTIME_DB_TYPE", None)
+        if previous_runtime_db_type is not None:
+            os.environ["CGC_RUNTIME_DB_TYPE"] = previous_runtime_db_type
 
     assert connect_calls == []
+    assert os.environ.get("CGC_RUNTIME_DB_TYPE") == previous_runtime_db_type
     api_router._server_instance = None
 
 
