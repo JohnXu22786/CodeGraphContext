@@ -394,6 +394,37 @@ def test_per_repo_context_infers_existing_legacy_falkordb_storage(tmp_path, monk
     assert resolved.db_path == str(context_path / "db" / "falkordb")
 
 
+def test_per_repo_explicit_falkordb_config_wins_over_existing_kuzudb_storage(
+    tmp_path, monkeypatch
+):
+    context_config = tmp_path / "config.yaml"
+    context_config.write_text("mode: per-repo\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    context_path = repo / ".codegraphcontext"
+    (context_path / "db" / "kuzudb").mkdir(parents=True)
+    (context_path / "config.yaml").write_text(
+        "database: falkordb\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(config_manager, "CONFIG_DIR", tmp_path / "global")
+    monkeypatch.setattr(config_manager, "CONTEXT_CONFIG_FILE", context_config)
+    monkeypatch.setattr(
+        config_manager,
+        "_LEGACY_CONTEXT_CONFIG_FILE",
+        tmp_path / "legacy-config.yaml",
+    )
+    monkeypatch.setattr(
+        config_manager, "get_repo_context_path", lambda root: root / ".codegraphcontext"
+    )
+
+    resolved = config_manager.resolve_context(
+        cwd=repo, create_local_context=False, read_only=True
+    )
+
+    assert resolved.database == "falkordb"
+    assert resolved.db_path == str(context_path / "db" / "falkordb")
+    assert resolved.database_is_explicit is True
+
+
 def test_sparse_workspace_mapping_resolves_to_legacy_falkordb_storage(
     tmp_path, monkeypatch
 ):
@@ -815,7 +846,7 @@ def test_explicit_ladybug_config_selection_is_persisted(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("select_as_default", (False, True))
-def test_named_falkordb_context_uses_existing_sibling_kuzudb_storage(
+def test_named_explicit_falkordb_context_ignores_sibling_kuzudb_storage(
     tmp_path, monkeypatch, select_as_default
 ):
     profile = tmp_path / "profile"
@@ -840,6 +871,35 @@ def test_named_falkordb_context_uses_existing_sibling_kuzudb_storage(
     resolved = config_manager.resolve_context(
         None if select_as_default else "legacy", read_only=True
     )
+
+    assert resolved.database == "falkordb"
+    assert resolved.db_path == str(legacy_db_path.parent / "falkordb")
+
+
+def test_named_implicit_falkordb_context_reuses_sibling_kuzudb_storage(
+    tmp_path, monkeypatch
+):
+    profile = tmp_path / "profile"
+    context_config = profile / "config.yaml"
+    legacy_db_path = profile / "contexts" / "legacy" / "db" / "kuzudb"
+    legacy_db_path.mkdir(parents=True)
+    context_config.parent.mkdir(parents=True, exist_ok=True)
+    context_config.write_text(
+        "mode: named\n"
+        "default_context: legacy\n"
+        "contexts:\n"
+        "  legacy:\n"
+        "    database: falkordb\n"
+        "    database_is_explicit: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_manager, "CONFIG_DIR", profile)
+    monkeypatch.setattr(config_manager, "CONTEXT_CONFIG_FILE", context_config)
+    monkeypatch.setattr(
+        config_manager, "_LEGACY_CONTEXT_CONFIG_FILE", profile / "cgc_config.yaml"
+    )
+
+    resolved = config_manager.resolve_context("legacy", read_only=True)
 
     assert resolved.database == "kuzudb"
     assert resolved.db_path == str(legacy_db_path)
@@ -910,13 +970,13 @@ def test_workspace_mapping_falkordb_backend_uses_existing_sibling_kuzudb_storage
 
     resolved = config_manager.resolve_context(cwd=cwd, read_only=True)
 
-    assert resolved.database == "kuzudb"
-    assert resolved.db_path == str(legacy_db_path)
+    assert resolved.database == "falkordb"
+    assert resolved.db_path == str(legacy_db_path.parent / "falkordb")
     assert resolved.database_is_explicit is True
 
 
 @pytest.mark.parametrize("select_as_default", (False, True))
-def test_named_falkordb_context_uses_existing_sibling_kuzudb_db_file(
+def test_named_explicit_falkordb_context_ignores_sibling_kuzudb_db_file(
     tmp_path, monkeypatch, select_as_default
 ):
     profile = tmp_path / "profile"
@@ -943,11 +1003,11 @@ def test_named_falkordb_context_uses_existing_sibling_kuzudb_db_file(
         None if select_as_default else "legacy", read_only=True
     )
 
-    assert resolved.database == "kuzudb"
-    assert resolved.db_path == str(legacy_db_path)
+    assert resolved.database == "falkordb"
+    assert resolved.db_path == str(legacy_db_path.parent / "falkordb")
 
 
-def test_workspace_mapping_falkordb_backend_uses_existing_sibling_kuzudb_db_file(
+def test_workspace_mapping_falkordb_backend_ignores_sibling_kuzudb_db_file(
     tmp_path, monkeypatch
 ):
     profile = tmp_path / "profile"
@@ -984,8 +1044,8 @@ def test_workspace_mapping_falkordb_backend_uses_existing_sibling_kuzudb_db_file
 
     resolved = config_manager.resolve_context(cwd=cwd, read_only=True)
 
-    assert resolved.database == "kuzudb"
-    assert resolved.db_path == str(legacy_db_path)
+    assert resolved.database == "falkordb"
+    assert resolved.db_path == str(legacy_db_path.parent / "falkordb")
 
 
 def test_per_repo_context_uses_existing_kuzudb_db_file(tmp_path, monkeypatch):

@@ -1092,14 +1092,21 @@ def _context_database_and_path_for_path(
     context_path: Path, default_database: str
 ) -> tuple[str, str]:
     """Resolve both backend and existing database path for a repository context."""
-    database = _context_database_setting(context_path) or _infer_legacy_context_database(
+    configured_database = _context_database_setting(context_path)
+    database = configured_database or _infer_legacy_context_database(
         context_path, default_database
     )
-    return _existing_context_fallback_storage(context_path, database)
+    return _existing_context_fallback_storage(
+        context_path, database, database_is_explicit=configured_database is not None
+    )
 
 
 def _existing_context_fallback_storage(
-    context_path: Path, database: str, db_path: Optional[str] = None
+    context_path: Path,
+    database: str,
+    db_path: Optional[str] = None,
+    *,
+    database_is_explicit: bool = False,
 ) -> tuple[str, str]:
     """Preserve existing KùzuDB paths and storage from historical fallbacks."""
     requested_path = Path(db_path) if db_path else Path(context_path) / "db" / database
@@ -1115,7 +1122,7 @@ def _existing_context_fallback_storage(
             requested_path = kuzu_file_path
         return database, str(requested_path)
 
-    if database != "falkordb":
+    if database != "falkordb" or database_is_explicit:
         return database, str(requested_path)
 
     canonical_falkordb_path = Path(context_path) / "db" / "falkordb"
@@ -1148,7 +1155,12 @@ def _named_context_database_and_path(
         database = _infer_legacy_context_database(context_path, database)
         if database != "ladybugdb":
             db_path = _default_db_path(context_name, database)
-    return _existing_context_fallback_storage(context_path, database, db_path)
+    return _existing_context_fallback_storage(
+        context_path,
+        database,
+        db_path,
+        database_is_explicit=database_is_explicit,
+    )
 
 
 _LEGACY_FALKORDB_PATH = CONFIG_DIR / "global" / "falkordb.db"
@@ -1407,7 +1419,9 @@ def resolve_context(
                 # later run can use LadybugDB again.
                 mapped_db = _infer_legacy_context_database(mapped_ctx_path, mapped_db)
             mapped_db, mapped_db_path = _existing_context_fallback_storage(
-                mapped_ctx_path, mapped_db
+                mapped_ctx_path,
+                mapped_db,
+                database_is_explicit=mapped_database_is_explicit,
             )
             return ResolvedContext(
                 mode="per-repo",
@@ -1462,14 +1476,19 @@ def resolve_context(
         default_db = (
             load_config(read_only=True) if read_only else load_config()
         ).get("DEFAULT_DATABASE", "ladybugdb")
-        local_db = _context_database_setting(local_cgc)
+        configured_local_db = _context_database_setting(local_cgc)
+        local_db = configured_local_db
         if local_db is None:
             local_db = (
                 runtime_db
                 if runtime_db
                 else _infer_legacy_context_database(local_cgc, default_db)
             )
-        local_db, db_path = _existing_context_fallback_storage(local_cgc, local_db)
+        local_db, db_path = _existing_context_fallback_storage(
+            local_cgc,
+            local_db,
+            database_is_explicit=(configured_local_db is not None or runtime_db is not None),
+        )
         cgcignore = str(local_cgc / ".cgcignore")
         return ResolvedContext(
             mode="per-repo",

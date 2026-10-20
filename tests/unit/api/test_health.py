@@ -2,8 +2,6 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock
-from types import SimpleNamespace
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,6 +13,7 @@ from codegraphcontext.core.database_ownership import (
     find_active_gateway,
     register_configured_gateway,
 )
+from codegraphcontext.cli.config_manager import ResolvedContext
 from codegraphcontext.api.app import create_app
 import codegraphcontext.server as server_module
 
@@ -40,9 +39,12 @@ def test_remote_database_outage_does_not_block_api_liveness_startup(
             pass
 
     manager = UnavailableRemoteManager()
-    context = SimpleNamespace(
-        database=None,
-        db_path=tmp_path / "remote-db",
+    context = ResolvedContext(
+        mode="global",
+        context_name="",
+        database="falkordb-remote",
+        db_path=str(tmp_path / "remote-db"),
+        cgcignore_path="",
         is_local=True,
     )
     monkeypatch.setattr(
