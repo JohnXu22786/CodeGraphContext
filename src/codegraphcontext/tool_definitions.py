@@ -77,7 +77,7 @@ TOOLS = {
 
     "find_code": {
         "name": "find_code",
-        "description": "Find relevant code snippets related to a keyword (e.g., function name, class name, or content).",
+        "description": "Find concise evidence in the active repository (or repo_path). Results are paged; request include_source/include_docstring to retrieve bounded source pages.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -97,8 +97,25 @@ TOOLS = {
                 },
                 "repo_path": {
                     "type": "string",
-                    "description": "Optional: Path to the repository to restrict the search to."
+                    "description": "Optional repository root; defaults to the active repository."
                 },
+                "offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 3},
+                "include_source": {
+                    "type": "boolean",
+                    "description": "Return a bounded source page for each ranked result.",
+                    "default": False
+                },
+                "include_docstring": {
+                    "type": "boolean",
+                    "description": "Return a bounded docstring page for each ranked result.",
+                    "default": False
+                },
+                "source_offset": {"type": "integer", "minimum": 0, "default": 0},
+                "docstring_offset": {"type": "integer", "minimum": 0, "default": 0},
+                "source_char_limit": {"type": "integer", "minimum": 1, "maximum": 1536, "default": 1024},
+                "docstring_char_limit": {"type": "integer", "minimum": 1, "maximum": 1536, "default": 1024},
+                "source_line_limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
                 "graph_name": _GRAPH_NAME_PROP
             },
             "required": ["query"]
@@ -107,7 +124,7 @@ TOOLS = {
 
     "analyze_code_relationships": {
         "name": "analyze_code_relationships",
-        "description": "Analyze code relationships like 'who calls this function' or 'class hierarchy'.",
+        "description": "Analyze code relationships like 'who calls this function' or 'class hierarchy'. Callee docstrings and variable value/context evidence are returned in bounded character pages with independent offsets.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -143,6 +160,80 @@ TOOLS = {
                     "type": "integer",
                     "description": "Optional traversal depth for transitive caller and callee queries (1-20)."
                 },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99999,
+                    "default": 0,
+                    "description": "Offset for continuing a truncated find_callers/find_callees, find_all_callers/find_all_callees, class_hierarchy, or find_complexity page."
+                },
+                "page_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 500,
+                    "description": "Maximum number of rows to return for find_callers, find_callees, find_all_callers, find_all_callees, class_hierarchy collections, or find_complexity; lower this value to retry a truncated response."
+                },
+                "docstring_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Character offset for the called-function docstring page when query_type is find_callees."
+                },
+                "docstring_char_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1536,
+                    "default": 1024,
+                    "description": "Maximum called-function docstring characters per result for find_callees."
+                },
+                "value_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Character offset for each variable value page when query_type is variable_scope."
+                },
+                "context_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Character offset for each variable context page when query_type is variable_scope."
+                },
+                "decorator_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99999,
+                    "default": 0,
+                    "description": "Offset for each function's decorator list when query_type is find_functions_by_decorator. Use decorators_next_offset to retrieve the next bounded slice."
+                },
+                "decorator_page_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16,
+                    "default": 16,
+                    "description": "Maximum decorators to return per matching function when query_type is find_functions_by_decorator."
+                },
+                "decorator_value_offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99999,
+                    "default": 0,
+                    "description": "Character offset for each decorator value when query_type is find_functions_by_decorator. Use decorators_value_next_offset to retrieve the next bounded slice."
+                },
+                "decorator_value_page_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 128,
+                    "default": 128,
+                    "description": "Maximum characters per decorator value when query_type is find_functions_by_decorator."
+                },
+                "evidence_char_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1536,
+                    "default": 1024,
+                    "description": "Maximum characters per variable value and context page for variable_scope."
+                },
                 "repo_path": {
                     "type": "string",
                     "description": "Optional repository path."
@@ -170,7 +261,7 @@ TOOLS = {
 
     "execute_cypher_query": {
         "name": "execute_cypher_query",
-        "description": "Run a read-only Cypher query against the code graph.",
+        "description": "Run a read-only Cypher query scoped to the active repository by default. Set global_scope=true only for an intentional cross-repository query.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -182,6 +273,23 @@ TOOLS = {
                     "type": "object",
                     "description": "Optional named parameters passed to the Cypher query.",
                     "default": {}
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional repository root; defaults to the active repository when global_scope is false."
+                },
+                "global_scope": {
+                    "type": "boolean",
+                    "description": "Explicitly query across repositories instead of applying repo_path scope.",
+                    "default": False
+                },
+                "offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "page_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 100,
+                    "description": "Pagination requires a final ORDER BY containing the primary key of every matched node and a simple node-only query. Relationship patterns, CALL, UNWIND, UNION, and WITH clauses are rejected for continuation because they can change row identity.",
                 },
                 "graph_name": _GRAPH_NAME_PROP
             },
@@ -219,7 +327,10 @@ TOOLS = {
 
     "find_dead_code": {
         "name": "find_dead_code",
-        "description": "Find potentially unused functions.",
+        "description": (
+            "Find potentially unused functions with bounded paged results. Use "
+            "find_code to retrieve source or docstring evidence on demand."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -227,6 +338,19 @@ TOOLS = {
                     "type": "array",
                     "items": {"type": "string"},
                     "default": []
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99999,
+                    "default": 0,
+                },
+                "page_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 50,
+                    "description": "Maximum dead-code results in this page; use next_offset to continue.",
                 },
                 "repo_path": {
                     "type": "string"
@@ -299,11 +423,19 @@ TOOLS = {
 
     "visualize_graph_query": {
         "name": "visualize_graph_query",
-        "description": "Generate a Neo4j visualization URL for a Cypher query.",
+        "description": "Generate a visualization URL for a Cypher query scoped to the active repository by default. Set global_scope=true to visualize across repositories.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "cypher_query": {"type": "string"},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional repository root; defaults to the active repository.",
+                },
+                "global_scope": {
+                    "type": "boolean",
+                    "description": "Allow results across repositories; defaults to the active repository.",
+                },
                 "graph_name": _GRAPH_NAME_PROP
             },
             "required": ["cypher_query"]
@@ -431,6 +563,10 @@ TOOLS = {
             "properties": {
                 "output_path": {"type": "string"},
                 "include_java": {"type": "boolean", "default": False},
+                "repo_path": {
+                    "type": "string",
+                    "description": "Repository root; defaults to the active repository.",
+                },
                 "god_node_limit": {"type": "integer", "default": 15},
                 "complexity_limit": {"type": "integer", "default": 15},
                 "cross_module_limit": {"type": "integer", "default": 20}
@@ -440,13 +576,15 @@ TOOLS = {
 
     "find_java_spring_endpoints": {
         "name": "find_java_spring_endpoints",
-        "description": "Find Spring endpoints.",
+        "description": "Find Spring endpoints in bounded, stable pages using offset and page_size.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "http_method": {"type": "string"},
                 "path_pattern": {"type": "string"},
                 "repo_path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
                 "graph_name": _GRAPH_NAME_PROP
             }
         }
@@ -454,7 +592,7 @@ TOOLS = {
 
     "find_java_spring_beans": {
         "name": "find_java_spring_beans",
-        "description": "Find Spring beans.",
+        "description": "Find Spring beans in bounded, stable pages using offset and page_size.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -463,6 +601,8 @@ TOOLS = {
                     "enum": ["CONTROLLER", "REST_CONTROLLER", "SERVICE", "REPOSITORY", "COMPONENT", "CONFIGURATION"]
                 },
                 "repo_path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
                 "graph_name": _GRAPH_NAME_PROP
             }
         }
@@ -470,7 +610,7 @@ TOOLS = {
 
     "find_datasource_nodes": {
         "name": "find_datasource_nodes",
-        "description": "Query datasource nodes.",
+        "description": "Query datasource nodes linked to code in the active repository by default. Set global_scope=true to include unscoped datasource and Redis key-pattern metadata. Datasources, tables, columns, and key patterns each use bounded offset/page_size inputs and return continuation offsets when more rows remain.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -480,6 +620,16 @@ TOOLS = {
                 },
                 "name": {"type": "string"},
                 "include_columns": {"type": "boolean"},
+                "offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                "table_offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "table_page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                "column_offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "column_page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                "key_pattern_offset": {"type": "integer", "minimum": 0, "maximum": 99999, "default": 0},
+                "key_pattern_page_size": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                "repo_path": {"type": "string", "description": "Repository path used to scope data through indexed code references."},
+                "global_scope": {"type": "boolean", "description": "Include datasource data across the active graph."},
                 "graph_name": _GRAPH_NAME_PROP
             }
         }

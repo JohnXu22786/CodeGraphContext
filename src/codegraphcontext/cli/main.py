@@ -13,6 +13,7 @@ import sys
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 from rich import box
 from typing import Annotated, Optional
 import asyncio
@@ -1200,6 +1201,7 @@ def diagram(
     level: str = typer.Option("file", "--level", help="Granularity: 'file' (file→module imports) or 'call' (function call graph)"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Write to a file instead of stdout"),
     limit: int = typer.Option(300, "--limit", "-l", help="Maximum edges to include (truncation is reported in the diagram)"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based edge offset for the next page"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
@@ -1243,8 +1245,13 @@ def diagram(
     db_manager, graph_builder, code_finder = services[:3]
 
     try:
-        repo_path = Path(path).resolve().as_posix() if path else None
-        result = code_finder.export_diagram_edges(level=level, repo_path=repo_path, limit=limit)
+        repo_path = (
+            Path(path).resolve().as_posix()
+            if path else _resolve_cli_repo_scope(context=context)
+        )
+        result = code_finder.export_diagram_edges(
+            level=level, repo_path=repo_path, limit=limit, offset=offset
+        )
     finally:
         db_manager.close_driver()
 
@@ -1260,7 +1267,15 @@ def diagram(
     if output_format == "mermaid":
         lines.append("graph LR")
         if result["truncated"]:
-            lines.append(f"    %% truncated: showing {len(edges)} of {result['total_count']} edges (raise --limit)")
+            next_offset = result.get("next_offset")
+            continuation = (
+                f"continue with --offset {next_offset} --limit {result['page_size']}"
+                if next_offset is not None
+                else "continuation window exhausted; narrow the scope"
+            )
+            lines.append(
+                f"    %% truncated: showing {len(edges)} of {result['total_count']} edges; {continuation}"
+            )
         for src, dst in edges:
             sid, did = _node_id(src), _node_id(dst)
             s_label = src.replace('"', "'")
@@ -1272,7 +1287,15 @@ def diagram(
         lines.append("digraph cgc {")
         lines.append("    rankdir=LR;")
         if result["truncated"]:
-            lines.append(f"    // truncated: showing {len(edges)} of {result['total_count']} edges (raise --limit)")
+            next_offset = result.get("next_offset")
+            continuation = (
+                f"continue with --offset {next_offset} --limit {result['page_size']}"
+                if next_offset is not None
+                else "continuation window exhausted; narrow the scope"
+            )
+            lines.append(
+                f"    // truncated: showing {len(edges)} of {result['total_count']} edges; {continuation}"
+            )
         for src, dst in edges:
             sid, did = _node_id(src), _node_id(dst)
             lines.append(f'    {sid} -> {did};')
@@ -1286,7 +1309,17 @@ def diagram(
         Path(output).write_text(text, encoding="utf-8")
         console.print(f"[green]✅ Wrote {output_format} diagram ({len(edges)} edges) to {output}[/green]")
         if result["truncated"]:
-            console.print(f"[yellow]⚠ Truncated: {result['total_count']} total edges; raise --limit to include all[/yellow]")
+            if result.get("next_offset") is not None:
+                console.print(
+                    f"[yellow]⚠ Truncated: {result['total_count']} total edges; "
+                    f"continue with --offset {result['next_offset']} "
+                    f"--limit {result['page_size']}[/yellow]"
+                )
+            else:
+                console.print(
+                    f"[yellow]⚠ Truncated: {result['total_count']} total edges; "
+                    "the continuation window is exhausted[/yellow]"
+                )
     else:
         print(text, end="")
 
@@ -2008,9 +2041,10 @@ def report(
     db_manager, _, _, _ = _initialize_services(context)
     try:
         from codegraphcontext.tools.report_generator import generate_report
-        # Without --repo the generator silently picks the repo with the most
-        # indexed files, which is disclosed only in the report body.
-        scoped_repo = Path(repo).expanduser().resolve().as_posix() if repo else None
+        scoped_repo = (
+            Path(repo).expanduser().resolve().as_posix()
+            if repo else _resolve_cli_repo_scope(context=context)
+        )
         report_text = generate_report(
             db_manager,
             output_path=output_path,
@@ -2040,13 +2074,35 @@ def visualize(
     # doesn't fail with "Option '-h' requires an argument".
     host: str = typer.Option("127.0.0.1", "--host", "-H", help="Host interface to bind to."),
     port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on."),
-    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    global_scope: bool = typer.Option(
+        False, "--global-scope", help="Explicitly visualize across all repositories"
+    ),
+    offset: int = typer.Option(
+        0,
+        "--offset",
+        min=0,
+        max=99_999,
+        help="Zero-based page offset for the built-in offline renderer",
+    ),
 ):
     """
     Launches the interactive UI to visualize the code graph.
     """
     _load_credentials()
-    visualize_helper(repo, host, port, context)
+    repo_path = (
+        Path(repo).resolve().as_posix()
+        if repo
+        else (None if global_scope else _resolve_cli_repo_scope(context=context))
+    )
+    visualize_helper(
+        repo_path=repo_path,
+        host=host,
+        port=port,
+        context=context,
+        global_scope=global_scope,
+        offset=offset,
+    )
 
 @app.command("list")
 def list_repositories(
@@ -2170,6 +2226,152 @@ def watching(
 find_app = typer.Typer(help="Find and search code elements")
 app.add_typer(find_app, name="find")
 
+_CLI_FIND_RESULT_LIMIT = 50
+
+
+def _print_find_continuation(offset: int, page_size: int) -> None:
+    next_offset = offset + page_size
+    if next_offset > 99_999:
+        find_result_console.print(
+            f"[dim]... truncated ({page_size} shown); the continuation window ends at offset 99999[/dim]"
+        )
+        return
+    find_result_console.print(
+        f"[dim]... truncated ({page_size} shown); continue with --offset {next_offset}[/dim]"
+    )
+
+
+def _print_analysis_collection_continuation(
+    collection: str,
+    next_offset: Optional[int],
+    page_size: int,
+    continuation_limit_reached: bool = False,
+) -> None:
+    if next_offset is not None:
+        analyze_result_console.print(
+            f"[dim]More {collection}; continue with --offset {next_offset} "
+            f"--page-size {page_size}[/dim]"
+        )
+    elif continuation_limit_reached:
+        analyze_result_console.print(
+            f"[dim]More {collection} exist, but the continuation window ends "
+            "at offset 99999[/dim]"
+        )
+
+
+def _cli_page_size(requested: Optional[int], offset: int) -> Optional[int]:
+    """Keep CLI pages inside the shared 0..99,999 continuation window."""
+    if requested is None:
+        return None
+    return min(requested, 100_000 - offset)
+
+
+def _discover_git_roots(start: Path) -> set[Path]:
+    roots: set[Path] = set()
+    walk_errors = []
+    for current, directories, files in os.walk(
+        start, onerror=walk_errors.append
+    ):
+        current_path = Path(current).resolve()
+        if ".git" in directories or ".git" in files:
+            roots.add(current_path)
+            directories[:] = [name for name in directories if name != ".git"]
+            if len(roots) > 1:
+                break
+    if walk_errors:
+        raise typer.BadParameter(
+            "Cannot verify repository boundaries from this directory."
+        )
+    return roots
+
+
+def _resolve_cli_repo_scope(
+    start: Optional[Path] = None,
+    context: Optional[str] = None,
+) -> str:
+    """Resolve one repository scope from the selected context or current directory."""
+    current = Path(start or Path.cwd()).resolve()
+    context_config = config_manager.load_context_config(create_if_missing=False)
+    selected_context_name = context or (
+        context_config.default_context if context_config.mode == "named" else None
+    )
+    if selected_context_name:
+        selected_context = context_config.contexts.get(selected_context_name)
+        if selected_context is None:
+            raise typer.BadParameter(
+                f"Cannot determine repository scope: context '{selected_context_name}' is not registered."
+            )
+        registered_repos = sorted(
+            {Path(repo).expanduser().resolve() for repo in selected_context.repos},
+            key=lambda path: (len(path.parts), path.as_posix()),
+        )
+        if not registered_repos:
+            raise typer.BadParameter(
+                f"Context '{selected_context_name}' has no registered repositories to scope this query."
+            )
+        matching_repos = [
+            repo for repo in registered_repos
+            if current == repo or repo in current.parents
+        ]
+        if matching_repos:
+            return max(matching_repos, key=lambda path: len(path.parts)).as_posix()
+        if len(registered_repos) == 1:
+            return registered_repos[0].as_posix()
+        raise typer.BadParameter(
+            f"Cannot determine one repository in context '{selected_context_name}'; "
+            "run this command inside one of that context's registered repositories."
+        )
+
+    if context_config.mode == "per-repo":
+        resolved_context = config_manager.resolve_context(
+            cwd=current,
+            create_local_context=False,
+            read_only=True,
+        )
+        if resolved_context.mode == "per-repo" and resolved_context.is_local:
+            local_context_file = Path(resolved_context.cgcignore_path).expanduser()
+            local_context_root = local_context_file.parent.parent.resolve()
+            roots = _discover_git_roots(local_context_root)
+            if len(roots) > 1:
+                raise typer.BadParameter(
+                    "Cannot determine a single repository scope; run this command "
+                    "inside the repository you want to search."
+                )
+            if roots:
+                return next(iter(roots)).as_posix()
+            if local_context_file.parent.is_dir():
+                return local_context_root.as_posix()
+
+    repo_root = next(
+        (
+            candidate
+            for candidate in (current, *current.parents)
+            if (candidate / ".git").exists()
+        ),
+        None,
+    )
+    if repo_root is not None:
+        roots = _discover_git_roots(repo_root)
+        if roots - {repo_root}:
+            raise typer.BadParameter(
+                "Cannot determine a single repository scope; run this command "
+                "inside the repository you want to search."
+            )
+        return repo_root.as_posix()
+
+    roots = _discover_git_roots(current)
+    if len(roots) > 1:
+        raise typer.BadParameter(
+            "Cannot determine a single repository scope; run this command "
+            "inside the repository you want to search."
+        )
+    if roots:
+        return next(iter(roots)).as_posix()
+    raise typer.BadParameter(
+        "Cannot determine a repository scope from this directory; run this command "
+        "inside the repository you want to search."
+    )
+
 @find_app.command("name")
 def find_by_name(
     ctx: typer.Context,
@@ -2178,6 +2380,7 @@ def find_by_name(
     fuzzy: Optional[bool] = typer.Option(None, "--fuzzy/--no-fuzzy", help="Enable/disable fuzzy matching for this command. Overrides the FUZZY_SEARCH config value (default: true)."),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset for the next page"),
 ):
     """
     Find code elements by name.
@@ -2207,6 +2410,11 @@ def find_by_name(
 
     try:
         results = []
+        truncated = False
+        repo_path = _resolve_cli_repo_scope(context=context).rstrip("/") or "/"
+        repo_prefix = repo_path if repo_path.endswith("/") else repo_path + "/"
+        candidate_limit = offset + _CLI_FIND_RESULT_LIMIT + 1
+        candidate_window_incomplete = False
 
         _VALID_FIND_TYPES = {
             'all', 'function', 'class', 'variable', 'module', 'file',
@@ -2220,11 +2428,27 @@ def find_by_name(
 
         # Search based on type filter
         if type is None or type.lower() == 'all':
-            funcs = code_finder.find_by_function_name(name, fuzzy_search=fuzzy_search)
-            classes = code_finder.find_by_class_name(name, fuzzy_search=fuzzy_search)
-            variables = code_finder.find_by_variable_name(name)
-            modules = code_finder.find_by_module_name(name)
-            imports = code_finder.find_imports(name)
+            funcs = code_finder.find_by_function_name(
+                name, fuzzy_search=fuzzy_search, repo_path=repo_path,
+                limit=candidate_limit,
+            )
+            classes = code_finder.find_by_class_name(
+                name, fuzzy_search=fuzzy_search, repo_path=repo_path,
+                limit=candidate_limit,
+            )
+            variables = code_finder.find_by_variable_name(
+                name, repo_path=repo_path, limit=candidate_limit
+            )
+            modules = code_finder.find_by_module_name(
+                name, repo_path=repo_path, limit=candidate_limit
+            )
+            imports = code_finder.find_imports(
+                name, repo_path=repo_path, limit=candidate_limit
+            )
+            candidate_window_incomplete = any(
+                getattr(rows, "scan_incomplete", False)
+                for rows in (funcs, classes)
+            )
 
             for f in funcs: f['type'] = 'Function'
             for c in classes: c['type'] = 'Class'
@@ -2244,28 +2468,48 @@ def find_by_name(
             with db_manager.get_driver().session() as session:
                 for label in ['Interface', 'Trait', 'Struct', 'Enum']:
                     res = session.run(
-                        f"MATCH (n:{label}) WHERE n.name = $name RETURN n.name as name, n.path as path, n.line_number as line_number",
-                        name=name
+                        f"MATCH (n:{label}) WHERE n.name = $name "
+                        "AND (n.path = $repo_root OR n.path STARTS WITH $repo_prefix) "
+                        "RETURN n.name as name, n.path as path, n.line_number as line_number, "
+                        "n.uid as _sort_uid "
+                        "ORDER BY n.path, n.line_number, n.name, n.uid LIMIT $limit",
+                        name=name,
+                        repo_root=repo_path,
+                        repo_prefix=repo_prefix,
+                        limit=candidate_limit,
                     )
-                    for record in res:
-                        row = dict(record)
+                    rows = [dict(record) for record in res]
+                    truncated = truncated or len(rows) > _CLI_FIND_RESULT_LIMIT
+                    for row in rows:
                         row['type'] = label
                         results.append(row)
         
         elif type.lower() == 'function':
-            results = code_finder.find_by_function_name(name, fuzzy_search=fuzzy_search)
+            results = code_finder.find_by_function_name(
+                name, fuzzy_search=fuzzy_search, repo_path=repo_path,
+                limit=candidate_limit,
+            )
+            candidate_window_incomplete = getattr(results, "scan_incomplete", False)
             for r in results: r['type'] = 'Function'
 
         elif type.lower() == 'class':
-            results = code_finder.find_by_class_name(name, fuzzy_search=fuzzy_search)
+            results = code_finder.find_by_class_name(
+                name, fuzzy_search=fuzzy_search, repo_path=repo_path,
+                limit=candidate_limit,
+            )
+            candidate_window_incomplete = getattr(results, "scan_incomplete", False)
             for r in results: r['type'] = 'Class'
             
         elif type.lower() == 'variable':
-            results = code_finder.find_by_variable_name(name)
+            results = code_finder.find_by_variable_name(
+                name, repo_path=repo_path, limit=candidate_limit
+            )
             for r in results: r['type'] = 'Variable'
 
         elif type.lower() == 'module':
-            results = code_finder.find_by_module_name(name)
+            results = code_finder.find_by_module_name(
+                name, repo_path=repo_path, limit=candidate_limit
+            )
             for r in results: 
                 r['type'] = 'Module'
                 r['path'] = r.get('name')
@@ -2273,17 +2517,46 @@ def find_by_name(
         elif type.lower() == 'file':
             # Quick query for file
             with db_manager.get_driver().session() as session:
-                res = session.run("MATCH (n:File) WHERE n.name = $name RETURN n.name as name, n.path as path, n.is_dependency as is_dependency", name=name)
+                res = session.run(
+                    "MATCH (n:File) WHERE n.name = $name "
+                    "AND (n.path = $repo_root OR n.path STARTS WITH $repo_prefix) "
+                    "RETURN n.name as name, n.path as path, n.is_dependency as is_dependency "
+                    "ORDER BY n.path LIMIT $limit",
+                    name=name,
+                    repo_root=repo_path,
+                    repo_prefix=repo_prefix,
+                    limit=candidate_limit,
+                )
                 results = [dict(record) for record in res]
                 for r in results: r['type'] = 'File'
         
+        truncated = len(results) > offset + _CLI_FIND_RESULT_LIMIT
+        results = results[offset:offset + _CLI_FIND_RESULT_LIMIT]
+        for row in results:
+            for key in tuple(row):
+                if key.startswith("_"):
+                    row.pop(key, None)
         if not results:
             find_result_console.print(f"[yellow]No code elements found with name '{name}'[/yellow]")
+            if candidate_window_incomplete:
+                find_result_console.print(
+                    "[yellow]Fuzzy search candidate window is incomplete; narrow the search term to reach more matches.[/yellow]"
+                )
             return
+
+        if truncated:
+            _print_find_continuation(offset, _CLI_FIND_RESULT_LIMIT)
+        if candidate_window_incomplete:
+            find_result_console.print(
+                "[yellow]Fuzzy search candidate window is incomplete; narrow the search term to reach more matches.[/yellow]"
+            )
         
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_search_results(results, name, search_type="name")
+            visualize_search_results(
+                results, name, search_type="name", repo_path=repo_path,
+                context=context, offset=offset, page_size=_CLI_FIND_RESULT_LIMIT,
+            )
             return
             
         table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
@@ -2314,6 +2587,7 @@ def find_by_pattern(
     case_sensitive: bool = typer.Option(False, "--case-sensitive", "-C", help="Case-sensitive search"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset for the next page"),
 ):
     """
     Find code elements using substring matching.
@@ -2330,48 +2604,81 @@ def find_by_pattern(
     db_manager, graph_builder, code_finder = services[:3]
     
     try:
+        repo_path = _resolve_cli_repo_scope(context=context).rstrip("/") or "/"
+        repo_prefix = repo_path if repo_path.endswith("/") else repo_path + "/"
+        candidate_limit = offset + _CLI_FIND_RESULT_LIMIT + 1
         with db_manager.get_driver().session() as session:
-            # Search Functions, Classes, and Modules
-            # Note: FalkorDB Lite might not support regex, using CONTAINS
-            
-            if not case_sensitive:
-                query = """
-                    MATCH (n)
-                    WHERE (n:Function OR n:Class OR n:Module OR n:Variable OR n:Interface OR n:Trait OR n:Struct OR n:Enum) AND toLower(n.name) CONTAINS toLower($pattern)
-                    RETURN 
-                        labels(n)[0] as type,
-                        n.name as name,
-                        n.path as path,
-                        n.line_number as line_number,
-                        n.is_dependency as is_dependency
-                    ORDER BY n.is_dependency ASC, n.name
-                    LIMIT 50
-                """
-            else:
-                 query = """
-                    MATCH (n)
-                    WHERE (n:Function OR n:Class OR n:Module OR n:Variable OR n:Interface OR n:Trait OR n:Struct OR n:Enum) AND n.name CONTAINS $pattern
-                    RETURN 
-                        labels(n)[0] as type,
-                        n.name as name,
-                        n.path as path,
-                        n.line_number as line_number,
-                        n.is_dependency as is_dependency
-                    ORDER BY n.is_dependency ASC, n.name
-                    LIMIT 50
-                """
-            
-            result = session.run(query, pattern=pattern)
-            
-            results = [dict(record) for record in result]
+            name_predicate = (
+                "n.name CONTAINS $pattern"
+                if case_sensitive
+                else "toLower(n.name) CONTAINS toLower($pattern)"
+            )
+            path_query = f"""
+                MATCH (n)
+                WHERE (n:Function OR n:Class OR n:Variable OR n:Interface
+                    OR n:Trait OR n:Struct OR n:Enum)
+                    AND {name_predicate}
+                    AND (n.path = $repo_root OR n.path STARTS WITH $repo_prefix)
+                RETURN labels(n)[0] as type, n.name as name, n.path as path,
+                    n.line_number as line_number, n.is_dependency as is_dependency,
+                    n.uid as _sort_uid
+                ORDER BY n.is_dependency ASC, n.name, n.path, n.line_number,
+                    type, _sort_uid
+                LIMIT $limit
+            """
+            module_query = f"""
+                MATCH (file:File)-[:IMPORTS]->(n:Module)
+                WHERE (file.path = $repo_root OR file.path STARTS WITH $repo_prefix)
+                    AND {name_predicate}
+                RETURN DISTINCT 'Module' as type, n.name as name, file.path as path,
+                    n.line_number as line_number, file.is_dependency as is_dependency
+                ORDER BY is_dependency ASC, name, path, line_number, type
+                LIMIT $limit
+            """
+            query_params = {
+                "pattern": pattern,
+                "repo_root": repo_path,
+                "repo_prefix": repo_prefix,
+                "limit": candidate_limit,
+            }
+            path_rows = [
+                dict(record) for record in session.run(path_query, **query_params)
+            ]
+            module_rows = [
+                dict(record) for record in session.run(module_query, **query_params)
+            ]
+
+        results = sorted(
+            path_rows + module_rows,
+            key=lambda row: (
+                bool(row.get("is_dependency")),
+                str(row.get("name") or ""),
+                str(row.get("path") or ""),
+                row.get("line_number")
+                if isinstance(row.get("line_number"), (int, float))
+                else -1,
+                str(row.get("type") or ""),
+                str(row.get("_sort_uid") or ""),
+            ),
+        )
+        truncated = len(results) > offset + _CLI_FIND_RESULT_LIMIT
+        results = results[offset:offset + _CLI_FIND_RESULT_LIMIT]
+        for row in results:
+            row.pop("_sort_uid", None)
         
         if not results:
             find_result_console.print(f"[yellow]No matches found for pattern '{pattern}'[/yellow]")
             return
         
+        if truncated:
+            _print_find_continuation(offset, _CLI_FIND_RESULT_LIMIT)
+
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_search_results(results, pattern, search_type="pattern")
+            visualize_search_results(
+                results, pattern, search_type="pattern", repo_path=repo_path,
+                context=context, offset=offset, page_size=_CLI_FIND_RESULT_LIMIT,
+            )
             return
             
         if not case_sensitive and any(c in pattern for c in "*?["):
@@ -2407,6 +2714,7 @@ def find_by_type(
     limit: int = typer.Option(50, "--limit", "-l", help="Maximum results to return"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset for the next page"),
 ):
     """
     Find all elements of a specific type.
@@ -2423,11 +2731,24 @@ def find_by_type(
     db_manager, graph_builder, code_finder = services[:3]
     
     try:
-        results = code_finder.find_by_type(element_type, limit)
+        if limit < 1:
+            raise typer.BadParameter("--limit must be at least 1")
+        visible_limit = min(limit, _CLI_FIND_RESULT_LIMIT)
+        repo_path = _resolve_cli_repo_scope(context=context)
+        type_query_options = {"offset": offset} if offset else {}
+        results = code_finder.find_by_type(
+            element_type, visible_limit + 1, repo_path=repo_path,
+            **type_query_options,
+        )
+        truncated = len(results) > visible_limit
+        results = results[:visible_limit]
         
         if not results:
             find_result_console.print(f"[yellow]No elements found of type '{element_type}'[/yellow]")
             return
+
+        if truncated:
+            _print_find_continuation(offset, visible_limit)
         
         # Add type to results for visualization
         for r in results:
@@ -2435,7 +2756,10 @@ def find_by_type(
         
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_search_results(results, element_type, search_type="type")
+            visualize_search_results(
+                results, element_type, search_type="type", repo_path=repo_path,
+                context=context, offset=offset, page_size=visible_limit,
+            )
             return
             
         table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
@@ -2463,6 +2787,7 @@ def find_by_type(
 def find_by_variable(
     name: str = typer.Argument(..., help="Variable name to search for"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset for the next page"),
 ):
     """
     Find variables by name.
@@ -2478,26 +2803,42 @@ def find_by_variable(
     db_manager, graph_builder, code_finder = services[:3]
     
     try:
-        results = code_finder.find_by_variable_name(name)
+        variable_query_options = {"offset": offset} if offset else {}
+        results = code_finder.find_by_variable_name(
+            name,
+            repo_path=_resolve_cli_repo_scope(context=context),
+            limit=_CLI_FIND_RESULT_LIMIT + 1,
+            include_context=True,
+            **variable_query_options,
+        )
         
         if not results:
             find_result_console.print(f"[yellow]No variables found with name '{name}'[/yellow]")
             return
+
+        truncated = len(results) > _CLI_FIND_RESULT_LIMIT
+        results = results[:_CLI_FIND_RESULT_LIMIT]
+        if truncated:
+            _print_find_continuation(offset, _CLI_FIND_RESULT_LIMIT)
             
         table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
         table.add_column("Name", style="cyan")
         table.add_column("Location", style="dim", overflow="fold")
-        table.add_column("Context", style="yellow")
+        table.add_column("Context (preview)", style="yellow")
         
         for res in results:
             path = res.get('path', '') or ''
             line_str = str(res.get('line_number', ''))
             location_str = f"{path}:{line_str}" if line_str else path
 
+            context_preview = res.get('context', '') or 'module'
+            if res.get('context_truncated'):
+                context_preview += "…"
+
             table.add_row(
                 res.get('name', ''),
                 location_str,
-                res.get('context', '') or 'module'
+                context_preview
             )
             
         find_result_console.print(f"[cyan]Found {len(results)} variable(s) named '{name}':[/cyan]")
@@ -2509,6 +2850,7 @@ def find_by_variable(
 def find_by_content_search(
     query: str = typer.Argument(..., help="Text to search for in source code and docstrings"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset for the next page"),
 ):
     """
     Search code content (source and docstrings) using full-text index.
@@ -2525,7 +2867,13 @@ def find_by_content_search(
     
     try:
         try:
-            results = code_finder.find_by_content(query)
+            content_query_options = {"offset": offset} if offset else {}
+            results = code_finder.find_by_content(
+                query,
+                repo_path=_resolve_cli_repo_scope(context=context),
+                limit=_CLI_FIND_RESULT_LIMIT + 1,
+                **content_query_options,
+            )
         except Exception as e:
             backend = getattr(db_manager, "get_backend_type", lambda: "")()
             error_msg = str(e).lower()
@@ -2541,6 +2889,11 @@ def find_by_content_search(
         if not results:
             find_result_console.print(f"[yellow]No content matches found for '{query}'[/yellow]")
             return
+
+        truncated = len(results) > _CLI_FIND_RESULT_LIMIT
+        results = results[:_CLI_FIND_RESULT_LIMIT]
+        if truncated:
+            _print_find_continuation(offset, _CLI_FIND_RESULT_LIMIT)
             
         table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
         table.add_column("Name", style="cyan")
@@ -2568,6 +2921,23 @@ def find_by_decorator_search(
     decorator: str = typer.Argument(..., help="Decorator name to search for"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based result offset"),
+    decorator_offset: int = typer.Option(
+        0, "--decorator-offset", min=0, max=99_999,
+        help="Offset within each matching function's decorator list",
+    ),
+    decorator_page_size: int = typer.Option(
+        16, "--decorator-page-size", min=1, max=16,
+        help="Maximum decorators to return per matching function",
+    ),
+    decorator_value_offset: int = typer.Option(
+        0, "--decorator-value-offset", min=0, max=99_999,
+        help="Character offset within each decorator value",
+    ),
+    decorator_value_page_size: int = typer.Option(
+        128, "--decorator-value-page-size", min=1, max=128,
+        help="Maximum characters to return per decorator value",
+    ),
 ):
     """
     Find functions with a specific decorator.
@@ -2584,10 +2954,19 @@ def find_by_decorator_search(
     
     try:
         req_limit = get_tool_result_limit("find_functions_by_decorator")
-        results = code_finder.find_functions_by_decorator(decorator, file, limit=req_limit + 1 if req_limit is not None else None)
-        truncated = bool(req_limit and len(results) > req_limit)
+        page_size = _cli_page_size(req_limit, offset)
+        results = code_finder.find_functions_by_decorator(
+            decorator, file, repo_path=_resolve_cli_repo_scope(context=context),
+            limit=page_size + 1 if page_size is not None else None,
+            offset=offset,
+            decorator_offset=decorator_offset,
+            decorator_page_size=decorator_page_size,
+            decorator_value_offset=decorator_value_offset,
+            decorator_value_page_size=decorator_value_page_size,
+        )
+        truncated = bool(page_size and len(results) > page_size)
         if truncated:
-            results = results[:req_limit]
+            results = results[:page_size]
         
         if not results:
             find_result_console.print(f"[yellow]No functions found with decorator '@{decorator}'[/yellow]")
@@ -2613,7 +2992,33 @@ def find_by_decorator_search(
         find_result_console.print(f"[cyan]Found {len(results)} function(s) with decorator '@{decorator}':[/cyan]")
         find_result_console.print(table)
         if truncated:
-            find_result_console.print(f"[dim]... truncated ({req_limit} shown), more exist[/dim]")
+            _print_find_continuation(offset, page_size)
+        decorator_next_offsets = sorted({
+            item["decorators_next_offset"]
+            for item in results
+            if isinstance(item.get("decorators_next_offset"), int)
+        })
+        value_next_offsets = sorted({
+            item["decorators_value_next_offset"]
+            for item in results
+            if isinstance(item.get("decorators_value_next_offset"), int)
+        })
+        if decorator_next_offsets:
+            find_result_console.print(
+                "[yellow]To continue decorator lists, use --decorator-offset "
+                f"{decorator_next_offsets[0]}.[/yellow]"
+            )
+        if value_next_offsets:
+            find_result_console.print(
+                "[yellow]To continue decorator text, use --decorator-value-offset "
+                f"{value_next_offsets[0]}.[/yellow]"
+            )
+        if any(item.get("decorators_continuation_limit_reached") for item in results) or any(
+            item.get("decorators_value_continuation_limit_reached") for item in results
+        ):
+            find_result_console.print(
+                "[yellow]Decorator continuation reached the 100,000-offset limit.[/yellow]"
+            )
     finally:
         db_manager.close_driver()
 
@@ -2622,6 +3027,7 @@ def find_by_argument_search(
     argument: str = typer.Argument(..., help="Argument/parameter name or type to search for"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based result offset"),
 ):
     """
     Find functions that take a specific argument/parameter name or type.
@@ -2639,10 +3045,15 @@ def find_by_argument_search(
     
     try:
         req_limit = get_tool_result_limit("find_functions_by_argument")
-        results = code_finder.find_functions_by_argument(argument, file, limit=req_limit + 1 if req_limit is not None else None)
-        truncated = bool(req_limit and len(results) > req_limit)
+        page_size = _cli_page_size(req_limit, offset)
+        results = code_finder.find_functions_by_argument(
+            argument, file, repo_path=_resolve_cli_repo_scope(context=context),
+            limit=page_size + 1 if page_size is not None else None,
+            offset=offset,
+        )
+        truncated = bool(page_size and len(results) > page_size)
         if truncated:
-            results = results[:req_limit]
+            results = results[:page_size]
         
         if not results:
             find_result_console.print(f"[yellow]No functions found with argument name or type '{argument}'[/yellow]")
@@ -2665,7 +3076,7 @@ def find_by_argument_search(
         find_result_console.print(f"[cyan]Found {len(results)} function(s) with argument '{argument}':[/cyan]")
         find_result_console.print(table)
         if truncated:
-            find_result_console.print(f"[dim]... truncated ({req_limit} shown), more exist[/dim]")
+            _print_find_continuation(offset, page_size)
     finally:
         db_manager.close_driver()
 
@@ -2684,6 +3095,7 @@ def analyze_calls(
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based result offset"),
 ):
     """
     Show what functions this function calls (callees).
@@ -2701,10 +3113,15 @@ def analyze_calls(
     
     try:
         req_limit = get_tool_result_limit("find_callees")
-        results = code_finder.what_does_function_call(function, file, limit=req_limit + 1 if req_limit is not None else None)
-        truncated = bool(req_limit and len(results) > req_limit)
+        page_size = _cli_page_size(req_limit, offset)
+        results = code_finder.what_does_function_call(
+            function, file, repo_path=_resolve_cli_repo_scope(context=context),
+            limit=page_size + 1 if page_size is not None else None,
+            offset=offset,
+        )
+        truncated = bool(page_size and len(results) > page_size)
         if truncated:
-            results = results[:req_limit]
+            results = results[:page_size]
         
         if not results:
             analyze_result_console.print(f"[yellow]No function calls found for '{function}'[/yellow]")
@@ -2712,7 +3129,11 @@ def analyze_calls(
         
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_call_graph(results, function, direction="outgoing")
+            visualize_call_graph(
+                results, function, direction="outgoing",
+                repo_path=_resolve_cli_repo_scope(context=context), context=context,
+                offset=offset, page_size=page_size if page_size is not None else 100,
+            )
             return
         
         table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
@@ -2733,10 +3154,9 @@ def analyze_calls(
         
         analyze_result_console.print(f"\n[bold cyan]Function '{function}' calls:[/bold cyan]")
         analyze_result_console.print(table)
+        analyze_result_console.print(f"\n[dim]Page: {len(results)} function(s)[/dim]")
         if truncated:
-            analyze_result_console.print(f"\n[dim]Total: {len(results)} function(s) (truncated, {req_limit}+ exist)[/dim]")
-        else:
-            analyze_result_console.print(f"\n[dim]Total: {len(results)} function(s)[/dim]")
+            _print_find_continuation(offset, page_size)
     finally:
         db_manager.close_driver()
 
@@ -2747,6 +3167,7 @@ def analyze_callers(
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based result offset"),
 ):
     """
     Show what functions call this function.
@@ -2764,10 +3185,15 @@ def analyze_callers(
     
     try:
         req_limit = get_tool_result_limit("find_callers")
-        results = code_finder.who_calls_function(function, file, limit=req_limit + 1 if req_limit is not None else None)
-        truncated = bool(req_limit and len(results) > req_limit)
+        page_size = _cli_page_size(req_limit, offset)
+        results = code_finder.who_calls_function(
+            function, file, repo_path=_resolve_cli_repo_scope(context=context),
+            limit=page_size + 1 if page_size is not None else None,
+            offset=offset,
+        )
+        truncated = bool(page_size and len(results) > page_size)
         if truncated:
-            results = results[:req_limit]
+            results = results[:page_size]
         
         if not results:
             analyze_result_console.print(f"[yellow]No callers found for '{function}'[/yellow]")
@@ -2775,7 +3201,11 @@ def analyze_callers(
         
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_call_graph(results, function, direction="incoming")
+            visualize_call_graph(
+                results, function, direction="incoming",
+                repo_path=_resolve_cli_repo_scope(context=context), context=context,
+                offset=offset, page_size=page_size if page_size is not None else 100,
+            )
             return
         
         table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
@@ -2798,10 +3228,9 @@ def analyze_callers(
         
         analyze_result_console.print(f"\n[bold cyan]Functions that call '{function}':[/bold cyan]")
         analyze_result_console.print(table)
+        analyze_result_console.print(f"\n[dim]Page: {len(results)} caller(s)[/dim]")
         if truncated:
-            analyze_result_console.print(f"\n[dim]Total: {len(results)} caller(s) (truncated, {req_limit}+ exist)[/dim]")
-        else:
-            analyze_result_console.print(f"\n[dim]Total: {len(results)} caller(s)[/dim]")
+            _print_find_continuation(offset, page_size)
     finally:
         db_manager.close_driver()
 
@@ -2815,6 +3244,7 @@ def analyze_chain(
     to_file: Optional[str] = typer.Option(None, "--to-file", help="File for target function"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based result offset"),
 ):
     """
     Show call chain between two functions.
@@ -2832,10 +3262,17 @@ def analyze_chain(
     
     try:
         req_limit = get_tool_result_limit("call_chain")
-        results = code_finder.find_function_call_chain(from_func, to_func, max_depth, from_file, to_file, limit=req_limit + 1 if req_limit is not None else None)
-        truncated = bool(req_limit and len(results) > req_limit)
+        page_size = _cli_page_size(req_limit, offset)
+        repo_path = _resolve_cli_repo_scope(context=context)
+        results = code_finder.find_function_call_chain(
+            from_func, to_func, max_depth, from_file, to_file,
+            repo_path=repo_path,
+            limit=page_size + 1 if page_size is not None else None,
+            offset=offset,
+        )
+        truncated = bool(page_size and len(results) > page_size)
         if truncated:
-            results = results[:req_limit]
+            results = results[:page_size]
         
         if not results:
             analyze_result_console.print(f"[yellow]No call chain found between '{from_func}' and '{to_func}' within depth {max_depth}[/yellow]")
@@ -2843,7 +3280,12 @@ def analyze_chain(
         
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_call_chain(results, from_func, to_func)
+            visualize_call_chain(
+                results, from_func, to_func, max_depth=max_depth,
+                from_file=from_file, to_file=to_file,
+                repo_path=repo_path, context=context,
+                offset=0, page_size=page_size if page_size is not None else 100,
+            )
             return
         
         for idx, chain in enumerate(results, 1):
@@ -2880,15 +3322,34 @@ def analyze_chain(
                         args_info = f" [dim]({args_str})[/dim]"
                     
                     analyze_result_console.print(f"{indent}  ⬇ [dim]calls at line {line}[/dim]{args_info}")
+        if truncated:
+            _print_find_continuation(offset, page_size)
     finally:
         db_manager.close_driver()
 
 @analyze_app.command("kotlin-call-audit")
 def analyze_kotlin_call_audit(
-    repo_path: Optional[str] = typer.Option(None, "--repo-path", "-r", help="Limit audit to paths under this repository root"),
-    limit: int = typer.Option(20, "--limit", "-n", help="Maximum examples/top names to show"),
+    repo_path: Optional[str] = typer.Option(
+        None, "--repo-path", "-r", help="Limit audit to paths under this repository root"
+    ),
+    limit: int = typer.Option(
+        20, "--limit", "-n", min=1, max=100,
+        help="Maximum ambiguity examples/top names to show",
+    ),
+    offset: int = typer.Option(
+        0, "--offset", min=0, max=99_999,
+        help="Zero-based edge offset for the next page",
+    ),
+    page_size: int = typer.Option(
+        100, "--page-size", min=1, max=500,
+        help="Maximum Kotlin call edges to scan in this page",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
-    fail_on_ambiguity: bool = typer.Option(False, "--fail-on-ambiguity", help="Exit non-zero if any ambiguous Kotlin call groups are found"),
+    fail_on_ambiguity: bool = typer.Option(
+        False,
+        "--fail-on-ambiguity",
+        help="Exit non-zero if this edge page contains an ambiguous call group",
+    ),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """
@@ -2905,7 +3366,10 @@ def analyze_kotlin_call_audit(
     db_manager, _, code_finder = services[:3]
 
     try:
-        result = code_finder.audit_kotlin_call_ambiguity(repo_path=repo_path, limit=limit)
+        repo_path = repo_path or _resolve_cli_repo_scope(context=context)
+        result = code_finder.audit_kotlin_call_ambiguity(
+            repo_path=repo_path, limit=limit, offset=offset, page_size=page_size
+        )
         if json_output:
             analyze_result_console.print_json(json.dumps(result))
         else:
@@ -2913,9 +3377,11 @@ def analyze_kotlin_call_audit(
             summary = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
             summary.add_column("Metric", style="cyan")
             summary.add_column("Value", style="green")
-            summary.add_row("Kotlin fn→fn CALLS edges", str(result["kotlin_fn_to_fn_edges"]))
-            summary.add_row("Ambiguous groups", str(result["ambiguous_groups"]))
-            summary.add_row("Ambiguous edges", str(result["ambiguous_edges"]))
+            summary.add_row(
+                "Kotlin CALLS edges in page", str(result["kotlin_fn_to_fn_edges"])
+            )
+            summary.add_row("Ambiguous groups in page", str(result["ambiguous_groups"]))
+            summary.add_row("Ambiguous edges in page", str(result["ambiguous_edges"]))
             analyze_result_console.print(summary)
 
             if result["examples"]:
@@ -2926,8 +3392,13 @@ def analyze_kotlin_call_audit(
                 for example in result["examples"]:
                     targets = "\n".join(
                         f"{target['context'] or ''}:{target['line_number']} {target['path']}"
+                        + (" [context preview truncated]" if target.get("context_truncated") else "")
                         for target in example["targets"]
                     )
+                    if example.get("targets_truncated"):
+                        targets += f"\n... showing {len(example['targets'])} of {example['target_count']} targets"
+                    if example.get("partial"):
+                        targets += "\n... this callsite continues across the edge page"
                     examples.add_row(
                         f"{example.get('caller_name')} {example.get('caller_path')}:{example.get('call_line')}",
                         str(example.get("full_call_name") or ""),
@@ -2936,6 +3407,15 @@ def analyze_kotlin_call_audit(
                 analyze_result_console.print(examples)
             else:
                 analyze_result_console.print("[green]No ambiguous Kotlin call groups found.[/green]")
+
+            if result.get("next_offset") is not None:
+                analyze_result_console.print(
+                    f"[dim]... more call edges are available; continue with --offset {result['next_offset']}[/dim]"
+                )
+            elif result.get("continuation_limit_reached"):
+                analyze_result_console.print(
+                    "[dim]... the continuation window ends at offset 99999[/dim]"
+                )
 
         if fail_on_ambiguity and result["ambiguous_groups"]:
             raise typer.Exit(1)
@@ -2949,6 +3429,8 @@ def analyze_dependencies(
     show_external: bool = typer.Option(True, "--external/--no-external", help="Show external dependencies"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset"),
+    page_size: int = typer.Option(50, "--page-size", min=1, max=500, help="Maximum importers and co-imports to show"),
 ):
     """
     Show dependencies and imports for a module.
@@ -2965,7 +3447,14 @@ def analyze_dependencies(
     db_manager, graph_builder, code_finder = services[:3]
     
     try:
-        results = code_finder.find_module_dependencies(target)
+        page_size = _cli_page_size(page_size, offset) or 1
+        results = code_finder.find_module_dependencies(
+            target,
+            repo_path=_resolve_cli_repo_scope(context=context),
+            offset=offset,
+            page_size=page_size,
+        )
+        result_page_size = results.get("page_size", page_size)
         
         if not results.get('importers') and not results.get('imports'):
             analyze_result_console.print(f"[yellow]No dependency information found for '{target}'[/yellow]")
@@ -2973,7 +3462,10 @@ def analyze_dependencies(
         
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_dependencies(results, target)
+            visualize_dependencies(
+                results, target, repo_path=_resolve_cli_repo_scope(context=context),
+                context=context, offset=offset, page_size=result_page_size,
+            )
             return
         
         importers = results.get('importers') or []
@@ -3004,6 +3496,21 @@ def analyze_dependencies(
                     str(row.get('import_alias', '') or ''),
                 )
             analyze_result_console.print(imp_table)
+
+        if results.get("importers_truncated"):
+            _print_analysis_collection_continuation(
+                "importers",
+                results.get("next_offset"),
+                result_page_size,
+                results.get("continuation_limit_reached", False),
+            )
+        if results.get("imports_truncated"):
+            _print_analysis_collection_continuation(
+                "co-imports",
+                results.get("next_offset"),
+                result_page_size,
+                results.get("continuation_limit_reached", False),
+            )
     finally:
         db_manager.close_driver()
 
@@ -3014,6 +3521,8 @@ def analyze_inheritance_tree(
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset"),
+    page_size: int = typer.Option(50, "--page-size", min=1, max=500, help="Maximum parents, children, and methods to show"),
 ):
     """
     Show inheritance hierarchy for a class.
@@ -3030,13 +3539,25 @@ def analyze_inheritance_tree(
     db_manager, graph_builder, code_finder = services[:3]
     
     try:
-        results = code_finder.find_class_hierarchy(class_name, file)
+        page_size = _cli_page_size(page_size, offset) or 1
+        results = code_finder.find_class_hierarchy(
+            class_name,
+            file,
+            repo_path=_resolve_cli_repo_scope(context=context),
+            offset=offset,
+            page_size=page_size,
+        )
+        result_page_size = results.get("page_size", page_size)
         
         # Check if visual mode is enabled (check for any hierarchy data)
         has_hierarchy = results.get('parent_classes') or results.get('child_classes')
         if check_visual_flag(ctx, visual):
             if has_hierarchy:
-                visualize_inheritance_tree(results, class_name)
+                visualize_inheritance_tree(
+                    results, class_name, file=file,
+                    repo_path=_resolve_cli_repo_scope(context=context), context=context,
+                    offset=offset, page_size=result_page_size,
+                )
             else:
                 analyze_result_console.print(f"[yellow]No inheritance hierarchy to visualize for '{class_name}'[/yellow]")
             return
@@ -3050,6 +3571,12 @@ def analyze_inheritance_tree(
                 analyze_result_console.print(f"  ⬆ [cyan]{parent.get('parent_class', '')}[/cyan] [dim]({parent.get('parent_file_path', '')}:{parent.get('parent_line_number', '')})[/dim]")
         else:
             analyze_result_console.print("[dim]No parent classes found[/dim]")
+        _print_analysis_collection_continuation(
+            "parent classes",
+            results.get("parent_classes_next_offset"),
+            result_page_size,
+            results.get("parent_classes_continuation_limit_reached", False),
+        )
         
         analyze_result_console.print()
         
@@ -3060,16 +3587,26 @@ def analyze_inheritance_tree(
                 analyze_result_console.print(f"  ⬇ [cyan]{child.get('child_class', '')}[/cyan] [dim]({child.get('child_file_path', '')}:{child.get('child_line_number', '')})[/dim]")
         else:
             analyze_result_console.print("[dim]No child classes found[/dim]")
+        _print_analysis_collection_continuation(
+            "child classes",
+            results.get("child_classes_next_offset"),
+            result_page_size,
+            results.get("child_classes_continuation_limit_reached", False),
+        )
         
         analyze_result_console.print()
         
         # Show methods
         if results.get('methods'):
             analyze_result_console.print(f"[bold yellow]Methods ({len(results['methods'])}):[/bold yellow]")
-            for method in results['methods'][:10]:  # Limit to 10
+            for method in results['methods']:
                 analyze_result_console.print(f"  • [green]{method.get('method_name', '')}[/green]({method.get('method_args', '')})")
-            if len(results['methods']) > 10:
-                analyze_result_console.print(f"  [dim]... and {len(results['methods']) - 10} more[/dim]")
+        _print_analysis_collection_continuation(
+            "methods",
+            results.get("methods_next_offset"),
+            result_page_size,
+            results.get("methods_continuation_limit_reached", False),
+        )
     finally:
         db_manager.close_driver()
 
@@ -3208,9 +3745,12 @@ def analyze_complexity(
 
     violations = None
     try:
+        repo_path = _resolve_cli_repo_scope(context=context)
         if path and _is_file_path(path):
             # File path provided as positional argument
-            results = code_finder.find_most_complex_functions_in_file(path, effective_limit)
+            results = code_finder.find_most_complex_functions_in_file(
+                path, effective_limit, repo_path=repo_path
+            )
             violations = _violations_from(results)
             if machine_output:
                 _emit_machine(violations)
@@ -3218,7 +3758,9 @@ def analyze_complexity(
                 _render_complexity_table(results, f"Most Complex Functions in '{path}' (threshold: {threshold}):")
         elif path:
             # Specific function name
-            result = code_finder.get_cyclomatic_complexity(path, file)
+            result = code_finder.get_cyclomatic_complexity(
+                path, file, repo_path=repo_path
+            )
             single = []
             if result:
                 single = [{
@@ -3239,7 +3781,9 @@ def analyze_complexity(
                 analyze_result_console.print(f"[yellow]Function '{path}' not found or has no complexity data[/yellow]")
         elif file:
             # --file option without positional arg
-            results = code_finder.find_most_complex_functions_in_file(file, effective_limit)
+            results = code_finder.find_most_complex_functions_in_file(
+                file, effective_limit, repo_path=repo_path
+            )
             violations = _violations_from(results)
             if machine_output:
                 _emit_machine(violations)
@@ -3247,7 +3791,9 @@ def analyze_complexity(
                 _render_complexity_table(results, f"Most Complex Functions in '{file}' (threshold: {threshold}):")
         else:
             # Global - most complex functions
-            results = code_finder.find_most_complex_functions(effective_limit)
+            results = code_finder.find_most_complex_functions(
+                effective_limit, repo_path=repo_path
+            )
             violations = _violations_from(results)
             if machine_output:
                 _emit_machine(violations)
@@ -3269,6 +3815,7 @@ def analyze_dead_code(
     exclude_decorators: Optional[str] = typer.Option(None, "--exclude", "-e", help="Comma-separated decorators to exclude"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
     show_all: bool = typer.Option(False, "--show-all", help="Include low-confidence rows (dunders, test hooks, entry-point names) normally hidden (#1332)"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based result offset"),
 ):
     """
     Find potentially unused functions.
@@ -3279,6 +3826,7 @@ def analyze_dead_code(
     Example:
         cgc analyze dead-code .
         cgc analyze dead-code --exclude route,task,api
+        cgc analyze dead-code --offset 50
     """
     _load_credentials()
     services = _initialize_services(context)
@@ -3290,16 +3838,22 @@ def analyze_dead_code(
         exclude_list = exclude_decorators.split(',') if exclude_decorators else []
         # `path` was accepted and then dropped, so running inside one repository
         # still reported dead code from every repository in the database.
-        repo_path = Path(path).resolve().as_posix() if path else None
+        repo_path = (
+            Path(path).resolve().as_posix()
+            if path else _resolve_cli_repo_scope(context=context)
+        )
         # find_dead_code used to cap itself at 50 rows inside the query, which
         # doubled as this table's page size by accident. Now that it returns
         # the full set, ask for a page explicitly -- otherwise a real codebase
         # (7,141 dead functions was the reported figure) would print thousands
         # of table rows. The true count comes from total_count below (#1606).
-        display_limit = get_tool_result_limit("find_dead_code")
+        display_limit = _cli_page_size(
+            get_tool_result_limit("find_dead_code", default=50) or 50,
+            offset,
+        )
         results = code_finder.find_dead_code(
             exclude_list, repo_path=repo_path, limit=display_limit,
-            include_low_confidence=show_all,
+            include_low_confidence=show_all, offset=offset,
         )
 
         unused_funcs = results.get('potentially_unused_functions', [])
@@ -3331,13 +3885,27 @@ def analyze_dead_code(
         
         analyze_result_console.print("\n[bold yellow]⚠️  Potentially Unused Functions:[/bold yellow]")
         analyze_result_console.print(table)
-        if total_count > len(unused_funcs):
+        if total_count > offset + len(unused_funcs):
+            shown = (
+                f"the first {len(unused_funcs)} by path"
+                if offset == 0
+                else f"{len(unused_funcs)} from offset {offset} by path"
+            )
             analyze_result_console.print(
                 f"\n[dim]Total: {total_count} function(s); "
-                f"showing the first {len(unused_funcs)} by path[/dim]"
+                f"showing {shown}[/dim]"
             )
         else:
             analyze_result_console.print(f"\n[dim]Total: {total_count} function(s)[/dim]")
+        next_offset = results.get("next_offset")
+        if next_offset is not None:
+            analyze_result_console.print(
+                f"[dim]... truncated; continue with --offset {next_offset}[/dim]"
+            )
+        elif results.get("continuation_limit_reached"):
+            analyze_result_console.print(
+                "[dim]... truncated; the continuation window ends at offset 99999[/dim]"
+            )
         counts = results.get('confidence_counts') or {}
         if counts:
             summary = (
@@ -3358,6 +3926,7 @@ def analyze_overrides(
     function_name: str = typer.Argument(..., help="Function/method name to find implementations of"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based result offset"),
 ):
     """
     Find all implementations of a function across different classes.
@@ -3377,10 +3946,15 @@ def analyze_overrides(
     
     try:
         req_limit = get_tool_result_limit("overrides")
-        results = code_finder.find_function_overrides(function_name, limit=req_limit + 1 if req_limit is not None else None)
-        truncated = bool(req_limit and len(results) > req_limit)
+        page_size = _cli_page_size(req_limit, offset)
+        results = code_finder.find_function_overrides(
+            function_name, repo_path=_resolve_cli_repo_scope(context=context),
+            limit=page_size + 1 if page_size is not None else None,
+            offset=offset,
+        )
+        truncated = bool(page_size and len(results) > page_size)
         if truncated:
-            results = results[:req_limit]
+            results = results[:page_size]
         
         if not results:
             analyze_result_console.print(f"[yellow]No implementations found for function '{function_name}'[/yellow]")
@@ -3388,7 +3962,11 @@ def analyze_overrides(
         
         # Check if visual mode is enabled
         if check_visual_flag(ctx, visual):
-            visualize_overrides(results, function_name)
+            visualize_overrides(
+                results, function_name, repo_path=_resolve_cli_repo_scope(context=context),
+                context=context, offset=offset,
+                page_size=page_size if page_size is not None else 100,
+            )
             return
         
         table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
@@ -3410,7 +3988,7 @@ def analyze_overrides(
         analyze_result_console.print(f"\n[bold cyan]Found {len(results)} implementation(s) of '{function_name}':[/bold cyan]")
         analyze_result_console.print(table)
         if truncated:
-            analyze_result_console.print(f"[dim]... truncated ({req_limit} shown), more exist[/dim]")
+            _print_find_continuation(offset, page_size)
     finally:
         db_manager.close_driver()
 
@@ -3419,6 +3997,11 @@ def analyze_variable_usage(
     variable_name: str = typer.Argument(..., help="Variable name to analyze"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="Specific file path"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    offset: int = typer.Option(0, "--offset", min=0, max=99_999, help="Zero-based instance offset"),
+    page_size: int = typer.Option(50, "--page-size", min=1, max=500, help="Maximum variable instances to show"),
+    value_offset: int = typer.Option(0, "--value-offset", min=0, help="Character offset into each value"),
+    context_offset: int = typer.Option(0, "--context-offset", min=0, help="Character offset into each context"),
+    evidence_char_limit: int = typer.Option(50, "--evidence-char-limit", min=1, max=1536, help="Characters of value/context to show per instance"),
 ):
     """
     Analyze where a variable is defined and used across the codebase.
@@ -3438,7 +4021,16 @@ def analyze_variable_usage(
     
     try:
         # Get variable usage scope
-        scope_results = code_finder.find_variable_usage_scope(variable_name, file)
+        scope_results = code_finder.find_variable_usage_scope(
+            variable_name,
+            file,
+            repo_path=_resolve_cli_repo_scope(context=context),
+            offset=offset,
+            page_size=page_size,
+            value_offset=value_offset,
+            context_offset=context_offset,
+            evidence_char_limit=evidence_char_limit,
+        )
         instances = scope_results.get('instances', [])
         
         if not instances:
@@ -3462,7 +4054,6 @@ def analyze_variable_usage(
             table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
             table.add_column("Scope Name", style="cyan")
             table.add_column("Location", style="dim", overflow="fold")
-            table.add_column("Value", style="yellow")
             
             for item in items:
                 path = item.get('path', '')
@@ -3472,13 +4063,56 @@ def analyze_variable_usage(
                 table.add_row(
                     item.get('scope_name', ''),
                     location_str,
-                    str(item.get('variable_value', ''))[:50] if item.get('variable_value') else '-'
                 )
             
             analyze_result_console.print(table)
+            for item in items:
+                value = item.get("variable_value")
+                context_text = item.get("context")
+                analyze_result_console.print(
+                    Text(f"Value: {value if value else '-'}")
+                )
+                analyze_result_console.print(
+                    Text(f"Context: {context_text if context_text else '-'}")
+                )
             analyze_result_console.print()
         
-        analyze_result_console.print(f"[dim]Total: {len(instances)} instance(s) across {len(by_scope)} scope type(s)[/dim]")
+        row_summary = (
+            f"Showing {len(instances)} instance(s) from offset "
+            f"{scope_results.get('offset', offset)} across {len(by_scope)} scope type(s)"
+        )
+        if scope_results.get("truncated"):
+            next_offset = scope_results.get("next_offset")
+            if next_offset is not None:
+                analyze_result_console.print(f"[dim]{row_summary}[/dim]")
+                analyze_result_console.print(
+                    f"[dim]More instances; continue with --offset {next_offset} "
+                    f"--page-size {scope_results.get('page_size', page_size)}[/dim]"
+                )
+            elif scope_results.get("continuation_limit_reached"):
+                analyze_result_console.print(
+                    f"[dim]{row_summary}; continuation ends at offset 99999[/dim]"
+                )
+            else:
+                analyze_result_console.print(f"[dim]{row_summary}[/dim]")
+        else:
+            analyze_result_console.print(f"[dim]{row_summary}[/dim]")
+        value_next = sorted({
+            item.get("variable_value_next_offset") for item in instances
+            if item.get("variable_value_next_offset") is not None
+        })
+        if value_next:
+            analyze_result_console.print(
+                f"[dim]Value text continues; request with --value-offset {value_next[0]}[/dim]"
+            )
+        context_next = sorted({
+            item.get("context_next_offset") for item in instances
+            if item.get("context_next_offset") is not None
+        })
+        if context_next:
+            analyze_result_console.print(
+                f"[dim]Context text continues; request with --context-offset {context_next[0]}[/dim]"
+            )
     finally:
         db_manager.close_driver()
 
@@ -3493,6 +4127,11 @@ def query_graph(
     query: str = typer.Argument(..., help="Cypher query to execute (read-only)"),
     visual: bool = typer.Option(False, "--visual", "--viz", "-V", help="Show results as interactive graph visualization"),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    global_scope: bool = typer.Option(
+        False, "--global-scope", help="Explicitly query across all repositories"
+    ),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset"),
+    page_size: int = typer.Option(100, "--page-size", min=1, max=100000, help="Maximum rows to return"),
 ):
     """
     Execute a custom Cypher query on the code graph.
@@ -3503,22 +4142,50 @@ def query_graph(
         cgc query "MATCH (n)-[r]->(m) RETURN n,r,m LIMIT 50" --visual
     """
     _load_credentials()
+    repo_path = None if global_scope else _resolve_cli_repo_scope(context=context)
     
     # Check if visual mode is enabled
     if check_visual_flag(ctx, visual):
-        cypher_helper_visual(query, context)
+        cypher_helper_visual(
+            query,
+            context,
+            repo_path=repo_path,
+            global_scope=global_scope,
+            offset=offset,
+            page_size=page_size,
+        )
     else:
-        cypher_helper(query, context)
+        cypher_helper(
+            query,
+            context,
+            repo_path=repo_path,
+            global_scope=global_scope,
+            offset=offset,
+            page_size=page_size,
+        )
 
 # Keep old 'cypher' as alias for backward compatibility
 @app.command("cypher", hidden=True)
 def cypher_legacy(
     query: str = typer.Argument(..., help="The read-only Cypher query to execute."),
     context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    global_scope: bool = typer.Option(
+        False, "--global-scope", help="Explicitly query across all repositories"
+    ),
+    offset: int = typer.Option(0, "--offset", min=0, max=99999, help="Zero-based result offset"),
+    page_size: int = typer.Option(100, "--page-size", min=1, max=100000, help="Maximum rows to return"),
 ):
     """[Deprecated] Use 'cgc query' instead."""
     console.print("[yellow]⚠️  'cgc cypher' is deprecated. Use 'cgc query' instead.[/yellow]")
-    cypher_helper(query, context)
+    repo_path = None if global_scope else _resolve_cli_repo_scope(context=context)
+    cypher_helper(
+        query,
+        context,
+        repo_path=repo_path,
+        global_scope=global_scope,
+        offset=offset,
+        page_size=page_size,
+    )
 
 
 
@@ -3563,14 +4230,27 @@ def delete_abbrev(
 def visualize_abbrev(
     repo: Optional[str] = typer.Argument(None, help="Path to the repository to visualize."),
     port: int = typer.Option(8000, "--port", "-p", help="Port to run the visualizer server on."),
-    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use")
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
+    global_scope: bool = typer.Option(
+        False, "--global-scope", help="Explicitly visualize across all repositories"
+    ),
 ):
     """Shortcut for 'cgc visualize'"""
     _load_credentials()
     # `port` must be passed by keyword: visualize_helper's second positional
     # parameter is `host`, so the int landed there and the server tried to bind
     # to host=8000 while ignoring --port entirely.
-    visualize_helper(repo, port=port, context=context)
+    repo_path = (
+        Path(repo).resolve().as_posix()
+        if repo
+        else (None if global_scope else _resolve_cli_repo_scope(context=context))
+    )
+    visualize_helper(
+        repo_path=repo_path,
+        port=port,
+        context=context,
+        global_scope=global_scope,
+    )
 
 @app.command("w", rich_help_panel="Shortcuts")
 def watch_abbrev(

@@ -23,6 +23,7 @@ def indexed_repo(tmp_path: Path):
     home.mkdir()
     repo = tmp_path / "repo"
     repo.mkdir()
+    (repo / ".git").mkdir()
     (repo / "app.py").write_text(
         "MAX_LIMIT = 10\n"
         "\n"
@@ -48,6 +49,7 @@ def indexed_repo(tmp_path: Path):
     env["DEFAULT_DATABASE"] = "kuzudb"
     env["CGC_CONTEXT_MODE"] = "global"
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    env["CGC_TEST_REPO_CWD"] = str(repo)
     r = subprocess.run(f"{CGC} index {shlex.quote(str(repo))}", shell=True,
                        capture_output=True, text=True, env=env, check=False)
     assert "Successfully finished indexing" in (r.stdout + r.stderr), (
@@ -58,7 +60,7 @@ def indexed_repo(tmp_path: Path):
 
 def _run(args: str, env):
     return subprocess.run(f"{CGC} {args}", shell=True, capture_output=True,
-                          text=True, env=env)
+                          text=True, env=env, cwd=env.get("CGC_TEST_REPO_CWD"))
 
 
 # Header fragments stay free of result counts so the assertions do not track

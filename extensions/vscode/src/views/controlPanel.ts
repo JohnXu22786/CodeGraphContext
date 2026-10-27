@@ -241,13 +241,15 @@ export class SidebarControlPanel implements vscode.WebviewViewProvider {
     terminal.show(false);
     terminal.sendText(`${executable} ${args.join(" ")}`);
 
-    // Open the explore URL WITHOUT repo_path in the query string.
-    // The CGC viz server's /api/graph endpoint filters by repo_path stored in its
-    // own session context (set via --repo flag to the server process). Adding
-    // repo_path as a query param on the frontend overrides that and can return 0
-    // nodes when the stored path doesn't match exactly.
+    // The graph endpoint requires an explicit repository scope unless the user
+    // deliberately opts into a global view. Pass the selected repository to the
+    // frontend request so its /api/graph calls remain scoped.
     await new Promise(r => setTimeout(r, 2500));
-    const url = `http://localhost:${port}/explore?backend=${encodeURIComponent(`http://localhost:${port}`)}` ;
+    const query = new URLSearchParams({
+      backend: `http://localhost:${port}`,
+      repo_path: repoPath,
+    });
+    const url = `http://localhost:${port}/explore?${query.toString()}`;
     await vscode.env.openExternal(vscode.Uri.parse(url));
   }
 

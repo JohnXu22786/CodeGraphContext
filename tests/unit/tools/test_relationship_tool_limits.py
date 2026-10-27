@@ -135,6 +135,196 @@ def test_find_importers_truncation(tmp_path):
         manager.close_driver()
 
 
+def test_variable_queries_support_file_container_without_file_uid(tmp_path):
+    manager = KuzuDBManager(str(tmp_path / "db"))
+    driver = manager.get_driver()
+    try:
+        with driver.session() as session:
+            session.run(
+                "CREATE (:File {name: 'app.py', path: 'src/app.py', "
+                "relative_path: 'src/app.py', is_dependency: false})"
+            )
+            session.run(
+                "CREATE (:Variable {uid: 'value:src/app.py:1', name: 'value', "
+                "path: 'src/app.py', line_number: 1, is_dependency: false, "
+                "value: '1', context: 'module'})"
+            )
+            session.run(
+                "MATCH (file:File {path: 'src/app.py'}), "
+                "(variable:Variable {name: 'value'}) "
+                "CREATE (file)-[:CONTAINS]->(variable)"
+            )
+
+        finder = CodeFinder(_KuzuDBAdapter(driver))
+        modifiers = finder.who_modifies_variable("value")
+        scope = finder.find_variable_usage_scope("value")
+
+        assert len(modifiers) == 1
+        assert modifiers[0]["container_type"] == "file"
+        assert modifiers[0]["path"] == "src/app.py"
+        assert scope["instances"]
+        assert scope["instances"][0]["scope_type"] == "module"
+    finally:
+        manager.close_driver()
+
+
+def test_kuzu_relationship_evidence_pages_preserve_unicode_offsets(tmp_path):
+    manager = KuzuDBManager(str(tmp_path / "db"))
+    driver = manager.get_driver()
+    try:
+        docstring = "被调用函数说明😀" * 20
+        value = "变量值🧪" * 20
+        context = "配置上下文🚀" * 20
+        with driver.session() as session:
+            session.run(
+                "CREATE (:Function {uid: 'caller', name: 'caller', path: '/repo/a.py', "
+                "line_number: 1, is_dependency: false})"
+            )
+            session.run(
+                "CREATE (:Function {uid: 'callee', name: 'callee', path: '/repo/b.py', "
+                "line_number: 2, is_dependency: false, docstring: $docstring})",
+                docstring=docstring,
+            )
+            session.run(
+                "MATCH (caller:Function {uid: 'caller'}), "
+                "(callee:Function {uid: 'callee'}) "
+                "CREATE (caller)-[:CALLS]->(callee)"
+            )
+            session.run(
+                "CREATE (:Variable {uid: 'variable', name: 'setting', "
+                "path: '/repo/settings.py', line_number: 4, is_dependency: false, "
+                "value: $value, context: $context})",
+                value=value,
+                context=context,
+            )
+
+        finder = CodeFinder(_KuzuDBAdapter(driver))
+        callee_response = analysis_handlers.analyze_code_relationships(
+            finder,
+            query_type="find_callees",
+            target="caller",
+            page_size=1,
+            docstring_offset=3,
+            docstring_char_limit=7,
+        )
+        scope_response = analysis_handlers.analyze_code_relationships(
+            finder,
+            query_type="variable_scope",
+            target="setting",
+            page_size=1,
+            value_offset=5,
+            context_offset=2,
+            evidence_char_limit=8,
+        )
+
+        callees = callee_response["results"]["results"]
+        assert callees[0]["called_docstring"] == docstring[3:10]
+        assert callees[0]["called_docstring_offset"] == 3
+        assert callees[0]["called_docstring_next_offset"] == 10
+        instances = scope_response["results"]["results"]["instances"]
+        instance = instances[0]
+        assert instance["variable_value"] == value[5:13]
+        assert instance["variable_value_next_offset"] == 13
+        assert instance["context"] == context[2:10]
+        assert instance["context_next_offset"] == 10
+    finally:
+        manager.close_driver()
+
+
+def test_kuzu_kotlin_call_audit_uses_stable_supported_relationship_ordering(tmp_path):
+    manager = KuzuDBManager(str(tmp_path / "kotlin-call-audit-db"))
+    driver = manager.get_driver()
+    try:
+        with driver.session() as session:
+            session.run(
+                "CREATE (:Function {uid: 'audit-caller', name: 'run', path: '/repo/A.kt', "
+                "line_number: 10, end_line: 20, context: 'caller context'})"
+            )
+            for index in range(4):
+                session.run(
+                    "CREATE (:Function {uid: $uid, name: 'target', path: $path, "
+                    "line_number: 5, context: $context})",
+                    uid=f"audit-target-{index}",
+                    path=f"/repo/Target{index}.kt",
+                    context="目标上下文😀" * 120,
+                )
+            for index in range(4):
+                session.run(
+                    "MATCH (caller:Function {uid: 'audit-caller'}), "
+                    "(target:Function {uid: $uid}) "
+                    "CREATE (caller)-[:CALLS {line_number: 12, "
+                    "full_call_name: 'service.target', args: ['value'], "
+                    "args_key: 'value'}]->(target)",
+                    uid=f"audit-target-{index}",
+                )
+
+        finder = CodeFinder(_KuzuDBAdapter(driver))
+        first_page = finder.audit_kotlin_call_ambiguity(
+            repo_path="/repo", page_size=2
+        )
+        second_page = finder.audit_kotlin_call_ambiguity(
+            repo_path="/repo", offset=first_page["next_offset"], page_size=2
+        )
+
+        assert first_page["next_offset"] == 2
+        assert second_page["next_offset"] is None
+        first_targets = first_page["examples"][0]["targets"]
+        second_targets = second_page["examples"][0]["targets"]
+        assert {target["path"] for target in first_targets}.isdisjoint(
+            target["path"] for target in second_targets
+        )
+        assert len(first_targets[0]["context"]) == 256
+        assert first_targets[0]["context_total_chars"] == len("目标上下文😀" * 120)
+        assert first_targets[0]["context_truncated"] is True
+        assert first_page["examples"][0]["partial"] is True
+        assert second_page["examples"][0]["partial"] is True
+    finally:
+        manager.close_driver()
+
+
+def test_override_query_does_not_require_file_uid(tmp_path):
+    manager = KuzuDBManager(str(tmp_path / "db"))
+    driver = manager.get_driver()
+    args = [f"parameter_{index}_" + "x" * 512 for index in range(20)]
+    try:
+        with driver.session() as session:
+            session.run(
+                "CREATE (:File {name: 'app.py', path: 'src/app.py', "
+                "relative_path: 'src/app.py', is_dependency: false})"
+            )
+            session.run(
+                "CREATE (:Class {uid: 'widget:src/app.py:1', name: 'Widget', "
+                "path: 'src/app.py', line_number: 1, is_dependency: false})"
+            )
+            session.run(
+                "CREATE (:Function {uid: 'render:src/app.py:2', name: 'render', "
+                "path: 'src/app.py', line_number: 2, is_dependency: false, args: $args})",
+                args=args,
+            )
+            session.run(
+                "MATCH (file:File {path: 'src/app.py'}), "
+                "(class:Class {name: 'Widget'}), (method:Function {name: 'render'}) "
+                "CREATE (file)-[:CONTAINS]->(class), (class)-[:CONTAINS]->(method)"
+            )
+
+        finder = CodeFinder(_KuzuDBAdapter(driver))
+        overrides = finder.find_function_overrides("render")
+        hierarchy = finder.find_class_hierarchy("Widget", page_size=2)
+
+        assert len(overrides) == 1
+        assert overrides[0]["class_name"] == "Widget"
+        for row, field in (
+            (overrides[0], "function_args"),
+            (hierarchy["methods"][0], "method_args"),
+        ):
+            assert len(row[field]) == 16
+            assert max(map(len, row[field])) == 128
+            assert row[f"{field}_total_count"] == 20
+            assert row[f"{field}_truncated"] is True
+    finally:
+        manager.close_driver()
+
+
 def test_regression_untruncated_results(tmp_path):
     manager = KuzuDBManager(str(tmp_path / "db"))
     driver = manager.get_driver()

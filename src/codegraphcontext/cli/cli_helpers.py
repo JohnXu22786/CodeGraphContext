@@ -1,6 +1,8 @@
 # src/codegraphcontext/cli/cli_helpers.py
 import asyncio
 import json
+import re
+import shlex
 import uuid
 import urllib.parse
 from collections import Counter
@@ -696,8 +698,16 @@ def _print_query_exception(e: Exception, query: str) -> None:
     console.print(f"[dim]  {query}[/dim]")
 
 
-def cypher_helper(query: str, context: Optional[str] = None):
-    """Executes a read-only Cypher query."""
+def cypher_helper(
+    query: str,
+    context: Optional[str] = None,
+    *,
+    repo_path: Optional[str] = None,
+    global_scope: bool = False,
+    offset: int = 0,
+    page_size: int = 100,
+):
+    """Execute one bounded, repository-scoped read-only Cypher page."""
     services = _initialize_services(context)
     if not all(services[:3]):
         _fail_services_init()
@@ -711,29 +721,54 @@ def cypher_helper(query: str, context: Optional[str] = None):
         db_manager.close_driver()
         raise typer.Exit(code=1)
 
-    backend = getattr(db_manager, "get_backend_type", lambda: "neo4j")()
-    # Neo4j honours default_access_mode natively; FalkorDB routes READ sessions
-    # through GRAPH.RO_QUERY for server-enforced read-only execution.
-    session_kwargs = (
-        {"default_access_mode": "READ"}
-        if backend in ("neo4j", "falkordb", "falkordb-remote")
-        else {}
-    )
-
     try:
-        with db_manager.get_driver().session(**session_kwargs) as session:
-            result = session.run(query)
-            records = [record.data() for record in result]
-            console.print(json.dumps(records, indent=2))
+        if not repo_path and not global_scope:
+            raise ValueError(
+                "A repository scope is required; pass --global-scope to query all repositories."
+            )
+
+        from ..tools.handlers.query_handlers import execute_cypher_query
+        from ..server import _apply_final_output_limits
+
+        result = execute_cypher_query(
+            db_manager,
+            cypher_query=query,
+            repo_path=repo_path,
+            global_scope=global_scope,
+            offset=offset,
+            page_size=page_size,
+        )
+        if "error" in result:
+            details = result.get("details") or result["error"]
+            _print_query_exception(RuntimeError(details), query)
+            raise typer.Exit(code=1)
+
+        response_text = json.dumps(result, ensure_ascii=False, indent=2)
+        bounded_text = _apply_final_output_limits(
+            "execute_cypher_query",
+            response_text,
+            lambda text: text.encode("utf-8"),
+        )
+        console.file.write(bounded_text)
+        console.file.flush()
+    except typer.Exit:
+        raise
     except Exception as e:
         _print_query_exception(e, query)
-        db_manager.close_driver()
         raise typer.Exit(code=1)
     finally:
         db_manager.close_driver()
 
 
-def cypher_helper_visual(query: str, context: Optional[str] = None):
+def cypher_helper_visual(
+    query: str,
+    context: Optional[str] = None,
+    *,
+    repo_path: Optional[str] = None,
+    global_scope: bool = False,
+    offset: int = 0,
+    page_size: int = 100,
+):
     """Executes a read-only Cypher query and visualizes the results."""
     from .visualizer import visualize_cypher_results
     from ..utils.cypher_readonly import is_read_only_cypher, read_only_rejection_message
@@ -750,7 +785,13 @@ def cypher_helper_visual(query: str, context: Optional[str] = None):
         raise typer.Exit(code=1)
 
     try:
-        visualize_cypher_results(query)
+        visualize_cypher_results(
+            query,
+            repo_path=repo_path,
+            global_scope=global_scope,
+            offset=offset,
+            page_size=page_size,
+        )
     except Exception as e:
         _print_query_exception(e, query)
         db_manager.close_driver()
@@ -765,9 +806,43 @@ from ..viz.server import run_server, set_db_manager
 
 _OFFLINE_VIZ_DEFAULT_QUERY = """
 MATCH (n)-[r]->(m)
-RETURN n, r, m
+RETURN n AS n, r AS rel, m AS m
 LIMIT 300
 """
+
+_OFFLINE_VIZ_MAX_QUERY_ROWS = 50
+_OFFLINE_VIZ_MAX_RESULT_OFFSET = 99_999
+_OFFLINE_VIZ_MAX_RESULT_ROWS = _OFFLINE_VIZ_MAX_RESULT_OFFSET + 1
+_OFFLINE_VIZ_MAX_QUERY_RESULT_ROWS = _OFFLINE_VIZ_MAX_RESULT_ROWS + 1
+
+
+def _bound_offline_visualization_query(
+    query: str, *, max_rows: Optional[int] = None
+) -> str:
+    """Cap rows returned by an offline custom visualization query in Cypher."""
+    from ..tools.handlers.query_handlers import (
+        _mask_query_literals_and_comments,
+        _top_level_cypher_clauses,
+    )
+
+    row_limit = max_rows or (_OFFLINE_VIZ_MAX_QUERY_ROWS + 1)
+    masked = _mask_query_literals_and_comments(query)
+    clauses = _top_level_cypher_clauses(masked)
+    if clauses and clauses[-1][0] == "LIMIT":
+        _, _, content_start = clauses[-1]
+        limit_text = masked[content_start:].strip()
+        match = re.fullmatch(r"(\d+)\s*;?", limit_text)
+        if not match:
+            raise ValueError(
+                "Offline visualization requires a numeric final LIMIT so its "
+                "database result window can be bounded."
+            )
+        bounded_limit = min(int(match.group(1)), row_limit)
+        has_semicolon = masked.rstrip().endswith(";")
+        prefix = query[:content_start].rstrip()
+        return prefix + " " + str(bounded_limit) + (";" if has_semicolon else "")
+
+    return query.rstrip().rstrip(";") + f"\nLIMIT {row_limit}"
 
 
 def _render_offline_visualization(
@@ -775,7 +850,10 @@ def _render_offline_visualization(
     repo_path: Optional[str] = None,
     cypher_query: Optional[str] = None,
     output_path: Optional[str] = None,
-) -> None:
+    global_scope: bool = False,
+    offset: int = 0,
+    page_size: int = _OFFLINE_VIZ_MAX_QUERY_ROWS,
+) -> Dict[str, Any]:
     """Render the graph with the dependency-free single-file HTML renderer.
 
     The React frontend in ``viz/dist`` is not shipped in the wheel, which made
@@ -786,7 +864,77 @@ def _render_offline_visualization(
     """
     from ..utils.visualize_graph import open_in_browser, build_graph_data
 
+    if type(offset) is not int or not 0 <= offset <= _OFFLINE_VIZ_MAX_RESULT_OFFSET:
+        raise ValueError("offset must be an integer from 0 through 99999")
+    if type(page_size) is not int or page_size < 1:
+        raise ValueError("page_size must be a positive integer")
+
+    page_size = min(
+        page_size,
+        _OFFLINE_VIZ_MAX_QUERY_ROWS,
+        _OFFLINE_VIZ_MAX_RESULT_ROWS - offset,
+    )
     query = cypher_query or _OFFLINE_VIZ_DEFAULT_QUERY
+    query_params = {}
+    truncated = False
+    can_continue = False
+    result_limit = None
+    if not global_scope:
+        if not repo_path:
+            raise ValueError(
+                "Offline visualization requires a repository scope or explicit global scope."
+            )
+        if cypher_query:
+            from ..tools.handlers.query_handlers import _scope_cypher_query
+
+            query, query_params = _scope_cypher_query(cypher_query, repo_path)
+        else:
+            normalized_repo_path = Path(repo_path).expanduser().resolve().as_posix()
+            from ..viz.server import _repository_graph_query
+
+            backend = getattr(db_manager, "get_backend_type", lambda: "neo4j")()
+            query = _repository_graph_query(
+                backend, offset, page_size
+            )
+            query_params = {"repo_path": normalized_repo_path}
+            can_continue = True
+    if not can_continue:
+        from ..viz.server import _bounded_graph_projection_page
+
+        backend = getattr(db_manager, "get_backend_type", lambda: "neo4j")()
+        bounded_query = _bound_offline_visualization_query(
+            query, max_rows=_OFFLINE_VIZ_MAX_QUERY_RESULT_ROWS
+        )
+        paged_query, result_limit = _bounded_graph_projection_page(
+            bounded_query,
+            backend,
+            offset,
+            page_size,
+            max_result_limit=_OFFLINE_VIZ_MAX_QUERY_RESULT_ROWS,
+        )
+        if paged_query is not None:
+            query = paged_query
+            can_continue = True
+        elif offset:
+            raise ValueError(
+                "Offline visualization continuation requires a stable n/rel/m "
+                "graph query; use a generated graph query or add a supported result shape."
+            )
+        else:
+            query = _bound_offline_visualization_query(query)
+            from ..viz.server import _rewrite_bounded_graph_entity_projections
+
+            bounded_entity_query, has_raw_entity_projection = (
+                _rewrite_bounded_graph_entity_projections(query, backend)
+            )
+            if has_raw_entity_projection:
+                if bounded_entity_query is None:
+                    raise ValueError(
+                        "Offline custom graph queries must return graph entities in a "
+                        "supported shape so properties can be bounded."
+                    )
+                query = bounded_entity_query
+            result_limit = None
     nodes: Dict[Any, Dict[str, Any]] = {}
     edges: List[Dict[str, Any]] = []
 
@@ -861,8 +1009,13 @@ def _render_offline_visualization(
             }
         return None
 
+    record_count = 0
     with db_manager.get_driver().session() as session:
-        for record in session.run(query):
+        for row_index, record in enumerate(session.run(query, **query_params)):
+            if row_index >= page_size:
+                truncated = True
+                break
+            record_count += 1
             values = list(record.values()) if hasattr(record, "values") else list(record)
             for value in values:
                 if _is_node(value):
@@ -883,10 +1036,64 @@ def _render_offline_visualization(
 
     title = f"CGC Code Graph — {Path(repo_path).name}" if repo_path else "CGC Code Graph"
     graph_data = build_graph_data(list(nodes.values()), edges)
+    next_offset = offset + record_count if truncated and can_continue else None
+    if next_offset is not None and next_offset > _OFFLINE_VIZ_MAX_RESULT_OFFSET:
+        next_offset = None
+    continuation_limit_reached = truncated and can_continue and next_offset is None
+    graph_data["truncated"] = truncated
+    graph_data["record_limit"] = page_size
+    graph_data["offset"] = offset
+    graph_data["page_size"] = page_size
+    graph_data["record_count"] = record_count
+    graph_data["continuation_supported"] = can_continue
+    graph_data["next_offset"] = next_offset
+    graph_data["has_more"] = next_offset is not None
+    graph_data["continuation_limit_reached"] = continuation_limit_reached
+    if result_limit is not None:
+        graph_data["result_limit"] = result_limit
     path = open_in_browser(graph_data, title=title, output_path=output_path)
     console.print(
         f"[green]Rendered {len(nodes)} nodes and {len(edges)} edges to[/green] {path}"
     )
+    if truncated:
+        if next_offset is not None:
+            if cypher_query:
+                continuation = (
+                    f"re-run the same offline visualization with --offset {next_offset} "
+                    f"--page-size {page_size}"
+                )
+            else:
+                command = ["cgc", "visualize", "--offset", str(next_offset)]
+                if global_scope:
+                    command.append("--global-scope")
+                elif repo_path:
+                    command.extend(["--repo", shlex.quote(repo_path)])
+                continuation = "continue with " + " ".join(command)
+            console.print(
+                f"[yellow]Truncated after {record_count} query rows; "
+                f"{continuation}.[/yellow]"
+            )
+        elif continuation_limit_reached:
+            console.print(
+                "[yellow]Truncated at the offline continuation limit; "
+                "narrow the query to view a smaller subset.[/yellow]"
+            )
+        else:
+            console.print(
+                f"[yellow]Truncated after {page_size} query rows; this query shape cannot "
+                "be paged safely, so narrow the query to view a smaller subset.[/yellow]"
+            )
+    return {
+        "offset": offset,
+        "page_size": page_size,
+        "record_count": record_count,
+        "result_limit": result_limit,
+        "continuation_supported": can_continue,
+        "has_more": next_offset is not None,
+        "next_offset": next_offset,
+        "truncated": truncated,
+        "continuation_limit_reached": continuation_limit_reached,
+    }
 
 
 def visualize_helper(
@@ -895,8 +1102,13 @@ def visualize_helper(
     port: int = 8000,
     context: Optional[str] = None,
     cypher_query: Optional[str] = None,
+    global_scope: bool = False,
+    offset: int = 0,
+    page_size: int = 100,
 ):
     """Generates an interactive visualization using the Playground UI."""
+    if global_scope:
+        repo_path = None
     services = _initialize_services(context)
     if not all(services[:3]):
         _fail_services_init()
@@ -955,7 +1167,12 @@ def visualize_helper(
                 )
                 try:
                     return _render_offline_visualization(
-                        db_manager, repo_path=repo_path, cypher_query=cypher_query
+                        db_manager,
+                        repo_path=repo_path,
+                        cypher_query=cypher_query,
+                        global_scope=global_scope,
+                        offset=offset,
+                        page_size=page_size,
                     )
                 finally:
                     db_manager.close_driver()
@@ -973,8 +1190,12 @@ def visualize_helper(
     params = {"backend": backend_url}
     if repo_path:
         params["repo_path"] = str(Path(repo_path).resolve())
+    if global_scope:
+        params["global_scope"] = "true"
     if cypher_query:
         params["cypher_query"] = cypher_query
+    params["offset"] = str(offset)
+    params["page_size"] = str(page_size)
 
     query_string = urllib.parse.urlencode(params)
     visualization_url = f"{backend_url}/explore?{query_string}"

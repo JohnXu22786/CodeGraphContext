@@ -76,6 +76,63 @@ def test_finds_functions_by_argument_name_or_type_without_duplicates(tmp_path: P
         manager.close_driver()
 
 
+def test_decorator_results_page_both_array_items_and_long_values(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    file_path = repo / "decorated.py"
+    file_path.write_text("def decorated(): pass\n", encoding="utf-8")
+    long_decorator = "@" + "x" * 200
+
+    manager = _fresh_kuzu_manager(tmp_path / "decorator-pages-db")
+    driver = manager.get_driver()
+    try:
+        writer = GraphWriter(driver)
+        writer.add_repository_to_graph(repo)
+        writer.add_file_to_graph(
+            {
+                "path": str(file_path),
+                "repo_path": str(repo),
+                "lang": "python",
+                "functions": [{
+                    "name": "decorated",
+                    "line_number": 1,
+                    "args": [],
+                    "decorators": [long_decorator, "@route"]
+                    + [f"@decorator_{index}" for index in range(18)],
+                }],
+                "classes": [],
+                "variables": [],
+            },
+            repo.name,
+            {},
+            repo_path_str=str(repo.resolve()),
+        )
+        finder = CodeFinder(_KuzuDBAdapter(driver))
+
+        first_page = finder.find_functions_by_decorator(
+            "@route", repo_path=str(repo), limit=1,
+            decorator_page_size=2, decorator_value_page_size=16,
+        )[0]
+        next_value_page = finder.find_functions_by_decorator(
+            "@route", repo_path=str(repo), limit=1,
+            decorator_page_size=2, decorator_value_offset=16,
+            decorator_value_page_size=16,
+        )[0]
+
+        assert first_page["decorators"] == [long_decorator[:16], "@route"]
+        assert first_page["decorators_value_total_chars"] == [201, 6]
+        assert first_page["decorators_total_count"] == 20
+        assert first_page["decorators_truncated"] is True
+        assert first_page["decorators_next_offset"] == 2
+        assert first_page["decorators_value_next_offset"] == 16
+        assert next_value_page["decorators"] == [long_decorator[16:32], ""]
+        assert next_value_page["decorators_value_total_chars"] == [201, 6]
+        assert next_value_page["decorators_value_offset"] == 16
+        assert next_value_page["decorators_value_next_offset"] == 32
+    finally:
+        manager.close_driver()
+
+
 def test_adds_argument_types_to_an_existing_kuzu_schema(tmp_path: Path):
     db_path = tmp_path / "existing-db"
     database = kuzu.Database(str(db_path))

@@ -39,10 +39,18 @@ def finder(tmp_path: Path):
             "functions": [
                 {"name": "genuinely_dead", "line_number": 1, "end_line": 2, "args": []},
                 {"name": "decorated_dead", "line_number": 4, "end_line": 5, "args": [],
-                 "decorators": ["@app.route"]},
+                 "decorators": ["@app.route"] + [
+                     f"@annotation_{index}_" + "d" * 150
+                     for index in range(20)
+                 ],
+                 "modifiers": [
+                     f"modifier_{index}_" + "m" * 150
+                     for index in range(20)
+                 ]},
                 {"name": "__str__", "line_number": 7, "end_line": 8, "args": []},
                 {"name": "test_something", "line_number": 10, "end_line": 11, "args": []},
                 {"name": "main", "line_number": 13, "end_line": 14, "args": []},
+                {"name": "teardownclass", "line_number": 16, "end_line": 17, "args": []},
             ],
             "classes": [], "variables": [],
         },
@@ -58,13 +66,25 @@ def test_default_results_are_scored_and_low_categories_hidden(finder):
     assert by_name["genuinely_dead"]["confidence"] == "high"
     assert by_name["decorated_dead"]["confidence"] == "medium"
     assert "decorat" in by_name["decorated_dead"]["confidence_reason"]
+    decorated = by_name["decorated_dead"]
+    assert len(decorated["decorators"]) == 16
+    assert all(len(value) <= 128 for value in decorated["decorators"])
+    assert decorated["decorators_total_count"] == 21
+    assert decorated["decorators_truncated"] is True
+    assert len(decorated["modifiers"]) == 16
+    assert all(len(value) <= 128 for value in decorated["modifiers"])
+    assert decorated["modifiers_total_count"] == 20
+    assert decorated["modifiers_truncated"] is True
+    assert "_has_decorators" not in decorated
+    assert "_is_override" not in decorated
     # Hard-excluded categories stay hidden by default.
     assert "__str__" not in by_name
     assert "test_something" not in by_name
     assert "main" not in by_name
+    assert by_name["teardownclass"]["confidence"] == "low"
     assert res["confidence_counts"]["high"] == 1
     assert res["confidence_counts"]["medium"] == 1
-    assert res["confidence_counts"]["low"] == 0
+    assert res["confidence_counts"]["low"] == 1
 
 
 def test_show_all_reintroduces_low_confidence_rows(finder):
@@ -75,7 +95,8 @@ def test_show_all_reintroduces_low_confidence_rows(finder):
     assert by_name["test_something"]["confidence"] == "low"
     assert by_name["main"]["confidence"] == "low"
     assert "entry-point" in by_name["main"]["confidence_reason"]
+    assert by_name["teardownclass"]["confidence"] == "low"
     # The default rows keep their scores alongside.
     assert by_name["genuinely_dead"]["confidence"] == "high"
-    assert res["confidence_counts"]["low"] == 3
-    assert res["total_count"] == 5
+    assert res["confidence_counts"]["low"] == 4
+    assert res["total_count"] == 6

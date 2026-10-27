@@ -351,6 +351,20 @@ async def test_handler_exception_keeps_internal_error_envelope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stdio_returns_response_for_an_explicit_null_request_id(monkeypatch):
+    server = _server()
+
+    response = await _stdio_request(
+        server,
+        monkeypatch,
+        {"jsonrpc": "2.0", "id": None, "method": "tools/list"},
+    )
+
+    assert response["id"] is None
+    assert "result" in response
+
+
+@pytest.mark.asyncio
 async def test_default_tool_catalog_matches_exactly_across_transports(monkeypatch):
     server = _server()
     server.tools = TOOLS
