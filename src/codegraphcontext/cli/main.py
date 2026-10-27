@@ -638,7 +638,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
         fallback_text = ", ".join(preview_fallbacks)
         console.print(
             f"[cyan]Using database: {default_db} (source: {db_source}; "
-            f"possible fallback candidates after the FalkorDB Lite startup probe: "
+            f"possible fallback candidates if the selected backend cannot start: "
             f"{fallback_text})[/cyan]"
         )
     elif default_db == "neo4j":

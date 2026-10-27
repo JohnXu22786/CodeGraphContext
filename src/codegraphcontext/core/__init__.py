@@ -187,7 +187,19 @@ def _default_backend_preview() -> tuple[str, tuple[str, ...]]:
     except (ImportError, ValueError):
         ladybug_installed = False
     if ladybug_installed:
-        return "ladybugdb", ()
+        # Do not load Ladybug's native engine to decide the preview: that can
+        # conflict with another embedded engine later in the process. Keep the
+        # possible factory fallbacks visible if the native probe fails.
+        fallbacks = []
+        if is_falkordb_usable():
+            fallbacks.append("falkordb")
+        if _is_kuzudb_available():
+            fallbacks.append("kuzudb")
+        if _is_neo4j_configured() and _is_neo4j_available():
+            fallbacks.append("neo4j")
+        if _is_nornic_configured() and _is_neo4j_available():
+            fallbacks.append("nornic")
+        return "ladybugdb", tuple(fallbacks)
 
     if is_falkordb_usable():
         fallbacks = []

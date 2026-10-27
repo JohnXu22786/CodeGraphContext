@@ -272,7 +272,29 @@ def test_read_only_backend_preview_discloses_falkordb_startup_fallback(
     output = _read_only_database_preview(tmp_path, monkeypatch)
 
     assert os.environ["CGC_SELECTED_DATABASE"] == "falkordb"
-    assert any("kuzudb" in line and "startup" in line.lower() for line in output)
+    assert any("kuzudb" in line and "cannot start" in line.lower() for line in output)
+
+
+def test_read_only_backend_preview_discloses_fallbacks_for_installed_ladybug(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        core.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "ladybug" else None,
+    )
+    monkeypatch.setattr(core, "is_falkordb_usable", lambda: True)
+    monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
+
+    output = _read_only_database_preview(tmp_path, monkeypatch)
+
+    assert os.environ["CGC_SELECTED_DATABASE"] == "ladybugdb"
+    assert any(
+        "ladybugdb" in line
+        and "falkordb, kuzudb" in line
+        and "cannot start" in line
+        for line in output
+    )
 
 
 def test_mcp_registration_carries_isolation_and_uses_current_interpreter(tmp_path, monkeypatch):

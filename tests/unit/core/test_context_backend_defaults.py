@@ -1156,7 +1156,25 @@ def test_default_backend_preview_does_not_load_native_ladybug(monkeypatch):
         lambda name: object() if name == "ladybug" else None,
     )
 
-    assert core._default_backend_preview() == ("ladybugdb", ())
+    assert core._default_backend_preview() == ("ladybugdb", ("kuzudb",))
+
+
+def test_default_backend_preview_reports_fallbacks_when_ladybug_engine_may_fail(
+    monkeypatch,
+):
+    monkeypatch.setattr(core, "_is_falkordb_remote_configured", lambda: False)
+    monkeypatch.setattr(core, "is_falkordb_usable", lambda: True)
+    monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
+    monkeypatch.setattr(
+        core.importlib.util,
+        "find_spec",
+        lambda name: object() if name in {"ladybug", "kuzu"} else None,
+    )
+
+    assert core._default_backend_preview() == (
+        "ladybugdb",
+        ("falkordb", "kuzudb"),
+    )
 
 
 def test_implicit_ladybug_gateway_preview_includes_native_failure_fallbacks(
