@@ -187,9 +187,21 @@ def _gateway_candidates_for_context(ctx: ResolvedContext) -> list[tuple[str, str
             or ctx.database
             or ""
         ).lower()
-    return _embedded_gateway_candidates(
+    candidates = _embedded_gateway_candidates(
         database_path, backend, preserve_db_path=bool(runtime_path)
     )
+    if implicit_ladybug_default and backend == "ladybugdb":
+        from ..core import _fallback_db_path_for
+
+        for fallback_backend in ("falkordb", "kuzudb"):
+            fallback_path = (
+                database_path
+                if runtime_path
+                else _fallback_db_path_for(database_path, fallback_backend)
+            )
+            if fallback_path:
+                candidates.append((fallback_path, fallback_backend))
+    return candidates
 
 
 def _print_call_resolution_diagnostics(graph_builder: GraphBuilder, limit: int = 5) -> None:

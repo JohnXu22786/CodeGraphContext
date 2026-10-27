@@ -1150,6 +1150,33 @@ def test_default_backend_preview_does_not_load_native_ladybug(monkeypatch):
     assert core._default_backend_preview() == ("ladybugdb", ())
 
 
+def test_implicit_ladybug_gateway_preview_includes_native_failure_fallbacks(
+    monkeypatch,
+):
+    for name in (
+        "CGC_RUNTIME_DB_TYPE",
+        "CGC_RUNTIME_DB_PATH",
+        "DEFAULT_DATABASE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        core, "_default_backend_preview", lambda: ("ladybugdb", ())
+    )
+    context = ResolvedContext(
+        mode="global",
+        context_name="",
+        database="ladybugdb",
+        db_path="/global/db/ladybugdb",
+        cgcignore_path="",
+    )
+
+    assert cli_helpers._gateway_candidates_for_context(context) == [
+        ("/global/db/ladybugdb", "ladybugdb"),
+        ("/global/db/falkordb", "falkordb"),
+        ("/global/db/kuzudb", "kuzudb"),
+    ]
+
+
 @pytest.mark.parametrize("context_mode", ("per-repo", "named"))
 def test_gateway_preview_tracks_implicit_context_fallback(
     monkeypatch, context_mode
