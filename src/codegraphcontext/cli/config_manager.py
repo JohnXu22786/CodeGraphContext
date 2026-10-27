@@ -1541,6 +1541,7 @@ def resolve_context(
         database=db,
         db_path=_default_global_db_path(db, read_only=read_only),
         cgcignore_path=str(CONFIG_DIR / "global" / ".cgcignore"),
+        database_is_explicit=_has_explicit_database_default(read_only=read_only),
     )
 
 

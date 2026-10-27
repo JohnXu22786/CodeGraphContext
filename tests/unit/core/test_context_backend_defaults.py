@@ -515,13 +515,21 @@ def test_global_context_infers_existing_backend_when_default_is_unset(
 
 
 @pytest.mark.parametrize("startup", ("cli", "mcp"))
-def test_legacy_global_falkordb_does_not_override_remote_host(
-    startup, tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("configured_default", "expected_backend"),
+    ((None, "falkordb-remote"), ("ladybugdb", "ladybugdb")),
+)
+def test_global_default_precedence_over_remote_host(
+    startup, configured_default, expected_backend, tmp_path, monkeypatch
 ):
     profile = tmp_path / "profile"
     context_config = profile / "config.yaml"
     context_config.parent.mkdir(parents=True)
     context_config.write_text("mode: global\n", encoding="utf-8")
+    if configured_default:
+        (profile / ".env").write_text(
+            f"DEFAULT_DATABASE={configured_default}\n", encoding="utf-8"
+        )
     (profile / "global" / "db" / "falkordb").mkdir(parents=True)
     monkeypatch.setattr(config_manager, "CONFIG_DIR", profile)
     monkeypatch.setattr(config_manager, "CONFIG_FILE", profile / ".env")
@@ -580,9 +588,10 @@ def test_legacy_global_falkordb_does_not_override_remote_host(
         resolved = server.resolved_context
         selected_backend = server.db_manager.get_backend_type()
 
-    assert factory_calls[0][0] == "falkordb-remote"
-    assert selected_backend == "falkordb-remote"
-    assert resolved.database == "falkordb-remote"
+    assert factory_calls[0][0] == expected_backend
+    assert selected_backend == expected_backend
+    assert resolved.database == expected_backend
+    assert resolved.database_is_explicit is (configured_default is not None)
 
 
 def test_explicit_global_falkordb_default_wins_over_remote_host(
