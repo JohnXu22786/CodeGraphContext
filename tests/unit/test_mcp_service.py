@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -58,26 +59,34 @@ async def _stdio_request(server, monkeypatch, body):
 
 
 async def _http_request(server, body):
+    from codegraphcontext.api import app as app_module
     from codegraphcontext.api.app import create_app
 
+    async def fake_server_startup():
+        return SimpleNamespace(db_manager=None)
+
     with patch("codegraphcontext.api.mcp_sse.get_server", return_value=server):
-        app = create_app()
-        async with app.router.lifespan_context(app):
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                headers = {
-                    "Accept": "application/json, text/event-stream",
-                    "Content-Type": "application/json",
-                    "MCP-Protocol-Version": "2026-07-28",
-                    "Mcp-Method": body["method"],
-                }
-                tool_name = body.get("params", {}).get("name")
-                if tool_name:
-                    headers["Mcp-Name"] = tool_name
-                return await client.post("/api/v1/mcp", json=body, headers=headers)
+        with (
+            patch.object(app_module, "get_server_for_gateway_startup", fake_server_startup),
+            patch.object(app_module, "shutdown_server"),
+        ):
+            app = create_app()
+            async with app.router.lifespan_context(app):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app),
+                    base_url="http://test",
+                    follow_redirects=False,
+                ) as client:
+                    headers = {
+                        "Accept": "application/json, text/event-stream",
+                        "Content-Type": "application/json",
+                        "MCP-Protocol-Version": "2026-07-28",
+                        "Mcp-Method": body["method"],
+                    }
+                    tool_name = body.get("params", {}).get("name")
+                    if tool_name:
+                        headers["Mcp-Name"] = tool_name
+                    return await client.post("/api/v1/mcp", json=body, headers=headers)
 
 
 @pytest.mark.asyncio

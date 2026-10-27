@@ -172,16 +172,21 @@ def _default_embedded_backend_name() -> str:
 
 
 def _default_backend_preview() -> tuple[str, tuple[str, ...]]:
-    """Return automatic backend candidates without connecting to a database.
+    """Return automatic backend candidates without loading native engines.
 
-    FalkorDB Lite availability can be checked by importing its driver, but the
-    factory also runs a startup probe. The preview therefore reports the later
-    factory candidates as possible fallbacks instead of claiming that the probe
-    has already succeeded.
+    This preview is used while displaying configuration guidance, before a
+    backend is selected. Probe package presence only here; native availability
+    checks load the engine extension and can conflict with another embedded
+    engine later in the same process. The factory performs the full check when
+    it actually selects a backend.
     """
     if _is_falkordb_remote_configured():
         return "falkordb-remote", ()
-    if _is_ladybugdb_available():
+    try:
+        ladybug_installed = importlib.util.find_spec("ladybug") is not None
+    except (ImportError, ValueError):
+        ladybug_installed = False
+    if ladybug_installed:
         return "ladybugdb", ()
 
     if is_falkordb_usable():
@@ -334,7 +339,7 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
             if not is_falkordb_usable():
                 mgr = _try_fallback_backends(
                     db_path,
-                    ('ladybugdb', 'kuzudb', 'neo4j', 'nornic'),
+                    ('kuzudb', 'ladybugdb', 'neo4j', 'nornic'),
                     reason=(
                         "FalkorDB Lite is not supported or not installed here. "
                         "Install it with `python -m pip install 'codegraphcontext-fork[falkordb-embedded]'` if needed."
@@ -358,7 +363,7 @@ def get_database_manager(db_path: Optional[str] = None) -> Union['DatabaseManage
                 mark_falkordb_unavailable()
                 mgr = _try_fallback_backends(
                     db_path,
-                    ('ladybugdb', 'kuzudb', 'neo4j', 'nornic'),
+                    ('kuzudb', 'ladybugdb', 'neo4j', 'nornic'),
                     reason=(
                         f"FalkorDB Lite was requested but is not functional ({falkor_err}). "
                         "Install it with `python -m pip install 'codegraphcontext-fork[falkordb-embedded]'` if needed."

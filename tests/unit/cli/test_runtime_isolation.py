@@ -263,6 +263,9 @@ def test_read_only_backend_preview_discloses_falkordb_startup_fallback(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(core, "_is_ladybugdb_available", lambda: False)
+    monkeypatch.setattr(
+        core.importlib.util, "find_spec", lambda _name: None
+    )
     monkeypatch.setattr(core, "is_falkordb_usable", lambda: True)
     monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
 

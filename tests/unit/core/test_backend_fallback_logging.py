@@ -151,7 +151,7 @@ def test_ladybug_fallback_remaps_existing_kuzudb_db_file():
 
 
 @pytest.mark.parametrize("failure_mode", ("unavailable", "nonfunctional"))
-def test_falkordb_fallback_prefers_ladybug_when_both_embedded_backends_exist(
+def test_explicit_falkordb_fallback_preserves_kuzu_precedence(
     monkeypatch, fallback_log, failure_mode
 ):
     monkeypatch.setenv("CGC_RUNTIME_DB_TYPE", "falkordb")
@@ -191,8 +191,11 @@ def test_falkordb_fallback_prefers_ladybug_when_both_embedded_backends_exist(
         falkor.FalkorDBUnavailableError = error_type
         monkeypatch.setitem(sys.modules, falkor.__name__, falkor)
 
-    assert core.get_database_manager() is ladybug_sentinel
-    assert selected == ["ladybugdb"]
+    # An explicit FalkorDB selection can fall back when its startup probe fails,
+    # but keep the pre-existing Kùzu fallback ahead of LadybugDB. The parser
+    # golden path depends on that behavior when FalkorDB Lite cannot start.
+    assert core.get_database_manager() is kuzu_sentinel
+    assert selected == ["kuzudb"]
 
 
 def test_context_fallback_remaps_path_when_runtime_override_is_from_another_context(
@@ -266,6 +269,7 @@ def test_neo4j_context_fallback_prefers_ladybug_when_both_engines_are_available(
 ):
     from codegraphcontext.cli.cli_helpers import _embedded_fallback_manager
 
+    monkeypatch.delenv("CGC_RUNTIME_DB_TYPE", raising=False)
     monkeypatch.delenv("CGC_RUNTIME_DB_PATH", raising=False)
     monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
     monkeypatch.setattr(core, "_is_ladybugdb_available", lambda: True)
@@ -284,14 +288,42 @@ def test_neo4j_context_fallback_prefers_ladybug_when_both_engines_are_available(
     assert selected == ["ladybugdb"]
 
 
-def test_falkordb_gateway_candidates_follow_ladybug_first_fallback_order():
+def test_explicit_falkordb_startup_fallback_prefers_kuzu_when_both_engines_are_available(
+    monkeypatch, tmp_path, fallback_log
+):
+    from codegraphcontext.cli.cli_helpers import _embedded_fallback_manager
+
+    monkeypatch.setenv("CGC_RUNTIME_DB_TYPE", "falkordb")
+    monkeypatch.delenv("CGC_RUNTIME_DB_PATH", raising=False)
+    monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
+    monkeypatch.setattr(core, "_is_ladybugdb_available", lambda: True)
+
+    selected = []
+    kuzu_sentinel = object()
+    kuzu = type(sys)("codegraphcontext.core.database_kuzu")
+    kuzu.KuzuDBManager = lambda db_path=None: selected.append("kuzudb") or kuzu_sentinel
+    monkeypatch.setitem(sys.modules, kuzu.__name__, kuzu)
+    ladybug = type(sys)("codegraphcontext.core.database_ladybug")
+    ladybug.LadybugDBManager = lambda db_path=None: selected.append("ladybugdb") or object()
+    monkeypatch.setitem(sys.modules, ladybug.__name__, ladybug)
+
+    context = SimpleNamespace(
+        db_path=str(tmp_path / "contexts" / "example" / "db" / "falkordb"),
+        database="falkordb",
+    )
+
+    assert _embedded_fallback_manager(context, "FalkorDB startup failed") is kuzu_sentinel
+    assert selected == ["kuzudb"]
+
+
+def test_falkordb_gateway_candidates_preserve_kuzu_fallback_order():
     from codegraphcontext.cli.cli_helpers import _embedded_gateway_candidates
 
     candidates = _embedded_gateway_candidates("/runtime/db/falkordb", "falkordb")
 
     assert candidates == [
-        ("/runtime/db/ladybugdb", "ladybugdb"),
         ("/runtime/db/kuzudb", "kuzudb"),
+        ("/runtime/db/ladybugdb", "ladybugdb"),
     ]
 
 

@@ -72,9 +72,17 @@ def _embedded_fallback_manager(ctx: ResolvedContext, reason: str):
 
     runtime_path = os.getenv("CGC_RUNTIME_DB_PATH")
     database_path = runtime_path or ctx.db_path
+    requested_backend = (
+        os.getenv("CGC_RUNTIME_DB_TYPE") or getattr(ctx, "database", "") or ""
+    ).lower()
+    candidates = (
+        ("kuzudb", "ladybugdb")
+        if requested_backend == "falkordb"
+        else ("ladybugdb", "kuzudb")
+    )
     return _try_fallback_backends(
         database_path,
-        ("ladybugdb", "kuzudb"),
+        candidates,
         reason=reason,
         preserve_db_path=bool(runtime_path),
     )
@@ -130,7 +138,7 @@ def _embedded_gateway_candidates(
         return []
 
     fallbacks = {
-        "falkordb": ("ladybugdb", "kuzudb"),
+        "falkordb": ("kuzudb", "ladybugdb"),
         "kuzudb": ("ladybugdb",),
         "ladybugdb": (),
         "": ("ladybugdb", "kuzudb"),

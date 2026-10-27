@@ -230,6 +230,8 @@ def kuzudb_env():
     env = {
         "DEFAULT_DATABASE": "kuzudb",
         "CGC_RUNTIME_DB_TYPE": "kuzudb",
+        "CGC_SELECTED_DATABASE": "kuzudb",
+        "CGC_DB_SELECTION_SOURCE": "explicit test backend",
     }
     with patch.dict(os.environ, env, clear=False):
         yield

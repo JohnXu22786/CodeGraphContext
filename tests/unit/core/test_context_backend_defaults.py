@@ -1132,6 +1132,24 @@ def test_gateway_preview_tracks_implicit_global_backend(
     assert cli_helpers._gateway_candidates_for_context(context) == expected
 
 
+def test_default_backend_preview_does_not_load_native_ladybug(monkeypatch):
+    monkeypatch.setattr(core, "_is_falkordb_remote_configured", lambda: False)
+    monkeypatch.setattr(core, "is_falkordb_usable", lambda: False)
+    monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
+    monkeypatch.setattr(
+        core,
+        "_is_ladybugdb_available",
+        lambda: pytest.fail("preview must not load a native backend"),
+    )
+    monkeypatch.setattr(
+        core.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "ladybug" else None,
+    )
+
+    assert core._default_backend_preview() == ("ladybugdb", ())
+
+
 @pytest.mark.parametrize("context_mode", ("per-repo", "named"))
 def test_gateway_preview_tracks_implicit_context_fallback(
     monkeypatch, context_mode
@@ -1311,6 +1329,9 @@ def test_cli_context_selection_keeps_inherited_ladybug_available_for_fallback(
     tmp_path, monkeypatch
 ):
     _configure_implicit_kuzu_fallback(monkeypatch)
+    monkeypatch.setattr(
+        core.importlib.util, "find_spec", lambda _name: None
+    )
     monkeypatch.delenv("DATABASE_TYPE", raising=False)
     monkeypatch.delenv("CGC_SELECTED_DATABASE", raising=False)
     monkeypatch.delenv("CGC_DB_SELECTION_SOURCE", raising=False)
