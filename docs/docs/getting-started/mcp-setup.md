@@ -52,7 +52,7 @@ Back up your existing configuration first, then merge this server entry under it
 }
 ```
 
-Replace `/absolute/path/to/cgc` with the `cgc` executable in the dedicated environment used for this fork (`.venv/bin/cgc` on POSIX or `.venv\Scripts\cgc.exe` on Windows, using an absolute path). Choose a new absolute `CGC_HOME` outside the source repository. The MCP server key and `CGC_INSTANCE_NAME` must match. These settings isolate CGC runtime files; they do not make the old `.cg/cg.sqlite` index compatible or create a DSH plugin.
+Replace `/absolute/path/to/cgc` with the `cgc` executable in the dedicated environment used for this fork (`/path/to/.venv/bin/cgc` on POSIX or `C:/path/to/.venv/Scripts/cgc.exe` on Windows, using an absolute path). Forward slashes keep the Windows path valid as a JSON string; if you use backslashes, double each one for JSON. Choose a new absolute `CGC_HOME` outside the source repository. The MCP server key and `CGC_INSTANCE_NAME` must match. These settings isolate CGC runtime files; they do not make the old `.cg/cg.sqlite` index compatible or create a DSH plugin.
 
 Restart Claude Desktop to load the entry. To verify the connection, call `list_indexed_repositories`; a new `CGC_HOME` starts with separate state, so its list may be empty. Before using `find_code`, index the source repository into this CGC state with the same `CGC_HOME`, then query that repository. Existing indexes under another CGC home are not visible. To roll back, remove only the `codegraphcontext-fork` entry you added and restart the client; keep the backup until the new entry works.
 
