@@ -75,10 +75,11 @@ def test_startup_sync_does_not_delete_windows_paths_that_are_still_on_disk(tmp_p
     graph_builder.pre_scan_imports.return_value = {}
     graph_builder.update_file_in_graph.return_value = None
 
-    handler = RepositoryEventHandler.__new__(RepositoryEventHandler)
-    handler.repo_path = tmp_path
-    handler.graph_builder = graph_builder
-    handler.imports_map = {}
+    handler = RepositoryEventHandler(
+        graph_builder,
+        tmp_path,
+        perform_initial_scan=False,
+    )
 
     with patch.object(RepositoryEventHandler, "_iter_supported_files", return_value=[current_file]):
         handler.synchronize_with_disk()
@@ -90,14 +91,12 @@ def test_code_watcher_forwards_startup_sync_option(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
     graph_builder = MagicMock()
-    watcher = CodeWatcher.__new__(CodeWatcher)
-    watcher.graph_builder = graph_builder
-    watcher.observer = MagicMock()
-    watcher.watched_paths = set()
-    watcher.watches = {}
-    watcher.handlers = {}
-
-    with patch("codegraphcontext.core.watcher.RepositoryEventHandler") as handler_cls:
+    observer = MagicMock()
+    with (
+        patch("codegraphcontext.core.watcher.Observer", return_value=observer),
+        patch("codegraphcontext.core.watcher.RepositoryEventHandler") as handler_cls,
+    ):
+        watcher = CodeWatcher(graph_builder, use_polling=False)
         watcher.watch_directory(
             str(repo),
             perform_initial_scan=False,
