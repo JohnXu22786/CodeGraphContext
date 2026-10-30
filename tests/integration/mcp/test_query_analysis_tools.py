@@ -330,7 +330,11 @@ def test_find_code_returns_matching_fixture_function(mcp_graph):
     )
 
     assert result["success"] is True
-    assert any(row["name"] == "getOrders" for row in result["results"]["functions_by_name"])
+    row = next(row for row in result["results"]["functions_by_name"] if row["name"] == "getOrders")
+    assert row["confidence_label"] == "EXTRACTED"
+    assert row["evidence_kind"] == "PARSER_INDEXED_SOURCE"
+    assert row["relative_path"] == "OrderController.java"
+    assert isinstance(row["end_line"], int)
 
 
 def test_find_code_returns_no_matches_for_unknown_repository_filter(mcp_graph):
@@ -357,6 +361,21 @@ def test_analyze_code_relationships_returns_real_callees(mcp_graph):
 
     assert result["success"] is True
     assert any(row.get("called_function") == "normalize_value" for row in result["results"]["results"])
+
+
+def test_transitive_impact_results_are_marked_as_graph_inference(mcp_graph):
+    result = _call(
+        mcp_graph["server"],
+        "analyze_code_relationships",
+        {
+            "query_type": "find_all_callees",
+            "target": "getOrders",
+            "repo_path": str(mcp_graph["repo"]),
+        },
+    )
+
+    assert result["success"] is True
+    assert result["results"]["analysis_basis"] == "INFERRED_FROM_INDEXED_GRAPH"
 
 
 def test_analyze_code_relationships_rejects_invalid_depth(mcp_graph):
@@ -431,6 +450,14 @@ def test_find_dead_code_reports_unreferenced_fixture_method(mcp_graph):
         for row in result["results"]["potentially_unused_functions"]
     }
     assert "unusedRoutine" in unused_names
+    unused = next(
+        row for row in result["results"]["potentially_unused_functions"]
+        if row["function_name"] == "unusedRoutine"
+    )
+    assert unused["confidence_label"] == "INFERRED"
+    assert unused["evidence_kind"] == "NO_INBOUND_CALLS"
+    assert unused["relative_path"] == "OrderController.java"
+    assert isinstance(unused["end_line"], int)
 
 
 def test_find_dead_code_returns_no_results_for_unknown_repository_filter(mcp_graph):

@@ -77,7 +77,7 @@ TOOLS = {
 
     "find_code": {
         "name": "find_code",
-        "description": "Find concise evidence in the active repository (or repo_path). Results are paged; request include_source/include_docstring to retrieve bounded source pages.",
+        "description": "Find concise parser-indexed evidence in the active repository (or repo_path). Results include confidence_label=EXTRACTED and evidence_kind=PARSER_INDEXED_SOURCE; pages preserve source locations and can request bounded source/docstring text.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -124,7 +124,7 @@ TOOLS = {
 
     "analyze_code_relationships": {
         "name": "analyze_code_relationships",
-        "description": "Analyze code relationships like 'who calls this function' or 'class hierarchy'. Callee docstrings and variable value/context evidence are returned in bounded character pages with independent offsets.",
+        "description": "Analyze code relationships like 'who calls this function' or 'class hierarchy'. Dead-code, transitive caller/callee, and call-chain results include analysis_basis=INFERRED_FROM_INDEXED_GRAPH; callee docstrings and variable value/context evidence are bounded pages.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -328,8 +328,9 @@ TOOLS = {
     "find_dead_code": {
         "name": "find_dead_code",
         "description": (
-            "Find potentially unused functions with bounded paged results. Use "
-            "find_code to retrieve source or docstring evidence on demand."
+            "Find potentially unused functions with bounded paged results. These "
+            "are inferences from the indexed graph, not proof of unreachability. "
+            "Use find_code to retrieve source or docstring evidence on demand."
         ),
         "inputSchema": {
             "type": "object",

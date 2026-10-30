@@ -1088,6 +1088,7 @@ def test_transitive_relationship_analyzer_preserves_terminal_continuation_limit(
     assert response["truncated"] is True
     assert response["next_offset"] is None
     assert response["continuation_limit_reached"] is True
+    assert response["analysis_basis"] == "INFERRED_FROM_INDEXED_GRAPH"
 
 
 def test_find_code_source_and_docstring_pages_bound_lone_carriage_return_lines():
@@ -1320,6 +1321,9 @@ def test_find_code_final_ranking_uses_uid_for_equal_visible_keys():
         "a-uid",
         "z-uid",
     ]
+    assert result["ranked_results"][0]["confidence_label"] == "EXTRACTED"
+    assert result["ranked_results"][0]["evidence_kind"] == "PARSER_INDEXED_SOURCE"
+    assert result["ranked_results"][0]["relative_path"] == "widget.py"
 
 
 @pytest.mark.parametrize("kind", ["function", "line", "variable", "content"])
@@ -4344,6 +4348,7 @@ def test_dead_code_relationship_analyzer_uses_the_requested_bounded_page(monkeyp
     assert response["offset"] == 4
     assert response["next_offset"] == 6
     assert response["results"]["potentially_unused_functions"] == rows[:2]
+    assert response["analysis_basis"] == "INFERRED_FROM_INDEXED_GRAPH"
 
 
 @pytest.mark.parametrize(
