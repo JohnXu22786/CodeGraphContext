@@ -604,10 +604,14 @@ def test_find_content_surfaces_query_errors(monkeypatch):
         lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _FailingFinder()),
     )
 
-    result = runner.invoke(app, ["--database", "falkordb", "find", "content", "foo"])
+    original_runtime_db_type = os.environ.get("CGC_RUNTIME_DB_TYPE")
+    with monkeypatch.context() as env_patch:
+        env_patch.setenv("CGC_RUNTIME_DB_TYPE", original_runtime_db_type or "kuzudb")
+        result = runner.invoke(app, ["--database", "falkordb", "find", "content", "foo"])
 
     assert result.exit_code != 0
     assert "Full-text search is not supported on FalkorDB" not in result.output
+    assert os.environ.get("CGC_RUNTIME_DB_TYPE") == original_runtime_db_type
 
 
 def test_find_name_scopes_codefinder_and_direct_queries_to_current_repository(monkeypatch):
