@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "codegraphcontext-fork": {
+      "command": "/absolute/path/to/cgc",
+      "args": ["mcp", "start"],
+      "env": {
+        "CGC_HOME": "/absolute/path/to/cgc-home",
+        "CGC_REPO_CONTEXT_DIR": ".codegraphcontext-fork",
+        "CGC_INSTANCE_NAME": "codegraphcontext-fork"
+      }
+    }
+  }
+}
