@@ -92,7 +92,7 @@ def setup_test_dir(test_dir: Path):
 def clean_db_completely():
     """Completely clean the database"""
     # Delete ALL nodes
-    run(f'{CGC_CMD} query "MATCH (n) DETACH DELETE n"')
+    run(f'{CGC_CMD} query --global-scope "MATCH (n) DETACH DELETE n"')
     time.sleep(1)  # Wait for DB to sync
 
 def delete_repo_from_db(repo_path: Path):
@@ -100,8 +100,8 @@ def delete_repo_from_db(repo_path: Path):
     path_str = str(repo_path.resolve())
     # Escape quotes properly for shell
     escaped_path = path_str.replace('"', '\\"')
-    run(f'{CGC_CMD} query "MATCH (r:Repository {{path: \\"{escaped_path}\\"}})-[:CONTAINS*]->(n) DETACH DELETE r, n"')
-    run(f'{CGC_CMD} query "MATCH (r:Repository {{path: \\"{escaped_path}\\"}}) DETACH DELETE r"')
+    run(f'{CGC_CMD} query --global-scope "MATCH (r:Repository {{path: \\"{escaped_path}\\"}})-[:CONTAINS*]->(n) DETACH DELETE r, n"')
+    run(f'{CGC_CMD} query --global-scope "MATCH (r:Repository {{path: \\"{escaped_path}\\"}}) DETACH DELETE r"')
 
 def index_repo(test_dir: Path):
     """Index the test repository"""
@@ -112,13 +112,13 @@ def index_repo(test_dir: Path):
 
 def query_all_files():
     """Query ALL files in database for debugging"""
-    output = run(f'{CGC_CMD} query "MATCH (f:File) RETURN f.name, f.path LIMIT 20"')
+    output = run(f'{CGC_CMD} query --global-scope "MATCH (f:File) RETURN f.name, f.path LIMIT 20"')
     print(f"ALL FILES IN DB: {output}")
     return output
 
 def query_all_repos():
     """Query ALL repositories in database for debugging"""
-    output = run(f'{CGC_CMD} query "MATCH (r:Repository) RETURN r.name, r.path"')
+    output = run(f'{CGC_CMD} query --global-scope "MATCH (r:Repository) RETURN r.name, r.path"')
     print(f"ALL REPOS IN DB: {output}")
     return output
 
@@ -131,7 +131,7 @@ def query_files_for_repo(test_dir: Path):
     
     # Use simpler query - match by repository name (folder name)
     repo_name = test_dir.name
-    output = run(f'{CGC_CMD} query "MATCH (r:Repository)-[:CONTAINS*]->(f:File) WHERE r.path CONTAINS \\"{repo_name}\\" RETURN f.name"')
+    output = run(f'{CGC_CMD} query --global-scope "MATCH (r:Repository)-[:CONTAINS*]->(f:File) WHERE r.path CONTAINS \\"{repo_name}\\" RETURN f.name"')
     
     print(f"QUERY OUTPUT for {repo_name}: {output}")
     
@@ -141,17 +141,14 @@ def extract_file_names(output):
     """Extract file names from JSON output"""
     file_names = []
     try:
-        json_start = output.find('[')
-        json_end = output.rfind(']') + 1
-        if json_start != -1 and json_end > json_start:
-            json_str = output[json_start:json_end]
-            data = json.loads(json_str)
-            for item in data:
-                if isinstance(item, dict):
-                    for key, value in item.items():
-                        if isinstance(value, str) and not value.startswith('/'):
-                            file_names.append(value)
-    except json.JSONDecodeError:
+        json_start = output.index('{')
+        data, _ = json.JSONDecoder().raw_decode(output[json_start:])
+        for item in data.get("results", []):
+            if isinstance(item, dict):
+                for value in item.values():
+                    if isinstance(value, str) and not value.startswith('/'):
+                        file_names.append(value)
+    except ValueError:
         pass
     return file_names
 
