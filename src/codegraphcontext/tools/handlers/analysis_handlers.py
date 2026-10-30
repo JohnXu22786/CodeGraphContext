@@ -192,7 +192,10 @@ def _find_code_category_item(item: Dict[str, Any]) -> Dict[str, Any]:
     """Keep category summaries small; ranked results carry the evidence excerpt."""
     return {
         key: item[key]
-        for key in ("type", "name", "path", "line_number", "is_dependency")
+        for key in (
+            "type", "name", "path", "relative_path", "line_number", "end_line",
+            "is_dependency", "confidence_label", "evidence_kind",
+        )
         if key in item
     }
 

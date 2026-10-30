@@ -78,6 +78,8 @@ Patterns representing keys in Redis cache databases.
 
 Edges represent structural nesting, import linkages, or execution calls.
 
+Confidence and evidence fields on graph and query results are defined in [Confidence and evidence](confidence-and-evidence.md).
+
 | Edge Type | Source Node | Target Node | Semantics / Description |
 | :--- | :--- | :--- | :--- |
 | **`CONTAINS`** | `Repository` / `File` / `Class` | `File` / `Class` / `Function` | Models physical nesting and scope containment (e.g., File contains Function). |

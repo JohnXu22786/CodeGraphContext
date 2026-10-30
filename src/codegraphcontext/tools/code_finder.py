@@ -441,6 +441,7 @@ def summarize_kotlin_call_ambiguity(
             **{k: v for k, v in group.items() if k != "targets"},
             "targets": [],
             "target_count": len(group["targets"]),
+            "resolution_status": "AMBIGUOUS",
             "targets_truncated": False,
             "partial": key in partial_group_keys,
             "target_count_complete": key not in partial_group_keys,
@@ -737,6 +738,7 @@ class CodeFinder:
                 MATCH (node:{find_by})
                 WHERE {name_filter} {repo_filter}
                 RETURN node.name as name, node.path as path, node.line_number as line_number,
+                    node.end_line as end_line,
                     node.is_dependency as is_dependency,
                     node.uid as _sort_uid
                 ORDER BY node.is_dependency ASC, node.path, node.line_number, node.name, node.uid
@@ -747,6 +749,7 @@ class CodeFinder:
                 WITH node, score
                 WHERE node:{find_by} {'AND node.name CONTAINS $search_term' if not fuzzy_search else ''} {repo_filter}
                 RETURN node.name as name, node.path as path, node.line_number as line_number,
+                    node.end_line as end_line,
                     node.is_dependency as is_dependency,
                     node.uid as _sort_uid, score as _match_score
                 ORDER BY node.is_dependency ASC, score DESC, node.path, node.line_number,
@@ -784,6 +787,7 @@ class CodeFinder:
             MATCH (node:{label})
             {where_clause}
             RETURN node.name as name, node.path as path, node.line_number as line_number,
+                node.end_line as end_line,
                 node.is_dependency as is_dependency,
                 node.uid as _sort_uid
             ORDER BY node.is_dependency ASC, node.path, node.line_number, node.name, node.uid
@@ -976,6 +980,7 @@ class CodeFinder:
                     MATCH (node:Function {{name: $name}})
                     {"WHERE node.path STARTS WITH $repo_path" if repo_path else ""}
                     RETURN node.name as name, node.path as path, node.line_number as line_number,
+                           node.end_line as end_line,
                            node.is_dependency as is_dependency,
                            node.uid as _sort_uid
                     ORDER BY node.is_dependency ASC, node.path, node.line_number, node.name, node.uid
@@ -1014,6 +1019,7 @@ class CodeFinder:
                     MATCH (node:Class {{name: $name}})
                     {"WHERE node.path STARTS WITH $repo_path" if repo_path else ""}
                     RETURN node.name as name, node.path as path, node.line_number as line_number,
+                           node.end_line as end_line,
                            node.is_dependency as is_dependency,
                            node.uid as _sort_uid
                     ORDER BY node.is_dependency ASC, node.path, node.line_number, node.name, node.uid
@@ -1330,6 +1336,18 @@ class CodeFinder:
         
         results["ranked_results"] = all_results
         results["total_matches"] = len(all_results)
+
+        for item in all_results:
+            item["confidence_label"] = "EXTRACTED"
+            item["evidence_kind"] = "PARSER_INDEXED_SOURCE"
+            path = item.get("path")
+            if repo_path and isinstance(path, str):
+                try:
+                    item["relative_path"] = Path(path).relative_to(Path(repo_path)).as_posix()
+                except ValueError:
+                    # A malformed or externally stored path must not be
+                    # mislabeled as repository-relative.
+                    pass
         
         return results
     
@@ -1610,6 +1628,16 @@ class CodeFinder:
                     caller.uid as _caller_uid,
                     target.uid as _target_uid,
                     type(call) as _edge_type,
+                    call.confidence as confidence,
+                    call.resolution_tier as resolution_tier,
+                    call.confidence_label as confidence_label,
+                    call.resolution_method as resolution_method,
+                    CASE
+                        WHEN call.confidence_label = 'AMBIGUOUS' THEN 'AMBIGUOUS'
+                        WHEN type(call) = 'HEURISTIC_CALLS' THEN 'UNRESOLVED'
+                        WHEN call.confidence_label IS NULL THEN 'UNKNOWN'
+                        ELSE 'RESOLVED'
+                    END as resolution_status,
                     call.line_number as _call_line,
                     call.full_call_name as _call_full_name,
                     call.args_key as _call_args_key,
@@ -1624,7 +1652,9 @@ class CodeFinder:
                     _call_full_name, _call_args_key
                     {page_clause}
                 RETURN caller_function, caller_file_path, caller_line_number,
-                    call_line_number, caller_is_dependency, target_file_path
+                    call_line_number, caller_is_dependency, target_file_path,
+                    confidence, resolution_tier, confidence_label,
+                    resolution_method, resolution_status
             """, **params)
             results = result.data()
 
@@ -1696,6 +1726,16 @@ class CodeFinder:
                         caller.uid as _caller_uid,
                         called.uid as _target_uid,
                         type(call) as _edge_type,
+                        call.confidence as confidence,
+                        call.resolution_tier as resolution_tier,
+                        call.confidence_label as confidence_label,
+                        call.resolution_method as resolution_method,
+                        CASE
+                            WHEN call.confidence_label = 'AMBIGUOUS' THEN 'AMBIGUOUS'
+                            WHEN type(call) = 'HEURISTIC_CALLS' THEN 'UNRESOLVED'
+                            WHEN call.confidence_label IS NULL THEN 'UNKNOWN'
+                            ELSE 'RESOLVED'
+                        END as resolution_status,
                         call.line_number as _call_line,
                         call.full_call_name as _call_full_name,
                         call.args_key as _call_args_key,
@@ -1714,7 +1754,9 @@ class CodeFinder:
                     {page_clause}
                     RETURN called_function, called_file_path, called_line_number,
                         called_docstring, _called_docstring_total_chars,
-                        called_is_dependency, call_line_number, full_call_name
+                        called_is_dependency, call_line_number, full_call_name,
+                        confidence, resolution_tier, confidence_label,
+                        resolution_method, resolution_status
                 """, **params)
             else:
                 result = session.run(f"""
@@ -1725,6 +1767,16 @@ class CodeFinder:
                         caller.uid as _caller_uid,
                         called.uid as _target_uid,
                         type(call) as _edge_type,
+                        call.confidence as confidence,
+                        call.resolution_tier as resolution_tier,
+                        call.confidence_label as confidence_label,
+                        call.resolution_method as resolution_method,
+                        CASE
+                            WHEN call.confidence_label = 'AMBIGUOUS' THEN 'AMBIGUOUS'
+                            WHEN type(call) = 'HEURISTIC_CALLS' THEN 'UNRESOLVED'
+                            WHEN call.confidence_label IS NULL THEN 'UNKNOWN'
+                            ELSE 'RESOLVED'
+                        END as resolution_status,
                         call.line_number as _call_line,
                         call.full_call_name as _call_full_name,
                         call.args_key as _call_args_key,
@@ -1743,7 +1795,9 @@ class CodeFinder:
                     {page_clause}
                     RETURN called_function, called_file_path, called_line_number,
                         called_docstring, _called_docstring_total_chars,
-                        called_is_dependency, call_line_number, full_call_name
+                        called_is_dependency, call_line_number, full_call_name,
+                        confidence, resolution_tier, confidence_label,
+                        resolution_method, resolution_status
                 """, **params)
 
             results = result.data()
@@ -2186,6 +2240,8 @@ class CodeFinder:
                     func.name as function_name,
                     func.path as path,
                     func.line_number as line_number,
+                    func.end_line as end_line,
+                    file.relative_path as relative_path,
                     {_bounded_argument_array("func.decorators", backend)} AS decorators,
                     CASE WHEN func.decorators IS NULL THEN 0 ELSE size(func.decorators) END
                         AS decorators_total_count,
@@ -2219,6 +2275,11 @@ class CodeFinder:
                 confidence, reason = _classify_dead_code_confidence(row)
                 row["confidence"] = confidence
                 row["confidence_reason"] = reason
+                # No inbound call edge is evidence for a dead-code candidate,
+                # not proof that the function is unreachable (dynamic calls,
+                # callbacks, and external entry points may be absent from the graph).
+                row["confidence_label"] = "INFERRED"
+                row["evidence_kind"] = "NO_INBOUND_CALLS"
                 row.pop("docstring", None)
                 row.pop("context", None)
                 row.pop("_has_decorators", None)
@@ -3361,6 +3422,7 @@ class CodeFinder:
                 }
                 return {
                     "query_type": "dead_code", "results": results,
+                    "analysis_basis": "INFERRED_FROM_INDEXED_GRAPH",
                     "summary": f"Found {len(page)} potentially unused functions",
                     **_relationship_page_metadata(
                         offset, req_limit, len(page), has_more
@@ -3434,6 +3496,7 @@ class CodeFinder:
                     summary += " (truncated — more candidates remain)"
                 return {
                     "query_type": "find_all_callers", "target": target, "context": context, "results": results, "depth": effective_depth,
+                    "analysis_basis": "INFERRED_FROM_INDEXED_GRAPH",
                     "summary": summary, "truncated": page["truncated"],
                     "offset": page["offset"], "page_size": page["page_size"],
                     "result_limit": page["result_limit"],
@@ -3454,6 +3517,7 @@ class CodeFinder:
                     summary += " (truncated — more candidates remain)"
                 return {
                     "query_type": "find_all_callees", "target": target, "context": context, "results": results, "depth": effective_depth,
+                    "analysis_basis": "INFERRED_FROM_INDEXED_GRAPH",
                     "summary": summary, "truncated": page["truncated"],
                     "offset": page["offset"], "page_size": page["page_size"],
                     "result_limit": page["result_limit"],
@@ -3484,6 +3548,7 @@ class CodeFinder:
 
                     return {
                         "query_type": "call_chain", "target": target, "results": results,
+                        "analysis_basis": "INFERRED_FROM_INDEXED_GRAPH",
                         "summary": summary,
                         **_relationship_page_metadata(
                             offset, req_limit, len(results), truncated
