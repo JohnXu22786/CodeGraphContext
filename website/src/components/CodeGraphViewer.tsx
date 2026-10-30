@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useTheme } from "next-themes";
 import FlowchartSVG from "./FlowchartSVG";
 import { packageCgcBundle, downloadBlob, publishCgcBundle } from "../lib/cgc-exporter";
+import { loadGraphFileContent } from "../lib/localGraphApi.js";
 import { exportSvg } from "../lib/svg-exporter";
 import { packageInteractiveExport } from "../lib/html-exporter";
 import { toast } from "sonner";
@@ -366,7 +367,11 @@ function getGraphAwareNodeScale(totalNodes: number): number {
   return clamp(2.5 / (1 + Math.log10(safeNodeCount) * 0.95), 0.45, 2.5);
 }
 
-export default function CodeGraphViewer({ data: rawData, onClose }: { data: any, onClose: () => void }) {
+export default function CodeGraphViewer({ data: rawData, onClose, onLoadFullFile }: {
+  data: any;
+  onClose: () => void;
+  onLoadFullFile?: (path: string) => Promise<string>;
+}) {
   const { theme, setTheme } = useTheme();
   const isDark = theme !== 'light';
   const pal = isDark ? PALETTE.dark : PALETTE.light;
@@ -405,6 +410,7 @@ export default function CodeGraphViewer({ data: rawData, onClose }: { data: any,
   };
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const fileContentRequestId = useRef(0);
   const [focusSet, setFocusSet] = useState<{ nodes: Set<number>, links: Set<any> } | null>(null);
   const [simulationReady, setSimulationReady] = useState(false);
 
@@ -627,6 +633,7 @@ export default function CodeGraphViewer({ data: rawData, onClose }: { data: any,
   const [legendCollapsed, setLegendCollapsed] = useState(() => window.innerWidth < 1024);
 
   const fileContents: Record<string, string> = data.fileContents || {};
+  const fileContentsTruncated: Record<string, boolean> = data.fileContentsTruncated || {};
 
   // LEGEND & CONFIG STATE
   const [nodeColors, setNodeColors] = useState(DEFAULT_NODE_COLORS);
@@ -1206,21 +1213,45 @@ export default function CodeGraphViewer({ data: rawData, onClose }: { data: any,
     return { nodes: fixedNodes, links: [] as any[] };
   }, [graphMode, filteredData, fileTree, degreeMap, nodeSize, edgeColors, isDark]);
 
-  const loadFileCode = useCallback((path: string) => {
-    const content = fileContents[path];
-    if (content != null) {
-      setCodeContent(content);
-      setCodeError(null);
-      setCodePanelTab('code');
-    } else {
+  const loadFileCode = useCallback(async (path: string) => {
+    const requestId = ++fileContentRequestId.current;
+    const preview = fileContents[path];
+    const hasPreview = preview != null;
+    const isTruncated = !hasPreview || Boolean(fileContentsTruncated[path]);
+    if (!hasPreview && !onLoadFullFile) {
       setCodeContent(null);
       setCodeError('Source not available');
       setCodePanelTab('entities');
+      return;
     }
-  }, [fileContents]);
+
+    setCodeContent(preview ?? null);
+    setCodeError(isTruncated && !onLoadFullFile
+      ? 'Showing a bounded source preview; the full file is not available from this view.'
+      : isTruncated ? 'Loading the complete source…' : null);
+    setCodePanelTab('code');
+
+    try {
+      const content = await loadGraphFileContent(
+        path,
+        preview,
+        isTruncated,
+        onLoadFullFile,
+      );
+      if (fileContentRequestId.current !== requestId) return;
+      setCodeContent(content);
+      setCodeError(null);
+    } catch {
+      if (fileContentRequestId.current !== requestId) return;
+      setCodeError(hasPreview
+        ? 'Could not load the complete file; showing the bounded preview.'
+        : 'Could not load the source file.');
+    }
+  }, [fileContents, fileContentsTruncated, onLoadFullFile]);
 
   const onFileClick = (path: string | null, targetLine?: number) => {
     if (!path) {
+      fileContentRequestId.current += 1;
       setSelectedFile(null);
       setFocusSet(null);
       setCodeContent(null);
@@ -1238,7 +1269,7 @@ export default function CodeGraphViewer({ data: rawData, onClose }: { data: any,
 
     if (path !== selectedFile) {
       setSelectedFile(path);
-      loadFileCode(path);
+      void loadFileCode(path);
     } else if (targetLine) {
       setCodePanelTab('code');
       setTimeout(() => {
@@ -2568,22 +2599,29 @@ export default function CodeGraphViewer({ data: rawData, onClose }: { data: any,
                 <div ref={codeBodyRef} className="flex-1 overflow-auto custom-scrollbar">
                   {codePanelTab === 'code' ? (
                     codeContent !== null ? (
-                      <pre className={`p-4 text-[12px] leading-[1.65] font-mono whitespace-pre overflow-x-auto ${isDark ? 'text-gray-300' : 'text-gray-800'}`}>
-                        {codeContent.split('\n').map((line, i) => {
-                          const lineNum = i + 1;
-                          const isHL = highlightLine === lineNum;
-                          return (
-                            <div
-                              key={i}
-                              data-line={lineNum}
-                              className={`flex ${isHL ? (isDark ? 'bg-yellow-400/10' : 'bg-yellow-300/20') : (isDark ? 'hover:bg-white/[0.03]' : 'hover:bg-black/[0.03]')}`}
-                            >
-                              <span className={`inline-block w-10 text-right pr-4 select-none flex-shrink-0 ${isHL ? 'text-yellow-400 font-bold' : (isDark ? 'text-gray-600' : 'text-gray-400')}`}>{lineNum}</span>
-                              <span>{line || ' '}</span>
-                            </div>
-                          );
-                        })}
-                      </pre>
+                      <>
+                        {codeError && (
+                          <div className="px-4 pt-3 text-[10px] text-amber-400" role="status">
+                            {codeError}
+                          </div>
+                        )}
+                        <pre className={`p-4 text-[12px] leading-[1.65] font-mono whitespace-pre overflow-x-auto ${isDark ? 'text-gray-300' : 'text-gray-800'}`}>
+                          {codeContent.split('\n').map((line, i) => {
+                            const lineNum = i + 1;
+                            const isHL = highlightLine === lineNum;
+                            return (
+                              <div
+                                key={i}
+                                data-line={lineNum}
+                                className={`flex ${isHL ? (isDark ? 'bg-yellow-400/10' : 'bg-yellow-300/20') : (isDark ? 'hover:bg-white/[0.03]' : 'hover:bg-black/[0.03]')}`}
+                              >
+                                <span className={`inline-block w-10 text-right pr-4 select-none flex-shrink-0 ${isHL ? 'text-yellow-400 font-bold' : (isDark ? 'text-gray-600' : 'text-gray-400')}`}>{lineNum}</span>
+                                <span>{line || ' '}</span>
+                              </div>
+                            );
+                          })}
+                        </pre>
+                      </>
                     ) : (
                       <div className="flex flex-col items-center justify-center h-40 text-gray-500 text-[12px]">
                         <p>{codeError || 'No source available'}</p>

@@ -18,6 +18,8 @@ import pytest
 import uvicorn
 from httpx import ASGITransport, AsyncClient
 
+from codegraphcontext.server import MAX_JSONRPC_ID_BYTES, MAX_TOOL_RESPONSE_BYTES
+
 
 def _modern_request(method: str, params: dict | None = None, request_id: int = 1) -> dict:
     body_params = dict(params or {})
@@ -96,6 +98,510 @@ async def test_tools_call_returns_result(monkeypatch):
     body = resp.json()
     assert body["result"]["isError"] is False
     assert '"tool": "ping"' in body["result"]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_sse_event_framing_stays_within_response_byte_limit(
+    monkeypatch,
+):
+    from codegraphcontext.mcp_service import MCPToolResult
+
+    async def large_dispatch(_server, _tool_name, _arguments):
+        return MCPToolResult(payload={"large": "x" * (MAX_TOOL_RESPONSE_BYTES * 2)})
+
+    with patch("codegraphcontext.api.mcp_sse.get_server", return_value=_FakeMCPServer()), \
+         patch("codegraphcontext.api.mcp_sse.dispatch_tool_call", side_effect=large_dispatch):
+        async with _running_client(monkeypatch=monkeypatch) as client:
+            initialize = await client.post(
+                "/api/v1/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json",
+                },
+            )
+            session_id = initialize.headers["mcp-session-id"]
+            response = await client.post(
+                "/api/v1/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "large", "arguments": {}},
+                },
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json",
+                    "MCP-Protocol-Version": "2025-06-18",
+                    "MCP-Session-Id": session_id,
+                },
+            )
+
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert len(response.content) <= MAX_TOOL_RESPONSE_BYTES
+    event_messages = [
+        json.loads(line.removeprefix(b"data: "))
+        for line in response.content.splitlines()
+        if line.startswith(b"data: ")
+    ]
+    tool_response = next(message for message in event_messages if message.get("id") == 2)
+    assert tool_response["jsonrpc"] == "2.0"
+    assert tool_response["result"]["isError"] is False
+    limited_text = tool_response["result"]["content"][0]["text"]
+    assert json.loads(limited_text)["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_rejects_an_oversized_request_id_before_dispatch(monkeypatch):
+    with patch("codegraphcontext.api.mcp_sse.get_server", return_value=_FakeMCPServer()):
+        async with _running_client(monkeypatch=monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/mcp",
+                json=_modern_request(
+                    "tools/call",
+                    {"name": "ping", "arguments": {}},
+                    request_id="x" * (MAX_JSONRPC_ID_BYTES + 1),
+                ),
+                headers={**_MODERN_HEADERS, "Mcp-Method": "tools/call", "Mcp-Name": "ping"},
+            )
+
+    assert response.status_code == 400
+    assert response.json()["id"] is None
+    assert response.json()["error"]["code"] == -32600
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_bounds_numeric_id_beyond_python_json_digit_limit(monkeypatch):
+    body = (
+        b'{"jsonrpc":"2.0","id":'
+        + b"9" * 5000
+        + b',"method":"tools/list","params":{}}'
+    )
+
+    async with _running_client(monkeypatch=monkeypatch) as client:
+        response = await client.post(
+            "/api/v1/mcp",
+            content=body,
+            headers={
+                **_MODERN_HEADERS,
+                "Content-Type": "application/json",
+                "Mcp-Method": "tools/list",
+            },
+        )
+
+    assert response.status_code == 400
+    assert len(response.content) <= MAX_TOOL_RESPONSE_BYTES
+    assert response.json()["id"] is None
+    assert response.json()["error"]["code"] == -32600
+
+
+@pytest.mark.asyncio
+async def test_oversized_request_id_is_rejected_for_a_large_body_before_dispatch():
+    from codegraphcontext.api.app import _JsonRpcRequestIdLimitMiddleware
+
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": "x" * (MAX_JSONRPC_ID_BYTES + 1),
+        "method": "tools/call",
+        "params": {"padding": "y" * (1024 * 1024 + 1)},
+    }).encode()
+    body_chunks = [
+        {"type": "http.request", "body": body[:512 * 1024], "more_body": True},
+        {"type": "http.request", "body": body[512 * 1024:], "more_body": False},
+    ]
+    receive_calls = 0
+    dispatched = False
+    sent = []
+
+    async def receive():
+        nonlocal receive_calls
+        receive_calls += 1
+        return body_chunks.pop(0)
+
+    async def app(_scope, _receive, _send):
+        nonlocal dispatched
+        dispatched = True
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = _JsonRpcRequestIdLimitMiddleware(app)
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/mcp",
+            "headers": [(b"content-length", str(len(body)).encode())],
+        },
+        receive,
+        send,
+    )
+
+    assert not dispatched
+    assert receive_calls == 2
+    response_start = next(message for message in sent if message["type"] == "http.response.start")
+    response_body = next(message["body"] for message in sent if message["type"] == "http.response.body")
+    assert response_start["status"] == 400
+    assert len(response_body) <= MAX_TOOL_RESPONSE_BYTES
+    assert json.loads(response_body)["error"]["code"] == -32600
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_dispatches_a_large_request_with_a_bounded_id(monkeypatch):
+    from codegraphcontext.mcp_service import MCPToolResult
+
+    received = []
+
+    async def dispatch(_server, tool_name, arguments):
+        received.append((tool_name, arguments["padding"]))
+        return MCPToolResult(payload={"accepted": True})
+
+    padding = "x" * (1024 * 1024 + 1)
+    with patch("codegraphcontext.api.mcp_sse.get_server", return_value=_FakeMCPServer()), \
+         patch("codegraphcontext.api.mcp_sse.dispatch_tool_call", side_effect=dispatch):
+        async with _running_client(monkeypatch=monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/mcp",
+                json=_modern_request(
+                    "tools/call",
+                    {"name": "ping", "arguments": {"padding": padding}},
+                    request_id=7,
+                ),
+                headers={**_MODERN_HEADERS, "Mcp-Method": "tools/call", "Mcp-Name": "ping"},
+            )
+
+    assert response.status_code == 200
+    assert received == [("ping", padding)]
+
+
+@pytest.mark.asyncio
+async def test_request_id_guard_replays_original_chunks_without_full_body_parse(monkeypatch):
+    from codegraphcontext.api import app as app_module
+    from codegraphcontext.api.app import _JsonRpcRequestIdLimitMiddleware
+
+    prefix = b'{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"padding":"'
+    body_chunks = [prefix + b"x" * (512 * 1024), b"x" * (512 * 1024) + b'"}}']
+    input_messages = [
+        {"type": "http.request", "body": chunk, "more_body": index == 0}
+        for index, chunk in enumerate(body_chunks)
+    ]
+    receive_index = 0
+    received_chunks = []
+    parsed_lengths = []
+    original_loads = app_module.json.loads
+
+    def record_json_loads(value, *args, **kwargs):
+        parsed_lengths.append(len(value))
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(app_module.json, "loads", record_json_loads)
+
+    async def receive():
+        nonlocal receive_index
+        message = input_messages[receive_index]
+        receive_index += 1
+        return message
+
+    async def downstream(_scope, replay_receive, _send):
+        while True:
+            message = await replay_receive()
+            if message["type"] != "http.request":
+                break
+            received_chunks.append(message["body"])
+            if not message.get("more_body", False):
+                break
+
+    async def send(_message):
+        raise AssertionError("valid request must reach the downstream app")
+
+    middleware = _JsonRpcRequestIdLimitMiddleware(downstream)
+    await middleware(
+        {"type": "http", "method": "POST", "path": "/api/v1/mcp", "headers": []},
+        receive,
+        send,
+    )
+
+    assert received_chunks == body_chunks
+    assert all(actual is original for actual, original in zip(received_chunks, body_chunks))
+    assert parsed_lengths and max(parsed_lengths) <= 128
+
+
+def test_request_id_scan_continues_after_an_unusually_long_top_level_key():
+    from codegraphcontext.api.app import _has_invalid_jsonrpc_id
+
+    body = json.dumps({
+        "x" * 256: "ignored",
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "id": "r" * (MAX_JSONRPC_ID_BYTES + 1),
+    }).encode("utf-8")
+
+    assert _has_invalid_jsonrpc_id([body]) is True
+
+
+def test_request_id_scan_decodes_escaped_top_level_member_names():
+    from codegraphcontext.api.app import _has_invalid_jsonrpc_id
+
+    invalid_id = b'{"i\\u0064":"' + b"r" * (MAX_JSONRPC_ID_BYTES + 1) + b'"}'
+    valid_id = b'{"i\\u0064":7}'
+
+    assert _has_invalid_jsonrpc_id([invalid_id]) is True
+    assert _has_invalid_jsonrpc_id([valid_id]) is False
+
+
+def test_request_id_scan_preserves_short_ids_with_long_unicode_escape_spelling():
+    from codegraphcontext.api.app import _has_invalid_jsonrpc_id
+
+    escaped_id = b'{"id":"' + b"\\u0061" * 1_022 + b'"}'
+    escaped_oversized_id = b'{"id":"' + b"\\u0061" * 1_023 + b'"}'
+
+    assert _has_invalid_jsonrpc_id([escaped_id]) is False
+    assert _has_invalid_jsonrpc_id([escaped_oversized_id]) is True
+
+
+@pytest.mark.asyncio
+async def test_oversized_rest_response_does_not_treat_nested_jsonrpc_as_envelope():
+    from codegraphcontext.api.app import _JsonResponseByteLimitMiddleware
+
+    response_body = json.dumps(
+        {
+            "data": {
+                "jsonrpc": "2.0",
+                "id": "nested-id",
+                "error": {"code": -32601},
+            },
+            "detail": "x" * (MAX_TOOL_RESPONSE_BYTES * 2),
+        }
+    ).encode("utf-8")
+    sent = []
+
+    async def app(_scope, _receive, send):
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"application/json")],
+        })
+        await send({"type": "http.response.body", "body": response_body, "more_body": False})
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = _JsonResponseByteLimitMiddleware(app)
+    await middleware({"type": "http", "method": "GET", "path": "/api/v1/query"}, None, send)
+
+    final_body = next(message["body"] for message in sent if message["type"] == "http.response.body")
+    replacement = json.loads(final_body)
+    assert len(final_body) <= MAX_TOOL_RESPONSE_BYTES
+    assert replacement == {"detail": "Serialized response exceeded the maximum size."}
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_bounds_oversized_unknown_method_error(monkeypatch):
+    unknown_method = "unknown." + ("x" * (MAX_TOOL_RESPONSE_BYTES + 1024))
+    async with _running_client(monkeypatch=monkeypatch) as client:
+        response = await client.post(
+            "/api/v1/mcp",
+            json=_modern_request(unknown_method),
+            headers={**_MODERN_HEADERS, "Mcp-Method": unknown_method},
+        )
+
+    assert response.content
+    assert len(response.content) <= MAX_TOOL_RESPONSE_BYTES
+    payload = response.json()
+    assert payload["id"] == 1
+    assert payload["error"]["code"] == -32601
+
+
+@pytest.mark.asyncio
+async def test_legacy_sse_bounds_raw_protocol_error_response(monkeypatch):
+    from codegraphcontext.api import mcp_sse
+
+    error_body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+            "code": -32601,
+            "message": "Method not found: " + ("x" * (MAX_TOOL_RESPONSE_BYTES + 1024)),
+        },
+    }).encode("utf-8")
+
+    async def write_raw_error(_scope, _receive, sender):
+        await sender({
+            "type": "http.response.start",
+            "status": 400,
+            "headers": [(b"content-type", b"application/json")],
+        })
+        await sender({"type": "http.response.body", "body": error_body, "more_body": False})
+
+    with patch.object(mcp_sse.sse, "handle_post_message", side_effect=write_raw_error):
+        async with _running_client(monkeypatch=monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/mcp/messages",
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}},
+            )
+
+    assert response.status_code == 400
+    assert len(response.content) <= MAX_TOOL_RESPONSE_BYTES
+    payload = response.json()
+    assert payload["id"] == 1
+    assert payload["error"]["code"] == -32601
+
+
+@pytest.mark.asyncio
+async def test_fastapi_validation_error_is_bounded(monkeypatch):
+    async with _running_client(monkeypatch=monkeypatch) as client:
+        response = await client.post(
+            "/api/v1/query",
+            json={"query": "MATCH (f:Function) RETURN f", "page_size": "x" * (MAX_TOOL_RESPONSE_BYTES + 1024)},
+        )
+
+    assert response.status_code == 422
+    assert len(response.content) <= MAX_TOOL_RESPONSE_BYTES
+    assert "maximum size" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_leaves_jsonrpc_batches_to_protocol_validation(monkeypatch):
+    calls = []
+
+    class _RecordingMCPServer(_FakeMCPServer):
+        async def handle_tool_call(self, tool_name, args):
+            calls.append(tool_name)
+            return {"ok": True, "tool": tool_name, "args": args}
+
+    batch = [
+        _modern_request("tools/call", {"name": "ping", "arguments": {}}, request_id=7),
+        _modern_request(
+            "tools/call",
+            {"name": "ping", "arguments": {}},
+            request_id="x" * (MAX_JSONRPC_ID_BYTES + 1),
+        ),
+    ]
+    with patch("codegraphcontext.api.mcp_sse.get_server", return_value=_RecordingMCPServer()):
+        async with _running_client(monkeypatch=monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/mcp",
+                json=batch,
+                headers={**_MODERN_HEADERS, "Mcp-Method": "tools/call", "Mcp-Name": "ping"},
+            )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["id"] is None
+    assert payload["error"]["code"] == -32600
+    assert "single JSON-RPC request" in payload["error"]["message"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_sse_messages_reject_an_oversized_request_id():
+    import json
+    from starlette.requests import Request
+    from codegraphcontext.api import mcp_sse
+
+    raw_body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": "x" * (MAX_JSONRPC_ID_BYTES + 1),
+        "method": "tools/call",
+        "params": {"name": "ping", "arguments": {}},
+    }).encode()
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if body_sent:
+            return {"type": "http.disconnect"}
+        body_sent = True
+        return {"type": "http.request", "body": raw_body, "more_body": False}
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    with patch.object(mcp_sse.sse, "handle_post_message", side_effect=AssertionError("must not dispatch")):
+        response = await mcp_sse.handle_messages(request)
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"]["code"] == -32600
+
+
+@pytest.mark.asyncio
+async def test_legacy_sse_bounds_numeric_id_beyond_python_json_digit_limit():
+    from starlette.requests import Request
+    from codegraphcontext.api import mcp_sse
+
+    raw_body = (
+        b'{"jsonrpc":"2.0","id":'
+        + b"9" * 5000
+        + b',"method":"tools/list"}'
+    )
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if body_sent:
+            return {"type": "http.disconnect"}
+        body_sent = True
+        return {"type": "http.request", "body": raw_body, "more_body": False}
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    with patch.object(
+        mcp_sse.sse,
+        "handle_post_message",
+        side_effect=AssertionError("oversized ID must not dispatch"),
+    ):
+        response = await mcp_sse.handle_messages(request)
+
+    assert response.status_code == 400
+    assert len(response.body) <= MAX_TOOL_RESPONSE_BYTES
+    assert json.loads(response.body)["error"]["code"] == -32700
+
+
+@pytest.mark.asyncio
+async def test_legacy_sse_passes_jsonrpc_batches_unchanged_to_protocol_validation():
+    import json
+    from starlette.requests import Request
+    from codegraphcontext.api import mcp_sse
+
+    valid = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "ping", "arguments": {}},
+    }
+    oversized = {
+        "jsonrpc": "2.0",
+        "id": "x" * (MAX_JSONRPC_ID_BYTES + 1),
+        "method": "tools/call",
+        "params": {"name": "ping", "arguments": {}},
+    }
+    body = json.dumps([valid, oversized]).encode()
+    body_sent = False
+    dispatched = []
+
+    async def receive():
+        nonlocal body_sent
+        if body_sent:
+            return {"type": "http.disconnect"}
+        body_sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def capture_batch(scope, receive_body, sender):
+        message = await receive_body()
+        dispatched.extend(json.loads(message["body"]))
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    with patch.object(mcp_sse.sse, "handle_post_message", side_effect=capture_batch):
+        response = await mcp_sse.handle_messages(request)
+
+    assert response.status_code == 202
+    assert dispatched == [valid, oversized]
 
 
 @pytest.mark.asyncio

@@ -52,15 +52,16 @@ def test_injection_count_counts_relationships_not_rows():
         assert "count(*) AS injection_count" not in src, f"{mod.__name__} still counts rows"
 
 
-def test_key_patterns_collect_drops_empty_rows():
-    """A map literal is non-null even when every field is null, so collecting
-    maps kept a phantom all-null entry for a datasource with no patterns."""
+def test_key_patterns_use_bounded_rows_without_nullable_map_aggregates():
+    """Only matched RedisKeyPattern nodes should enter the bounded result page."""
     import inspect
 
     from codegraphcontext.tools.handlers import analysis_handlers
 
     src = inspect.getsource(analysis_handlers)
-    assert "[x IN collect(kp) |" in src, "must collect the node, then project"
+    assert "MATCH (kp:RedisKeyPattern)-[:STORED_IN]->(d:Datasource)" in src
+    assert "RETURN DISTINCT d.name AS datasource, kp.pattern AS pattern" in src
+    assert "SKIP $key_pattern_offset LIMIT $key_pattern_candidate_limit" in src
     assert "collect({pattern: kp.pattern" not in src, "still collects a map literal"
 
 

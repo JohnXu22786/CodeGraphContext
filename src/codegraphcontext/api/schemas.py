@@ -1,5 +1,5 @@
 # src/codegraphcontext/api/schemas.py
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator
 from typing import Dict, Any, List, Optional
 
 class IndexRequest(BaseModel):
@@ -36,6 +36,16 @@ class LocalUpdateRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str = Field(..., description="Cypher query to execute")
     params: Dict[str, Any] = Field(default_factory=dict, description="Parameters for the query")
+    repo_path: Optional[str] = Field(
+        None, description="Optional repository root for repository-scoped execution"
+    )
+    global_scope: bool = Field(
+        False, description="Explicitly query across repositories"
+    )
+    offset: StrictInt = Field(0, ge=0, le=99999, description="Zero-based row offset")
+    page_size: Optional[StrictInt] = Field(
+        None, ge=1, description="Maximum rows to return in this page"
+    )
 
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")

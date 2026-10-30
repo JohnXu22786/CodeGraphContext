@@ -610,6 +610,1571 @@ def test_find_content_surfaces_query_errors(monkeypatch):
     assert "Full-text search is not supported on FalkorDB" not in result.output
 
 
+def test_find_name_scopes_codefinder_and_direct_queries_to_current_repository(monkeypatch):
+    finder_calls = []
+    query_calls = []
+    repo_path = Path.cwd().resolve().as_posix()
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query, **kwargs):
+            query_calls.append((query, kwargs))
+            return []
+
+    class _Driver:
+        def session(self):
+            return _Session()
+
+    class _DBManager:
+        def get_driver(self):
+            return _Driver()
+
+        def close_driver(self):
+            return None
+
+    class _CodeFinder:
+        def _search(self, method, **kwargs):
+            finder_calls.append((method, kwargs))
+            return [{"name": "demo", "path": "repo/demo.py", "line_number": 1}]
+
+        def find_by_function_name(self, _name, **kwargs):
+            return self._search("function", **kwargs)
+
+        def find_by_class_name(self, _name, **kwargs):
+            return self._search("class", **kwargs)
+
+        def find_by_variable_name(self, _name, **kwargs):
+            return self._search("variable", **kwargs)
+
+        def find_by_module_name(self, _name, **kwargs):
+            return self._search("module", **kwargs)
+
+        def find_imports(self, _name, **kwargs):
+            return self._search("imports", **kwargs)
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+
+    result = runner.invoke(app, ["find", "name", "demo"])
+
+    assert result.exit_code == 0, result.output
+    assert {method for method, _ in finder_calls} == {
+        "function", "class", "variable", "module", "imports"
+    }
+    assert all(kwargs.get("repo_path") == repo_path for _, kwargs in finder_calls)
+    assert len(query_calls) == 4
+    assert all("n.path STARTS WITH $repo_prefix" in query for query, _ in query_calls)
+    assert all(params.get("repo_root") == repo_path for _, params in query_calls)
+    assert all(
+        params.get("repo_prefix") == repo_path.rstrip("/") + "/"
+        for _, params in query_calls
+    )
+
+    file_result = runner.invoke(app, ["find", "name", "demo", "--type", "file"])
+    assert file_result.exit_code == 0, file_result.output
+    assert "n.path STARTS WITH $repo_prefix" in query_calls[-1][0]
+    assert query_calls[-1][1].get("repo_root") == repo_path
+    assert query_calls[-1][1].get("repo_prefix") == repo_path.rstrip("/") + "/"
+
+
+def test_find_content_scopes_search_to_current_repository(monkeypatch):
+    calls = []
+    repo_path = Path.cwd().resolve().as_posix()
+
+    class _DBManager:
+        def close_driver(self):
+            return None
+
+    class _CodeFinder:
+        def find_by_content(self, query, **kwargs):
+            calls.append((query, kwargs))
+            return [{"name": "demo", "type": "Function", "path": "repo/demo.py", "line_number": 1}]
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+
+    result = runner.invoke(app, ["find", "content", "needle"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("needle", {"repo_path": repo_path, "limit": 51})]
+
+
+def test_query_defaults_to_repository_scope_and_supports_explicit_global_paging(
+    monkeypatch, tmp_path
+):
+    (tmp_path / ".git").mkdir()
+    calls = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cypher_helper",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "cypher_helper_visual",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    query = "MATCH (f:Function) RETURN f.uid ORDER BY f.uid"
+    scoped = runner.invoke(
+        app, ["query", query, "--offset", "4", "--page-size", "7"]
+    )
+    global_query = runner.invoke(app, ["query", query, "--global-scope"])
+    visual = runner.invoke(
+        app, ["query", query, "--visual", "--offset", "4", "--page-size", "7"]
+    )
+
+    assert scoped.exit_code == 0, scoped.output
+    assert global_query.exit_code == 0, global_query.output
+    assert visual.exit_code == 0, visual.output
+    assert calls == [
+        ((query, None), {
+            "repo_path": str(tmp_path.resolve()),
+            "global_scope": False,
+            "offset": 4,
+            "page_size": 7,
+        }),
+        ((query, None), {
+            "repo_path": None,
+            "global_scope": True,
+            "offset": 0,
+            "page_size": 100,
+        }),
+        ((query, None), {
+            "repo_path": str(tmp_path.resolve()),
+            "global_scope": False,
+            "offset": 4,
+            "page_size": 7,
+        }),
+    ]
+
+
+def test_cli_variable_analysis_forwards_row_and_evidence_pages(monkeypatch, tmp_path):
+    repo = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+    calls = []
+    value_page = "v" * 64
+    context_page = "c" * 64
+
+    class _CodeFinder:
+        def find_variable_usage_scope(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {
+                "instances": [{
+                    "scope_type": "function",
+                    "scope_name": "load_config",
+                    "path": f"{repo}/settings.py",
+                    "line_number": 12,
+                    "variable_value": value_page,
+                    "variable_value_offset": 100,
+                    "variable_value_total_chars": 300,
+                    "variable_value_next_offset": 164,
+                    "variable_value_truncated": True,
+                    "context": context_page,
+                    "context_offset": 200,
+                    "context_total_chars": 500,
+                    "context_next_offset": 264,
+                    "context_truncated": True,
+                }],
+                "offset": 5,
+                "page_size": 2,
+                "result_limit": 2,
+                "truncated": True,
+                "next_offset": 7,
+                "continuation_limit_reached": False,
+            }
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "analyze", "variable", "setting", "--offset", "5", "--page-size", "2",
+            "--value-offset", "100", "--context-offset", "200",
+            "--evidence-char-limit", "64",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(
+        ("setting", None),
+        {
+            "repo_path": repo,
+            "offset": 5,
+            "page_size": 2,
+            "value_offset": 100,
+            "context_offset": 200,
+            "evidence_char_limit": 64,
+        },
+    )]
+    assert "--offset 7" in result.output
+    assert "--value-offset 164" in result.output
+    assert "--context-offset 264" in result.output
+    compact_output = "".join(result.output.split())
+    assert value_page in compact_output
+    assert context_page in compact_output
+
+
+@pytest.mark.parametrize(
+    ("command", "method"),
+    [
+        (["find", "decorator", "route"], "find_functions_by_decorator"),
+        (["find", "argument", "account_id"], "find_functions_by_argument"),
+        (["analyze", "calls", "entry"], "what_does_function_call"),
+        (["analyze", "callers", "entry"], "who_calls_function"),
+        (["analyze", "chain", "entry", "target"], "find_function_call_chain"),
+        (["analyze", "overrides", "render"], "find_function_overrides"),
+    ],
+)
+def test_cli_relationship_commands_forward_offsets_and_print_continuation(
+    monkeypatch, tmp_path, command, method
+):
+    repo = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    class _CodeFinder:
+        def __getattr__(self, name):
+            def query(*_args, **kwargs):
+                calls.append((name, kwargs))
+                offset = kwargs["offset"]
+                limit = kwargs["limit"]
+                rows = []
+                for index in range(offset, offset + limit):
+                    if name == "find_functions_by_decorator":
+                        rows.append({
+                            "function_name": f"fn_{index}",
+                            "path": f"{repo}/a.py",
+                            "line_number": index,
+                            "decorators": ["route"],
+                        })
+                    elif name == "find_functions_by_argument":
+                        rows.append({
+                            "function_name": f"fn_{index}",
+                            "path": f"{repo}/a.py",
+                            "line_number": index,
+                        })
+                    elif name == "what_does_function_call":
+                        rows.append({
+                            "called_function": f"called_{index}",
+                            "called_file_path": f"{repo}/a.py",
+                            "called_line_number": index,
+                        })
+                    elif name == "who_calls_function":
+                        rows.append({
+                            "caller_function": f"caller_{index}",
+                            "caller_file_path": f"{repo}/a.py",
+                            "caller_line_number": index,
+                        })
+                    elif name == "find_function_call_chain":
+                        rows.append({
+                            "chain_length": 1,
+                            "function_chain": [{
+                                "name": f"entry_{index}",
+                                "path": f"{repo}/a.py",
+                                "line_number": index,
+                            }],
+                            "call_details": [],
+                        })
+                    else:
+                        rows.append({
+                            "class_name": f"Class_{index}",
+                            "function_name": "render",
+                            "class_file_path": f"{repo}/a.py",
+                            "function_line_number": index,
+                        })
+                return rows
+            return query
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "get_tool_result_limit", lambda _name: 2)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, [*command, "--offset", "6"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0][0] == method
+    assert calls[0][1]["offset"] == 6
+    assert calls[0][1]["limit"] == 3
+    assert "--offset 8" in result.output
+
+
+def test_visualize_defaults_to_repository_scope(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    calls = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "visualize_helper",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = runner.invoke(app, ["visualize"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        ((), {
+            "repo_path": str(tmp_path.resolve()),
+            "host": "127.0.0.1",
+            "port": 8000,
+            "context": None,
+            "global_scope": False,
+            "offset": 0,
+        })
+    ]
+
+
+def test_find_visualization_receives_the_active_repository_scope(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    calls = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (
+            _FakeDBManager(), _FakeGraphBuilder(), _FakeCodeFinder()
+        ),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "visualize_search_results",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = runner.invoke(
+        app,
+        ["find", "name", "foo", "--type", "function", "--no-fuzzy", "--visual"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][1]["repo_path"] == str(tmp_path.resolve())
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_page_size"),
+    [
+        (
+            ["find", "name", "foo", "--type", "function", "--no-fuzzy", "--visual", "--offset", "5"],
+            50,
+        ),
+        (["find", "pattern", "foo", "--visual", "--offset", "5"], 50),
+        (["find", "type", "function", "--visual", "--offset", "5", "--limit", "7"], 7),
+    ],
+)
+def test_find_visualization_forwards_selected_page_window(
+    monkeypatch, tmp_path, command, expected_page_size
+):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    class _ManyCodeFinder(_FakeCodeFinder):
+        @staticmethod
+        def _rows():
+            return [
+                {
+                    "name": f"foo_{index}",
+                    "path": f"repo/foo_{index}.py",
+                    "line_number": index + 1,
+                    "is_dependency": False,
+                }
+                for index in range(10)
+            ]
+
+        def find_by_function_name(self, *_args, **_kwargs):
+            return self._rows()
+
+        def find_by_type(self, *_args, **_kwargs):
+            return self._rows()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        _FakeSession,
+        "run",
+        lambda *_args, **_kwargs: _ManyCodeFinder._rows(),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (
+            _FakeDBManager(), _FakeGraphBuilder(), _ManyCodeFinder()
+        ),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "visualize_search_results",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][1]["offset"] == 5
+    assert calls[0][1]["page_size"] == expected_page_size
+
+
+def test_cli_find_scope_resolves_repository_root_from_subdirectory(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    nested = repo / "src" / "pkg"
+    (repo / ".git").mkdir(parents=True)
+    nested.mkdir(parents=True)
+    calls = []
+
+    class _CodeFinder(_FakeCodeFinder):
+        def find_by_type(self, *args, **kwargs):
+            calls.append(kwargs)
+            return [{"name": "f", "path": f"{repo}/src/f.py", "line_number": 1}]
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(nested)
+
+    result = runner.invoke(app, ["find", "type", "function"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["repo_path"] == str(repo.resolve())
+
+
+def test_cli_find_fails_closed_from_multi_repository_workspace(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    repo_a = workspace / "teams" / "a" / "repo-a"
+    repo_b = workspace / "teams" / "b" / "repo-b"
+    (repo_a / ".git").mkdir(parents=True)
+    (repo_b / ".git").mkdir(parents=True)
+    calls = []
+
+    class _CodeFinder(_FakeCodeFinder):
+        def find_by_type(self, *args, **kwargs):
+            calls.append(kwargs)
+            return []
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["find", "type", "function"])
+
+    assert result.exit_code != 0
+    assert calls == []
+    assert "repository" in result.output.lower()
+
+
+@pytest.mark.parametrize(
+    "command_args",
+    [["find", "type", "function"], ["diagram"]],
+)
+def test_cli_search_and_diagram_fail_closed_without_git_repository_roots(
+    monkeypatch, tmp_path, command_args
+):
+    workspace = tmp_path / "workspace"
+    (workspace / "indexed-a" / "src").mkdir(parents=True)
+    (workspace / "indexed-b" / "src").mkdir(parents=True)
+    calls = []
+
+    class _CodeFinder(_FakeCodeFinder):
+        def find_by_type(self, *args, **kwargs):
+            calls.append(("find_by_type", args, kwargs))
+            return [
+                {"name": "found-a", "path": str(workspace / "indexed-a" / "src" / "a.py"), "line_number": 1},
+                {"name": "found-b", "path": str(workspace / "indexed-b" / "src" / "b.py"), "line_number": 2},
+            ]
+
+        def export_diagram_edges(self, **kwargs):
+            calls.append(("export_diagram_edges", (), kwargs))
+            return {"edges": [("indexed-a", "indexed-b")], "total_count": 1, "truncated": False}
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, command_args)
+
+    assert result.exit_code != 0
+    assert calls == []
+    assert "repository" in result.output.lower()
+
+
+def test_kotlin_call_audit_defaults_to_current_repository(monkeypatch, tmp_path):
+    repo = tmp_path / "kotlin-repo"
+    (repo / ".git").mkdir(parents=True)
+    calls = []
+
+    class _CodeFinder:
+        def audit_kotlin_call_ambiguity(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "kotlin_fn_to_fn_edges": 0,
+                "ambiguous_groups": 0,
+                "ambiguous_edges": 0,
+                "top_names": [],
+                "examples": [],
+            }
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["analyze", "kotlin-call-audit"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [{
+        "repo_path": str(repo.resolve()), "limit": 20, "offset": 0, "page_size": 100
+    }]
+
+
+def test_kotlin_call_audit_forwards_database_page_and_prints_continuation(monkeypatch, tmp_path):
+    repo = tmp_path / "kotlin-audit-page-repo"
+    (repo / ".git").mkdir(parents=True)
+    calls = []
+
+    class _CodeFinder:
+        def audit_kotlin_call_ambiguity(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "kotlin_fn_to_fn_edges": 3,
+                "ambiguous_groups": 0,
+                "ambiguous_edges": 0,
+                "top_names": [],
+                "examples": [],
+                "offset": 7,
+                "page_size": 3,
+                "truncated": True,
+                "next_offset": 10,
+                "continuation_limit_reached": False,
+            }
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(
+        app,
+        ["analyze", "kotlin-call-audit", "--offset", "7", "--page-size", "3"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [{
+        "repo_path": str(repo.resolve()), "limit": 20, "offset": 7, "page_size": 3
+    }]
+    assert "--offset 10" in result.output
+
+
+def test_analyze_chain_defaults_to_current_repository(monkeypatch, tmp_path):
+    repo = tmp_path / "call-chain-repo"
+    (repo / ".git").mkdir(parents=True)
+    calls = []
+
+    class _CodeFinder:
+        def find_function_call_chain(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return []
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["analyze", "chain", "entry", "target"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (("entry", "target", 5, None, None), {
+            "repo_path": str(repo.resolve()), "limit": 21, "offset": 0
+        })
+    ]
+
+
+def test_cli_name_content_and_variable_searches_report_overflow(monkeypatch, tmp_path):
+    repo = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+    seen = []
+
+    def rows():
+        return [
+            {"name": f"item-{index}", "type": "Function", "path": f"{repo}/{index}.py", "line_number": index}
+            for index in range(51)
+        ]
+
+    class _CodeFinder:
+        def find_by_function_name(self, _name, **kwargs):
+            seen.append(("function", kwargs))
+            return rows()
+
+        def find_by_class_name(self, _name, **kwargs):
+            return []
+
+        def find_by_variable_name(self, _name, **kwargs):
+            seen.append(("variable", kwargs))
+            return rows()
+
+        def find_by_content(self, _name, **kwargs):
+            seen.append(("content", kwargs))
+            return rows()
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    name = runner.invoke(app, ["find", "name", "item", "--type", "function", "--no-fuzzy"])
+    variable = runner.invoke(app, ["find", "variable", "item"])
+    content = runner.invoke(app, ["find", "content", "item"])
+
+    for result in (name, variable, content):
+        assert result.exit_code == 0, result.output
+        assert "truncated" in result.output.lower()
+        assert "Found 50" in result.output
+    assert all(kwargs["limit"] == 51 for _, kwargs in seen)
+    assert all(kwargs["repo_path"] == repo for _, kwargs in seen)
+
+
+def test_cli_find_searches_support_continuation_offsets(monkeypatch, tmp_path):
+    repo = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+    seen = []
+
+    def rows(prefix, start, count):
+        return [
+            {
+                "name": f"{prefix}-{index:03d}",
+                "type": "Function",
+                "path": f"{repo}/{index:03d}.py",
+                "line_number": index,
+                "context": "module",
+            }
+            for index in range(start, start + count)
+        ]
+
+    class _CodeFinder:
+        def find_by_function_name(self, _name, **kwargs):
+            seen.append(("name", kwargs))
+            return rows("name", 0, kwargs["limit"])
+
+        def find_by_type(self, _type, limit, repo_path=None, offset=0):
+            seen.append(("type", {"limit": limit, "repo_path": repo_path, "offset": offset}))
+            return rows("type", offset, limit)
+
+        def find_by_variable_name(self, _name, **kwargs):
+            seen.append(("variable", kwargs))
+            return rows("variable", kwargs.get("offset", 0), kwargs["limit"])
+
+        def find_by_content(self, _name, **kwargs):
+            seen.append(("content", kwargs))
+            return rows("content", kwargs.get("offset", 0), kwargs["limit"])
+
+    class _Session(_FakeSession):
+        def run(self, query, **kwargs):
+            if "MATCH (n)" in query:
+                seen.append(("pattern", kwargs))
+                return rows("pattern", 0, kwargs["limit"])
+            return []
+
+    class _Driver(_FakeDriver):
+        def session(self):
+            return _Session()
+
+    class _DBManager(_FakeDBManager):
+        def get_driver(self, graph_name=None):
+            return _Driver()
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    name = runner.invoke(
+        app, ["find", "name", "name", "--type", "function", "--no-fuzzy", "--offset", "50"]
+    )
+    pattern = runner.invoke(app, ["find", "pattern", "pattern", "--offset", "50"])
+    by_type = runner.invoke(app, ["find", "type", "function", "--limit", "3", "--offset", "4"])
+    variable = runner.invoke(app, ["find", "variable", "variable", "--offset", "50"])
+    content = runner.invoke(app, ["find", "content", "content", "--offset", "50"])
+
+    for result in (name, pattern, by_type, variable, content):
+        assert result.exit_code == 0, result.output
+    for result, prefix in (
+        (name, "name"),
+        (pattern, "pattern"),
+        (variable, "variable"),
+        (content, "content"),
+    ):
+        assert f"{prefix}-050" in result.output
+        assert f"{prefix}-049" not in result.output
+        assert "--offset 100" in result.output
+    assert "type-004" in by_type.output
+    assert "type-003" not in by_type.output
+    assert "--offset 7" in by_type.output
+    assert ("name", {"fuzzy_search": False, "repo_path": repo, "limit": 101}) in seen
+    assert any(kind == "pattern" and kwargs["limit"] == 101 for kind, kwargs in seen)
+    assert ("type", {"limit": 4, "repo_path": repo, "offset": 4}) in seen
+    assert any(kind == "variable" and kwargs.get("offset") == 50 and kwargs["limit"] == 51 for kind, kwargs in seen)
+    assert any(kind == "content" and kwargs.get("offset") == 50 and kwargs["limit"] == 51 for kind, kwargs in seen)
+
+
+def test_cli_find_continuation_does_not_suggest_offset_past_limit(monkeypatch):
+    output = StringIO()
+    console = Console(file=output, highlight=False)
+    monkeypatch.setattr(cli_main, "find_result_console", console)
+
+    cli_main._print_find_continuation(99_999, 50)
+
+    rendered = output.getvalue()
+    assert "--offset 100049" not in rendered
+    assert "99999" in rendered
+    assert "continuation" in rendered.lower()
+
+
+def test_cli_search_scope_uses_the_selected_context_repository(monkeypatch, tmp_path):
+    cwd_repo = tmp_path / "cwd-repo"
+    selected_repo = tmp_path / "context-repo"
+    (cwd_repo / ".git").mkdir(parents=True)
+    (selected_repo / ".git").mkdir(parents=True)
+    calls = []
+
+    class _Context:
+        repos = [selected_repo.as_posix()]
+
+    class _ContextConfig:
+        mode = "global"
+        default_context = ""
+        contexts = {"selected": _Context()}
+
+    class _CodeFinder(_FakeCodeFinder):
+        def find_by_function_name(self, _name, **kwargs):
+            calls.append(kwargs)
+            return [{"name": "target", "path": f"{selected_repo}/target.py", "line_number": 1}]
+
+    monkeypatch.setattr(cli_main.config_manager, "load_context_config", lambda **_kwargs: _ContextConfig())
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(cwd_repo)
+
+    result = runner.invoke(
+        app,
+        ["find", "name", "target", "--type", "function", "--no-fuzzy", "--context", "selected"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["repo_path"] == selected_repo.resolve().as_posix()
+
+
+def test_cli_per_repo_context_scopes_an_unversioned_source_directory(monkeypatch, tmp_path):
+    source_root = tmp_path / "unversioned-source"
+    local_context = source_root / ".codegraphcontext"
+    local_context.mkdir(parents=True)
+    (local_context / "config.yaml").write_text("database: kuzudb\n", encoding="utf-8")
+
+    class _ContextConfig:
+        mode = "per-repo"
+        default_context = ""
+        contexts = {}
+
+    monkeypatch.setattr(
+        cli_main.config_manager,
+        "load_context_config",
+        lambda **_kwargs: _ContextConfig(),
+    )
+
+    assert cli_main._resolve_cli_repo_scope(start=source_root) == source_root.resolve().as_posix()
+
+
+def test_cli_per_repo_mode_fails_closed_for_implicit_multi_repository_root(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    (workspace / "projects" / "repo-a" / ".git").mkdir(parents=True)
+    (workspace / "projects" / "repo-b" / ".git").mkdir(parents=True)
+
+    class _ContextConfig:
+        mode = "per-repo"
+        default_context = ""
+        contexts = {}
+
+    monkeypatch.setattr(
+        cli_main.config_manager,
+        "load_context_config",
+        lambda **_kwargs: _ContextConfig(),
+    )
+    monkeypatch.setattr(
+        cli_main.config_manager,
+        "get_repo_context_path",
+        lambda root: workspace / ".codegraphcontext",
+    )
+    monkeypatch.setattr(
+        cli_main.config_manager,
+        "load_config",
+        lambda **_kwargs: {"DEFAULT_DATABASE": "kuzudb"},
+    )
+
+    assert not (workspace / ".codegraphcontext").exists()
+    with pytest.raises(cli_main.typer.BadParameter, match="single repository scope"):
+        cli_main._resolve_cli_repo_scope(start=workspace)
+
+
+def test_cli_global_scope_still_fails_closed_for_ambiguous_workspace(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    (workspace / "project-a" / ".git").mkdir(parents=True)
+    (workspace / "project-b" / ".git").mkdir(parents=True)
+
+    class _ContextConfig:
+        mode = "global"
+        default_context = ""
+        contexts = {}
+
+    monkeypatch.setattr(
+        cli_main.config_manager,
+        "load_context_config",
+        lambda **_kwargs: _ContextConfig(),
+    )
+
+    with pytest.raises(cli_main.typer.BadParameter, match="single repository scope"):
+        cli_main._resolve_cli_repo_scope(start=workspace)
+
+
+def test_cli_selected_multi_repository_context_fails_closed_outside_its_repos(
+    monkeypatch, tmp_path
+):
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    cwd = tmp_path / "outside"
+    (repo_a / ".git").mkdir(parents=True)
+    (repo_b / ".git").mkdir(parents=True)
+    (cwd / ".git").mkdir(parents=True)
+
+    class _Context:
+        repos = [repo_a.as_posix(), repo_b.as_posix()]
+
+    class _ContextConfig:
+        mode = "global"
+        default_context = ""
+        contexts = {"selected": _Context()}
+
+    monkeypatch.setattr(cli_main.config_manager, "load_context_config", lambda **_kwargs: _ContextConfig())
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _FakeCodeFinder()),
+    )
+    monkeypatch.chdir(cwd)
+
+    result = runner.invoke(
+        app,
+        ["find", "name", "target", "--type", "function", "--context", "selected"],
+    )
+
+    assert result.exit_code == 2
+    assert "inside one of that context's registered repositories" in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "method"),
+    [
+        (["find", "decorator", "route"], "find_functions_by_decorator"),
+        (["find", "argument", "account_id"], "find_functions_by_argument"),
+        (["analyze", "calls", "entry"], "what_does_function_call"),
+        (["analyze", "callers", "entry"], "who_calls_function"),
+        (["analyze", "deps", "package"], "find_module_dependencies"),
+        (["analyze", "tree", "Model"], "find_class_hierarchy"),
+        (["analyze", "complexity"], "find_most_complex_functions"),
+        (["analyze", "dead-code"], "find_dead_code"),
+        (["analyze", "overrides", "render"], "find_function_overrides"),
+        (["analyze", "variable", "setting"], "find_variable_usage_scope"),
+    ],
+)
+def test_cli_analysis_queries_pass_the_active_repository_scope(
+    monkeypatch, tmp_path, command, method
+):
+    repo = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    class _CodeFinder:
+        def __getattr__(self, name):
+            def query(*_args, **kwargs):
+                calls.append((name, kwargs))
+                if name == "find_module_dependencies":
+                    return {"importers": [], "imports": []}
+                if name == "find_class_hierarchy":
+                    return {"parent_classes": [], "child_classes": [], "methods": []}
+                if name == "find_dead_code":
+                    return {"potentially_unused_functions": [], "total_count": 0}
+                if name == "find_variable_usage_scope":
+                    return {"instances": []}
+                return []
+            return query
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == method
+    assert calls[0][1]["repo_path"] == repo
+
+
+def test_find_decorator_forwards_nested_pages_and_prints_continuations(
+    monkeypatch, tmp_path
+):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    class _CodeFinder:
+        def find_functions_by_decorator(self, *_args, **kwargs):
+            calls.append(kwargs)
+            return [{
+                "function_name": "endpoint",
+                "path": f"{tmp_path}/routes.py",
+                "line_number": 4,
+                "decorators": ["@route-preview"],
+                "decorators_truncated": True,
+                "decorators_next_offset": 24,
+                "decorators_value_next_offset": 192,
+            }]
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, [
+        "find", "decorator", "route",
+        "--decorator-offset", "16",
+        "--decorator-page-size", "8",
+        "--decorator-value-offset", "128",
+        "--decorator-value-page-size", "64",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["decorator_offset"] == 16
+    assert calls[0]["decorator_page_size"] == 8
+    assert calls[0]["decorator_value_offset"] == 128
+    assert calls[0]["decorator_value_page_size"] == 64
+    assert "continue decorator lists, use --decorator-offset 24" in result.output
+    assert "continue decorator text, use --decorator-value-offset 192" in result.output
+
+
+def test_analyze_dependencies_forwards_page_window_and_collection_cursor(
+    monkeypatch, tmp_path
+):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    class _PagedCodeFinder(_FakeCodeFinder):
+        def find_module_dependencies(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {
+                "importers": [{
+                    "importer_file_path": "repo/consumer.py",
+                    "import_line_number": 1,
+                }],
+                "imports": [],
+                "offset": 4,
+                "page_size": 2,
+                "importers_truncated": True,
+                "imports_truncated": False,
+                "next_offset": 6,
+                "continuation_limit_reached": False,
+            }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (
+            _FakeDBManager(), _FakeGraphBuilder(), _PagedCodeFinder()
+        ),
+    )
+
+    result = runner.invoke(
+        app, ["analyze", "deps", "package", "--offset", "4", "--page-size", "2"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == ("package",)
+    assert calls[0][1]["offset"] == 4
+    assert calls[0][1]["page_size"] == 2
+    assert "importers" in result.output.lower()
+    assert "--offset 6" in result.output
+    assert "--page-size 2" in result.output
+
+
+def test_analyze_tree_forwards_page_window_and_per_collection_cursors(
+    monkeypatch, tmp_path
+):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    class _PagedCodeFinder(_FakeCodeFinder):
+        def find_class_hierarchy(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {
+                "parent_classes": [{
+                    "parent_class": "Base",
+                    "parent_file_path": "repo/base.py",
+                    "parent_line_number": 1,
+                }],
+                "child_classes": [],
+                "methods": [{"method_name": "run", "method_args": "self"}],
+                "parent_classes_truncated": True,
+                "parent_classes_next_offset": 6,
+                "parent_classes_continuation_limit_reached": False,
+                "child_classes_truncated": False,
+                "child_classes_next_offset": None,
+                "child_classes_continuation_limit_reached": False,
+                "methods_truncated": True,
+                "methods_next_offset": 6,
+                "methods_continuation_limit_reached": False,
+                "offset": 4,
+                "page_size": 2,
+            }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (
+            _FakeDBManager(), _FakeGraphBuilder(), _PagedCodeFinder()
+        ),
+    )
+
+    result = runner.invoke(
+        app, ["analyze", "tree", "Model", "--offset", "4", "--page-size", "2"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == ("Model", None)
+    assert calls[0][1]["offset"] == 4
+    assert calls[0][1]["page_size"] == 2
+    assert "Parents" in result.output
+    assert "Methods" in result.output
+    assert result.output.count("--offset 6") >= 2
+    assert "--page-size 2" in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "visualizer", "finder_result"),
+    [
+        (
+            ["analyze", "deps", "package"],
+            "visualize_dependencies",
+            {"importers": [{"importer_file_path": "repo/a.py"}], "imports": []},
+        ),
+        (
+            ["analyze", "tree", "Model"],
+            "visualize_inheritance_tree",
+            {"parent_classes": [{"parent_class": "Base"}], "child_classes": [], "methods": []},
+        ),
+    ],
+)
+def test_analyze_visualization_forwards_selected_page_window(
+    monkeypatch, tmp_path, command, visualizer, finder_result
+):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    class _PagedCodeFinder(_FakeCodeFinder):
+        def find_module_dependencies(self, *_args, **_kwargs):
+            return finder_result
+
+        def find_class_hierarchy(self, *_args, **_kwargs):
+            return finder_result
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (
+            _FakeDBManager(), _FakeGraphBuilder(), _PagedCodeFinder()
+        ),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        visualizer,
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = runner.invoke(
+        app, [*command, "--visual", "--offset", "4", "--page-size", "2"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][1]["offset"] == 4
+    assert calls[0][1]["page_size"] == 2
+
+
+def test_analyze_dead_code_pages_and_prints_its_next_offset(monkeypatch):
+    calls = []
+    db_manager = MagicMock()
+    code_finder = MagicMock()
+    code_finder.find_dead_code.side_effect = lambda *args, **kwargs: (
+        calls.append((args, kwargs))
+        or {
+            "potentially_unused_functions": [
+                {"function_name": "unused_two", "path": "/repo/two.py", "line_number": 2},
+                {"function_name": "unused_three", "path": "/repo/three.py", "line_number": 3},
+            ],
+            "total_count": 5,
+            "offset": 2,
+            "page_size": 2,
+            "truncated": True,
+            "next_offset": 4,
+            "continuation_limit_reached": False,
+            "confidence_counts": {"high": 5, "medium": 0, "low": 0},
+            "note": "Static approximation",
+        }
+    )
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (db_manager, object(), code_finder),
+    )
+    monkeypatch.setattr(cli_main, "get_tool_result_limit", lambda *_a, **_k: 2)
+
+    result = runner.invoke(app, ["analyze", "dead-code", "/repo", "--offset", "2"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][1]["offset"] == 2
+    assert calls[0][1]["limit"] == 2
+    assert "unused_two" in result.output and "unused_three" in result.output
+    assert "Total: 5 function(s)" in result.output
+    assert "continue with --offset 4" in result.output
+
+
+def test_report_defaults_to_the_active_repository_scope(monkeypatch, tmp_path):
+    repo = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    def generate_report(_db_manager, **kwargs):
+        calls.append(kwargs)
+        return "# scoped report"
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeDBManager(), None, None, None),
+    )
+    monkeypatch.setattr(
+        "codegraphcontext.tools.report_generator.generate_report", generate_report
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["report"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["repo_path"] == repo
+
+
+def test_find_pattern_scopes_and_caps_cli_results(monkeypatch, tmp_path):
+    calls = []
+    repo_path = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query, **kwargs):
+            calls.append((query, kwargs))
+            return [
+                {
+                    "type": "Function",
+                    "name": f"match-{index}",
+                    "path": f"{repo_path}/src/{index}.py",
+                    "line_number": index,
+                    "is_dependency": False,
+                }
+                for index in range(51)
+            ]
+
+    class _DBManager:
+        def get_driver(self):
+            return types.SimpleNamespace(session=lambda: _Session())
+
+        def close_driver(self):
+            return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _FakeCodeFinder()),
+    )
+
+    result = runner.invoke(app, ["find", "pattern", "match-"])
+
+    assert result.exit_code == 0, result.output
+    queries = [query for query, _ in calls]
+    path_query = next(query for query in queries if "MATCH (n)" in query)
+    module_query = next(
+        query for query in queries if "MATCH (file:File)-[:IMPORTS]->(n:Module)" in query
+    )
+    assert any("n.path = $repo_root" in query for query in queries)
+    assert any("n.path STARTS WITH $repo_prefix" in query for query in queries)
+    assert any("MATCH (file:File)-[:IMPORTS]->(n:Module)" in query for query in queries)
+    assert "n.uid" in path_query
+    assert "ORDER BY is_dependency ASC, name, path, line_number" in module_query
+    assert "n.uid" not in module_query
+    assert "file.uid" not in module_query
+    assert all(params["repo_root"] == repo_path for _, params in calls)
+    assert all(params["repo_prefix"] == repo_path.rstrip("/") + "/" for _, params in calls)
+    assert all(params["limit"] == 51 for _, params in calls)
+    assert "match-50" not in result.output
+    assert "truncated" in result.output.lower()
+
+
+def test_find_pattern_module_query_runs_with_kuzu_primary_keys(monkeypatch, tmp_path):
+    pytest.importorskip("kuzu")
+    from codegraphcontext.core.database_kuzu import KuzuDBManager
+
+    repo_path = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setenv("CGC_EMBEDDED_BUFFER_POOL_MB", "256")
+    manager = KuzuDBManager(str(tmp_path / "db"))
+    try:
+        driver = manager.get_driver()
+        with driver.session() as session:
+            session.run(
+                "CREATE (:File {path: $path, name: 'app.py', relative_path: 'app.py', "
+                "is_dependency: false})",
+                path=f"{repo_path}/app.py",
+            )
+            for module_name in ("match-beta", "match-alpha"):
+                session.run(
+                    "CREATE (:Module {name: $name, lang: 'python', full_import_name: $name, "
+                    "path: $path, line_number: 1})",
+                    name=module_name,
+                    path=f"{repo_path}/app.py",
+                )
+                session.run(
+                    "MATCH (file:File {path: $path}), (module:Module {name: $name}) "
+                    "CREATE (file)-[:IMPORTS {line_number: 1}]->(module)",
+                    path=f"{repo_path}/app.py",
+                    name=module_name,
+                )
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            cli_main,
+            "_initialize_services",
+            lambda *_args, **_kwargs: (
+                manager, _FakeGraphBuilder(), _FakeCodeFinder()
+            ),
+        )
+
+        result = runner.invoke(app, ["find", "pattern", "match-"])
+
+        assert result.exit_code == 0, result.output
+        assert "match-alpha" in result.output
+        assert "match-beta" in result.output
+        assert result.output.index("match-alpha") < result.output.index("match-beta")
+    finally:
+        manager.close_driver()
+
+
+def test_find_type_passes_repository_scope_and_caps_cli_results(monkeypatch, tmp_path):
+    calls = []
+    repo_path = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+
+    class _CodeFinder:
+        def find_by_type(self, element_type, limit=50, repo_path=None):
+            calls.append((element_type, limit, repo_path))
+            return [
+                {
+                    "name": f"match-{index}",
+                    "path": f"{repo_path}/src/{index}.py",
+                    "line_number": index,
+                    "is_dependency": False,
+                }
+                for index in range(limit)
+            ]
+
+    class _DBManager:
+        def close_driver(self):
+            return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+
+    result = runner.invoke(app, ["find", "type", "function"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("function", 51, repo_path)]
+    assert "match-50" not in result.output
+    assert "truncated" in result.output.lower()
+
+
+def test_find_name_file_search_is_bounded_and_reports_more(monkeypatch, tmp_path):
+    calls = []
+    repo_path = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query, **kwargs):
+            calls.append((query, kwargs))
+            return [
+                {
+                    "name": "same.py",
+                    "path": f"{repo_path}/src/{index}/same.py",
+                    "is_dependency": False,
+                }
+                for index in range(51)
+            ]
+
+    class _DBManager:
+        def get_driver(self):
+            return types.SimpleNamespace(session=lambda: _Session())
+
+        def close_driver(self):
+            return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _FakeCodeFinder()),
+    )
+
+    result = runner.invoke(app, ["find", "name", "same.py", "--type", "file"])
+
+    assert result.exit_code == 0, result.output
+    query, params = calls[0]
+    assert "LIMIT $limit" in query
+    assert params["limit"] == 51
+    assert params["repo_root"] == repo_path
+    assert params["repo_prefix"] == repo_path.rstrip("/") + "/"
+    assert "Found 50 matches" in result.output
+    assert "/src/49/same.py" in result.output
+    assert "/src/50/same.py" not in result.output
+    assert "truncated" in result.output.lower()
+
+
+def test_find_name_named_type_queries_are_bounded_and_report_more(monkeypatch, tmp_path):
+    calls = []
+    repo_path = tmp_path.resolve().as_posix()
+    (tmp_path / ".git").mkdir()
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query, **kwargs):
+            calls.append((query, kwargs))
+            return [
+                {
+                    "name": f"SameName-{index}",
+                    "path": f"{repo_path}/src/{index}.rs",
+                    "line_number": index,
+                }
+                for index in range(51)
+            ]
+
+    class _DBManager:
+        def get_driver(self):
+            return types.SimpleNamespace(session=lambda: _Session())
+
+        def close_driver(self):
+            return None
+
+    class _EmptyCodeFinder(_FakeCodeFinder):
+        def find_by_function_name(self, *_args, **_kwargs):
+            return []
+
+        def find_by_class_name(self, *_args, **_kwargs):
+            return []
+
+        def find_by_variable_name(self, *_args, **_kwargs):
+            return []
+
+        def find_by_module_name(self, *_args, **_kwargs):
+            return []
+
+        def find_imports(self, *_args, **_kwargs):
+            return []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _EmptyCodeFinder()),
+    )
+
+    result = runner.invoke(app, ["find", "name", "SameName"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 4
+    assert all("LIMIT $limit" in query for query, _ in calls)
+    assert all(params["limit"] == 51 for _, params in calls)
+    assert all(params["repo_root"] == repo_path for _, params in calls)
+    assert "truncated" in result.output.lower()
+    assert "Found 50 matches" in result.output
+    assert "SameName-49" in result.output
+    assert "SameName-50" not in result.output
+
+
+def test_diagram_defaults_scope_to_current_repository(monkeypatch, tmp_path):
+    captured = []
+    (tmp_path / ".git").mkdir()
+
+    class RecordingCodeFinder(_FakeCodeFinder):
+        def export_diagram_edges(self, **kwargs):
+            captured.append(kwargs)
+            return {"edges": [], "total_count": 0, "truncated": False}
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda _context: (_FakeDBManager(), _FakeGraphBuilder(), RecordingCodeFinder()),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["diagram"])
+
+    assert result.exit_code == 0, result.output
+    assert captured[0]["repo_path"] == str(tmp_path.resolve())
+
+
+def test_find_variable_requests_context_for_cli_column(monkeypatch):
+    calls = []
+
+    class _DBManager:
+        def close_driver(self):
+            return None
+
+    class _CodeFinder:
+        def find_by_variable_name(self, name, **kwargs):
+            calls.append((name, kwargs))
+            return [{
+                "name": name,
+                "path": "repo/main.py",
+                "line_number": 4,
+                "context": "configuration = 42",
+            }]
+
+    monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_DBManager(), _FakeGraphBuilder(), _CodeFinder()),
+    )
+
+    result = runner.invoke(app, ["find", "variable", "configuration"])
+
+    assert result.exit_code == 0, result.output
+    assert "configuration = 42" in result.output
+    assert calls == [(
+        "configuration",
+        {
+            "include_context": True,
+            "repo_path": str(Path.cwd().resolve()),
+            "limit": 51,
+        },
+    )]
+    assert "Context (preview)" in result.output
+
+
 def test_db_flag_kuzudb_not_overwritten_by_context_database(monkeypatch):
     class _Ctx:
         mode = "named"

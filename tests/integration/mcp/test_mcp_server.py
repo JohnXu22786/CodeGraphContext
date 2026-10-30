@@ -71,7 +71,9 @@ class TestMCPServer:
             result = await mock_server.handle_tool_call("find_code", {"query": "test"})
             
             # Assert
-            mock_server.find_code_tool.assert_called_once_with(query="test")
+            mock_server.find_code_tool.assert_called_once_with(
+                query="test", repo_path=str(mock_server.active_repo_path)
+            )
             assert result == {"result": "found"}
             
         asyncio.run(run_test())
@@ -189,7 +191,7 @@ class TestMCPServer:
             kwargs = mock_server.calculate_cyclomatic_complexity_tool.call_args.kwargs
             assert kwargs["function_name"] == "parse"
             assert kwargs["path"] == "src/foo.py"
-            assert "repo_path" not in kwargs
+            assert kwargs["repo_path"] == str(mock_server.active_repo_path)
 
         asyncio.run(run_test())
 

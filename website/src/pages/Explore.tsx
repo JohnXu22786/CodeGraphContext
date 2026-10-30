@@ -8,6 +8,12 @@ import { toast } from "sonner";
 import JSZip from "jszip";
 import { parseFilesIntoGraph } from "../lib/parser";
 import { KuzuCoordinator } from "../lib/kuzu-coordinator";
+import {
+  fetchFullGraphFile,
+  fetchGraphPage,
+  mergeGraphPage,
+  readGraphPageOptions,
+} from "../lib/localGraphApi.js";
 import { getOrCreateSessionId } from "../lib/utils";
 import {
   RepoRef,
@@ -191,6 +197,8 @@ const Explore = () => {
     graphDataRef.current = graphData;
   }, [graphData]);
   const [loading, setLoading] = useState(false);
+  const [loadingGraphPage, setLoadingGraphPage] = useState(false);
+  const [graphPageError, setGraphPageError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progressText, setProgressText] = useState("");
   const [progressValue, setProgressValue] = useState(0);
@@ -200,7 +208,33 @@ const Explore = () => {
   const backend = searchParams.get("backend") || "";
   const repoPath = searchParams.get("repo_path") || "";
   const cypherQuery = searchParams.get("cypher_query") || "";
+  const globalScope = searchParams.get("global_scope") === "true";
+  const { offset: initialOffset, pageSize: initialPageSize } =
+    readGraphPageOptions(searchParams);
   const bundleUrl = searchParams.get("bundle_url") || "";
+
+  const loadNextGraphPage = async () => {
+    const current = graphDataRef.current;
+    if (!current || current.next_offset == null || loadingGraphPage) return;
+
+    setLoadingGraphPage(true);
+    setGraphPageError(null);
+    try {
+      const page = await fetchGraphPage({
+        baseUrl: backend || window.location.origin,
+        repoPath,
+        cypherQuery,
+        globalScope,
+        offset: current.next_offset,
+        pageSize: current.page_size,
+      });
+      setGraphData((existing) => mergeGraphPage(existing, page));
+    } catch (err: any) {
+      setGraphPageError(err.message || "Could not load the next graph page.");
+    } finally {
+      setLoadingGraphPage(false);
+    }
+  };
   
   // Helper to fetch files using a sequential pool of robust CORS proxies
   const fetchWithFallbackProxies = async (
@@ -895,18 +929,16 @@ const Explore = () => {
       setLoading(true);
       setError(null);
       try {
-        const url = new URL("/api/graph", backend || window.location.origin);
-        if (repoPath) url.searchParams.append("repo_path", repoPath);
-        if (cypherQuery) url.searchParams.append("cypher_query", cypherQuery);
-
-        const response = await fetch(url.toString());
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.detail || `Server error (${response.status})`);
-        }
-
-        const data = await response.json();
+        const data = await fetchGraphPage({
+          baseUrl: backend || window.location.origin,
+          repoPath,
+          cypherQuery,
+          globalScope,
+          offset: initialOffset,
+          pageSize: initialPageSize,
+        });
         setGraphData(data);
+        setGraphPageError(null);
       } catch (err: any) {
         console.error("Fetch Error:", err);
         setError(err.message);
@@ -917,7 +949,7 @@ const Explore = () => {
     };
 
     fetchData();
-  }, [backend, repoPath, cypherQuery]);
+  }, [backend, repoPath, cypherQuery, globalScope, initialOffset, initialPageSize]);
 
   if (loading) {
     const isAutoIndexing = !!repoRef;
@@ -1118,6 +1150,29 @@ const Explore = () => {
           </motion.div>
         ) : (
           <div className="w-full h-full relative">
+            {(graphData?.next_offset != null
+              || graphData?.continuation_limit_reached
+              || graphData?.output_limit_unrecoverable) && (
+              <div className="absolute left-4 top-4 z-50 max-w-sm rounded-lg border border-white/15 bg-black/85 p-3 text-xs text-white shadow-lg">
+                <p>
+                  {graphData?.next_offset != null
+                    ? `More graph data is available after row ${graphData.next_offset}.`
+                    : graphData?.output_limit_unrecoverable
+                      ? "A single graph page exceeds the output limit and could not be loaded."
+                      : "The graph continuation limit was reached."}
+                </p>
+                {graphPageError && <p className="mt-2 text-red-300">{graphPageError}</p>}
+                {graphData?.next_offset != null && (
+                  <button
+                    className="mt-2 rounded border border-white/25 px-2 py-1 hover:bg-white/10 disabled:opacity-50"
+                    onClick={loadNextGraphPage}
+                    disabled={loadingGraphPage}
+                  >
+                    {loadingGraphPage ? "Loading…" : "Load more graph data"}
+                  </button>
+                )}
+              </div>
+            )}
             <Suspense fallback={
               <div className="w-full h-full flex flex-col items-center justify-center bg-black text-white font-mono text-sm gap-3">
                 <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
@@ -1128,6 +1183,7 @@ const Explore = () => {
                 key="viewer" 
                 data={graphData} 
                 onClose={() => setGraphData(null)}
+                onLoadFullFile={(path: string) => fetchFullGraphFile(backend || window.location.origin, path)}
               />
             </Suspense>
           </div>
