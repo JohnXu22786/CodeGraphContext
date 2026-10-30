@@ -41,13 +41,59 @@ def test_clear_existing_documents_that_it_drops_existing_data():
 def test_spring_tools_declare_their_row_cap():
     from codegraphcontext.tools.handlers import analysis_handlers
 
-    source = inspect.getsource(analysis_handlers)
-    # The hard LIMIT 100 must be surfaced, like every sibling tool does.
-    assert "_SPRING_ROW_LIMIT" in source
-    for fn in ("find_java_spring_endpoints", "find_java_spring_beans"):
-        body = inspect.getsource(getattr(analysis_handlers, fn))
-        assert '"truncated"' in body, f"{fn} must flag truncation"
-        assert '"result_limit"' in body, f"{fn} must report its row cap"
+    tools = (
+        ("find_java_spring_endpoints", "endpoints"),
+        ("find_java_spring_beans", "beans"),
+    )
+
+    class _Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __iter__(self):
+            return iter(self.rows)
+
+    class _Session:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def run(self, query, **params):
+            assert params["spring_candidate_limit"] == 101
+            return _Result(self.rows)
+
+    class _Finder:
+        def __init__(self, rows):
+            self.driver = type("_Driver", (), {"session": lambda _: _Session(rows)})()
+
+        @staticmethod
+        def _normalize_repo_path_prefix(path):
+            return path.rstrip("/\\") + "/"
+
+    for tool_name, collection in tools:
+        assert TOOLS[tool_name]["inputSchema"]["properties"]["page_size"]["maximum"] == 100
+
+        handler = getattr(analysis_handlers, tool_name)
+        for row_count, expected_count, expected_truncated, expected_next_offset in (
+            (99, 99, False, None),
+            (100, 100, False, None),
+            (101, 100, True, 100),
+        ):
+            rows = [{"name": f"row-{index}"} for index in range(row_count)]
+            response = handler(_Finder(rows))
+
+            assert response["success"] is True
+            assert len(response[collection]) == expected_count
+            assert response["count"] == expected_count
+            assert response["page_size"] == 100
+            assert response["result_limit"] == 100
+            assert response["truncated"] is expected_truncated
+            assert response["next_offset"] == expected_next_offset
 
 
 def test_cypher_fallback_instruction_is_not_self_contradictory():
