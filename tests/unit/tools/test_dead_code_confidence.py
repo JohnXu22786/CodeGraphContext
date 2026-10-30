@@ -64,6 +64,10 @@ def test_default_results_are_scored_and_low_categories_hidden(finder):
     res = finder.find_dead_code()
     by_name = {r["function_name"]: r for r in res["potentially_unused_functions"]}
     assert by_name["genuinely_dead"]["confidence"] == "high"
+    assert by_name["genuinely_dead"]["confidence_label"] == "INFERRED"
+    assert by_name["genuinely_dead"]["evidence_kind"] == "NO_INBOUND_CALLS"
+    assert by_name["genuinely_dead"]["relative_path"] == "app.py"
+    assert by_name["genuinely_dead"]["end_line"] == 2
     assert by_name["decorated_dead"]["confidence"] == "medium"
     assert "decorat" in by_name["decorated_dead"]["confidence_reason"]
     decorated = by_name["decorated_dead"]

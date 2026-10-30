@@ -3875,7 +3875,11 @@ def analyze_dead_code(
         }
         for func in unused_funcs:
             fpath = func.get('path', '')
+            fpath = func.get('relative_path') or fpath
             line_str = str(func.get('line_number', ''))
+            end_line = func.get('end_line')
+            if line_str and end_line and end_line != func.get('line_number'):
+                line_str = f"{line_str}-{end_line}"
             location_str = f"{fpath}:{line_str}" if line_str else fpath
             table.add_row(
                 func.get('function_name', ''),
@@ -3916,6 +3920,9 @@ def analyze_dead_code(
             if not show_all:
                 summary += " [dim](low-confidence categories are hidden — use --show-all)[/dim]"
             analyze_result_console.print(summary)
+        analyze_result_console.print(
+            "[dim]Inference from the indexed graph; inspect source before treating a result as unreachable.[/dim]"
+        )
         analyze_result_console.print(f"[dim]Note: {results.get('note', '')}[/dim]")
     finally:
         db_manager.close_driver()

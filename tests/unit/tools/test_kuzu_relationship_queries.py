@@ -120,6 +120,22 @@ def test_direct_call_queries_scope_both_relationship_endpoints():
     assert "called.path STARTS WITH $repo_path" in callee_query
 
 
+def test_direct_call_results_expose_resolution_provenance_and_unresolved_status():
+    finder, recorder = _make_finder()
+
+    finder.who_calls_function("target")
+    query = recorder["last_query"]
+
+    assert "call.confidence as confidence" in query
+    assert "call.resolution_tier as resolution_tier" in query
+    assert "call.confidence_label as confidence_label" in query
+    assert "call.resolution_method as resolution_method" in query
+    assert "THEN 'AMBIGUOUS'" in query
+    assert "THEN 'UNRESOLVED'" in query
+    assert "THEN 'UNKNOWN'" in query
+    assert "ELSE 'RESOLVED'" in query
+
+
 def test_transitive_call_queries_scope_every_returned_path_node():
     finder, recorder = _make_finder()
     repo = "/work/repo"
@@ -281,6 +297,7 @@ def test_kotlin_call_audit_bounds_database_rows_and_target_contexts():
     assert result["page_size"] == 2
     assert result["next_offset"] == 3
     assert result["examples"][0]["target_count"] == 2
+    assert result["examples"][0]["resolution_status"] == "AMBIGUOUS"
     assert result["examples"][0]["partial"] is True
     assert result["examples"][0]["targets"][0]["context_total_chars"] == 4096
     assert result["examples"][0]["targets"][0]["context_truncated"] is True
