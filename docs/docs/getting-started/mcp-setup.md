@@ -22,7 +22,7 @@ The wizard will locate configuration files for Claude Desktop, Cursor, and other
 
 If you prefer to configure your workspace manually, refer to the client configurations below.
 
-MCP clients start the configured executable directly and do not inherit an activated virtual environment from your terminal. The `pipx` examples below will work after `codegraphcontext-fork` 0.7.0 is published to PyPI. Until then, install the checkout in a dedicated virtual environment and use the absolute path to its `cgc` executable in the client configuration. The client must be able to find `pipx` on its own `PATH` after publication.
+MCP clients start the configured executable directly and do not inherit an activated virtual environment from your terminal. The `codegraphcontext-fork` package is currently unpublished, so the `pipx` examples below will work after version 0.7.0 is published to PyPI. Until then, install the checkout in a dedicated virtual environment and use the absolute path to its `cgc` executable in the client configuration. The client must be able to find `pipx` on its own `PATH` after publication.
 
 ### Claude Desktop
 
