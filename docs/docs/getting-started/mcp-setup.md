@@ -34,27 +34,31 @@ To configure Claude Desktop to run the local CGC server, add a configuration ent
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 #### Configuration Schema:
-Add the following key under the `mcpServers` object:
+Back up your existing configuration first, then merge this server entry under its `mcpServers` object. Do not replace the rest of the file. A copy of the same entry is available at [`claude-desktop-config.json`](../examples/claude-desktop-config.json).
 
 ```json
 {
   "mcpServers": {
-    "codegraphcontext": {
-      "command": "pipx",
-      "args": [
-        "run",
-        "--spec",
-        "codegraphcontext-fork",
-        "codegraphcontext",
-        "mcp",
-        "start"
-      ]
+    "codegraphcontext-fork": {
+      "command": "/absolute/path/to/cgc",
+      "args": ["mcp", "start"],
+      "env": {
+        "CGC_HOME": "/absolute/path/to/cgc-home",
+        "CGC_REPO_CONTEXT_DIR": ".codegraphcontext-fork",
+        "CGC_INSTANCE_NAME": "codegraphcontext-fork"
+      }
     }
   }
 }
 ```
 
-*Note: The `codegraphcontext-fork` PyPI package is currently unpublished. Use the absolute path to the `cgc` executable in your dedicated virtual environment until the 0.7.0 publication.*
+Replace `/absolute/path/to/cgc` with the `cgc` executable in the dedicated environment used for this fork (`.venv/bin/cgc` on POSIX or `.venv\\Scripts\\cgc.exe` on Windows, using an absolute path). Choose a new absolute `CGC_HOME` outside the source repository. The MCP server key and `CGC_INSTANCE_NAME` must match. These settings isolate CGC runtime files; they do not make the old `.cg/cg.sqlite` index compatible or create a DSH plugin.
+
+Restart Claude Desktop to load the entry. To verify it, confirm the `codegraphcontext-fork` server is connected and call `list_indexed_repositories` or `find_code` against an already indexed repository. To roll back, remove only the `codegraphcontext-fork` entry you added and restart the client; keep the backup until the new entry works.
+
+### Legacy CodeGraph or DSH users
+
+This configuration starts CGC's generic stdio MCP server. It does not expose the legacy `codegraph_*` aliases or install the old Node/Cordis plugin. Review [Migrate from legacy CodeGraph](../guides/migration-from-codegraph.md) before replacing an old client entry; it lists the verified tool comparisons and the operations that require prompt or workflow changes. If your DSH installation accepts generic stdio MCP servers, use its own documented config format and the same executable, arguments, and environment values. Otherwise a separately maintained bridge is required.
 
 ---
 
