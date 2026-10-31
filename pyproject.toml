@@ -20,7 +20,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 dependencies = [
-    "neo4j>=5.15.0",
     "watchdog>=3.0.0",
     "stdlibs>=2023.11.18",
     "typer>=0.9.0",
@@ -51,44 +50,11 @@ dependencies = [
     "nbformat",
     "nbconvert>=7.16.6",
     "pathspec>=0.12.1",
-    # ------------------------------------------------------------------
-    # Backend driver pins (see issue #1035)
-    #
-    # FalkorDB and its embedded sibling ``falkordblite`` co-evolve with
-    # ``redis-py``: the most recent ``falkordblite`` releases (>= 0.10) and
-    # ``falkordb`` releases (>= 1.6) require ``redis>=7.1`` / ``redis>=7.4``,
-    # but redis-py >= 6 breaks the Unix-socket path FalkorDB Lite uses
-    # (``UnixDomainSocketConnection`` lacks a ``host`` attribute, which the
-    # new maintenance-notifications handshake dereferences unconditionally).
-    #
-    # Until upstream resolves this we pin a known-good triple:
-    #   * redis-py 5.x           — last series that keeps UDS path working
-    #   * falkordblite < 0.10    — last series compatible with redis>=4.5
-    #   * falkordb < 1.6         — last series compatible with redis<7.1
-    #
-    # ``redis`` itself is now declared explicitly so a fresh resolver run
-    # (``uvx``, ``pipx install --force``, etc.) cannot silently pick up
-    # redis-py 6/7/8 again and reintroduce the bug.
-    # ------------------------------------------------------------------
-    "redis>=5,<6",
-    "falkordb>=1.0,<1.6",
-    "falkordblite>=0.7,<0.10; sys_platform != 'win32' and python_version >= '3.12'",
     "requests>=2.28.0",
     "protobuf>=3.20,<3.21",
     # ------------------------------------------------------------------
-    # KùzuDB was archived upstream on 2025-10-10; 0.11.3 is the final
-    # release and its wheel matrix stops at cp313 for macOS and Windows.
-    # Only Linux (manylinux x86_64 / aarch64) got cp314 wheels. Without a
-    # marker, `pip install codegraphcontext-fork` on macOS/Windows + Python 3.14
-    # falls back to the kuzu sdist and tries a full C++/CMake source build,
-    # which fails and takes the whole install down with it.
-    #
-    # Keep kuzu where a wheel actually exists; elsewhere the backend is
-    # simply absent and `database_kuzu` reports its install hint at runtime.
-    # LadybugDB (the maintained Kùzu fork, see issue #852) publishes cp314
-    # wheels for all three platforms and remains the unconditional default.
-    # ------------------------------------------------------------------
-    "kuzu; python_version < '3.14' or sys_platform == 'linux'",
+    # LadybugDB (the maintained Kùzu fork, see issue #852) publishes wheels
+    # across the supported platforms and remains the default embedded backend.
     "ladybug>=0.19,<0.20; sys_platform == 'win32' or (sys_platform != 'win32' and python_version >= '3.10')",
     "mcp>=2.2.0,<3",
     "fastapi>=0.100.0",
@@ -103,10 +69,13 @@ parsing = [
     "tree-sitter-language-pack>=1.6,<1.21.0",
     "tree-sitter-c-sharp>=0.21.0",
 ]
+# FalkorDB and its embedded sibling ``falkordblite`` co-evolve with
+# ``redis-py``: newer FalkorDB releases require redis-py 7, but redis-py >= 6
+# breaks the Unix-domain-socket path used by FalkorDB Lite (#1035). Keep this
+# known-good Redis range in the backend extras and in ``datasources`` for ingestion.
 # Named backend extras let users (and CI) opt into a single, tested driver
 # triple instead of inheriting whatever the default install pulls. They
-# install the same ranges as the defaults today; the long-term plan
-# (tracked separately) is to make the defaults lean and require an extra.
+# are independent of the lean default installation.
 falkordb-embedded = [
     "falkordblite>=0.7,<0.10; sys_platform != 'win32' and python_version >= '3.12'",
     "falkordb>=1.0,<1.6",
@@ -117,8 +86,9 @@ falkordb-remote = [
     "redis>=5,<6",
 ]
 kuzu = [
-    # Same wheel-availability marker as the core dependency above: no
-    # cp314 wheels exist for macOS/Windows and the sdist cannot be built.
+    # KùzuDB was archived upstream on 2025-10-10; 0.11.3 is the final release.
+    # Its wheel matrix stops at cp313 for macOS and Windows; only Linux has
+    # Python 3.14 wheels. Without this marker pip tries an unsupported sdist.
     "kuzu; python_version < '3.14' or sys_platform == 'linux'",
 ]
 ladybug = [
@@ -140,13 +110,19 @@ dev = [
     # in transitively; tests/unit/api/test_mcp_streamable_http.py needs the
     # real package directly.
     "httpx",
+    # The test suite exercises each optional graph backend directly.
+    "falkordblite>=0.7,<0.10; sys_platform != 'win32' and python_version >= '3.12'",
+    "falkordb>=1.0,<1.6",
+    "redis>=5,<6",
+    "kuzu; python_version < '3.14' or sys_platform == 'linux'",
+    "neo4j>=5.15.0",
 ]
-# Optional drivers for `cgc datasource` ingestion (MySQL/Aurora, Cassandra).
-# Redis ingestion uses the ``redis`` package already pinned in core deps.
+# Optional drivers for `cgc datasource` ingestion (MySQL/Aurora, Cassandra, Redis).
 datasources = [
     "pymysql",
     "mysql-connector-python",
     "cassandra-driver",
+    "redis>=5,<6",
 ]
 
 [project.urls]

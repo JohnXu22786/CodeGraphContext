@@ -22,10 +22,11 @@ Below is the inventory of features currently implemented, shipped, and operation
 - **`.cgcignore` Filter**: Custom pattern matcher adhering to `.gitignore`-style rules to prevent noise (vendor folders, binaries) from entering the graph database.
 
 ### 1.2 Graph Persistence & Schemas
-- **Database Adapters**: Consistent connection wrappers for 5 backend drivers:
+- **Database Adapters**: Consistent connection wrappers for 6 backend drivers:
   - **FalkorDB Lite**: Local embedded UNIX DB via Redislite.
   - **FalkorDB Remote**: Remote FalkorDB client.
-  - **KuzuDB**: Local embedded relational-graph DB (default for Windows).
+  - **KuzuDB**: Optional local embedded relational-graph DB; LadybugDB is the included default embedded backend.
+  - **LadybugDB**: Included default embedded database.
   - **Neo4j**: Server-side graph database (AuraDB/Docker compatible).
   - **Nornic DB**: Neo4j-compatible embedded database driver.
 - **Graph Schema**: Schema contracts enforcing 17 node labels (e.g., `Repository`, `File`, `Function`, `Class`, `Variable`, `Interface`, `Enum`, `Parameter`) and 7 relationship types (`CONTAINS`, `CALLS`, `IMPORTS`, `INHERITS`, `IMPLEMENTS`, `HAS_PARAMETER`, `INCLUDES`).

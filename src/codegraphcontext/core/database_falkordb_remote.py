@@ -112,9 +112,12 @@ class FalkorDBRemoteManager:
                     except ImportError as e:
                         error_logger(
                             "FalkorDB client is not installed. Install it with:\n"
-                            "  pip install falkordb"
+                            "  python -m pip install 'codegraphcontext-fork[falkordb-remote]'"
                         )
-                        raise ValueError("FalkorDB client missing.") from e
+                        raise ValueError(
+                            "FalkorDB client missing. Install the optional driver with "
+                            "`python -m pip install 'codegraphcontext-fork[falkordb-remote]'`."
+                        ) from e
                     except Exception as e:
                         error_logger(f"Failed to connect to remote FalkorDB: {e}")
                         raise
@@ -193,7 +196,7 @@ class FalkorDBRemoteManager:
         except ImportError:
             return False, (
                 "FalkorDB client is not installed.\n"
-                "Install it with: pip install falkordb"
+                "Install it with: python -m pip install 'codegraphcontext-fork[falkordb-remote]'"
             )
 
         host = os.getenv('FALKORDB_HOST')

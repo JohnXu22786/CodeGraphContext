@@ -6,8 +6,8 @@ This guide detail procedures for identifying, diagnosing, and resolving issues w
 
 ## 1. Engine Installation & Compilation Issues
 
-### KuzuDB Installation Errors (C++ Compiler Required)
-KuzuDB relies on a compiled C++ engine core. If `pip install kuzu` fails:
+### KùzuDB Installation Errors (C++ Compiler Required)
+KùzuDB is optional. Install it with `python -m pip install 'codegraphcontext-fork[kuzu]'`. If that command fails:
 - **Reason**: The pre-compiled wheel is not available for your system architecture/Python version, forcing a compile from source without build tools.
 - **Resolution**:
   - **Linux**: Install build essentials: `sudo apt-get install build-essential python3-dev`
@@ -17,18 +17,20 @@ KuzuDB relies on a compiled C++ engine core. If `pip install kuzu` fails:
 ### FalkorDB Lite Unix Dependencies
 FalkorDB Lite only runs on Linux/macOS and requires **Python 3.12+**.
 - **Reason**: Underlying shared libraries are not compiled for Windows or older Python interpreter versions.
-- **Resolution**: Switch the active database context backend to `kuzudb` which is fully cross-platform.
+- **Resolution**: Install `python -m pip install 'codegraphcontext-fork[falkordb-embedded]'` on a supported platform, or keep the default LadybugDB backend.
 
 ---
 
 ## 2. Database Connection Failures
 
 ### "No database backend available"
-- **Reason**: CGC is looking for KuzuDB, FalkorDB, or Neo4j, but the respective Python client packages are missing from the current virtual environment.
-- **Resolution**: Verify package installations:
+- **Reason**: LadybugDB is included in the default install, but its native engine could not load and no usable embedded fallback is installed.
+- **Resolution**: If database selection is implicit, CGC automatically tries installed FalkorDB Lite and then KùzuDB when LadybugDB is unavailable. Install either embedded fallback with its extra:
   ```bash
-  pip install kuzu neo4j falkordb
+  python -m pip install 'codegraphcontext-fork[kuzu]'
+  python -m pip install 'codegraphcontext-fork[falkordb-embedded]'
   ```
+  For Neo4j or Nornic, install `python -m pip install 'codegraphcontext-fork[neo4j]'` and configure the server.
 
 ### Neo4j Connection Refused / Auth Failures
 - **Reason**: Connection parameters in configuration do not match your running Neo4j Instance.
@@ -88,6 +90,6 @@ cgc doctor
 The diagnostics engine performs the following tests:
 1. **Python Version**: Confirms interpreter meets version requirements.
 2. **Configuration Integrity**: Checks for syntax errors in `config.yaml`.
-3. **Database Driver Availability**: Checks imports for Kuzu, FalkorDB, and Neo4j.
+3. **Database Driver Availability**: Checks the selected backend, including the default LadybugDB engine and optional Kuzu, FalkorDB, and Neo4j drivers.
 4. **Active Connection Health**: Attempts connection transactions to the configured database.
 5. **Permissions Audit**: Verifies write capability to target log and database storage directories.

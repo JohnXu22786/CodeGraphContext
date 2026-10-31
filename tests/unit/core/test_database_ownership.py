@@ -627,7 +627,7 @@ def test_context_switch_retains_manager_when_database_close_fails(
         server_module, "_default_global_db_path", lambda _db: "/tmp/global-db"
     )
     monkeypatch.setattr(
-        server_module, "load_config", lambda: {"DEFAULT_DATABASE": "kuzudb"}
+        server_module, "load_config", lambda **_kwargs: {"DEFAULT_DATABASE": "kuzudb"}
     )
     monkeypatch.setattr(
         server_module, "GraphBuilder", lambda *_args, **_kwargs: object()

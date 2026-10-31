@@ -11,7 +11,6 @@ import re
 import sys
 import shutil
 import yaml 
-from codegraphcontext.core.database import DatabaseManager
 from codegraphcontext.cli import config_manager
 from codegraphcontext.cli.config_manager import normalize_config_path
 from codegraphcontext.runtime_paths import get_instance_name, get_isolation_environment
@@ -145,6 +144,15 @@ def _save_neo4j_credentials(creds):
 
 def _validate_neo4j_credentials(creds):
     """Validate Neo4j credentials and test the connection."""
+    from codegraphcontext.core import _is_neo4j_available
+
+    if not _is_neo4j_available():
+        console.print("Neo4j support is not installed.", markup=False)
+        console.print("Install it with: pip install 'codegraphcontext-fork[neo4j]'", markup=False)
+        return False
+
+    from codegraphcontext.core.database import DatabaseManager
+
     is_valid, validation_error = DatabaseManager.validate_config(
         creds.get("uri", ""),
         creds.get("username", ""),
@@ -671,6 +679,13 @@ def run_command(command, console, shell=False, check=True, input_text=None):
 
 def run_neo4j_setup_wizard():
     """Guides the user through setting up Neo4j database for CodeGraphContext."""
+    from importlib.util import find_spec
+
+    if find_spec("neo4j") is None:
+        console.print("[yellow]Neo4j support is not installed.[/yellow]")
+        console.print("Install it with: python -m pip install 'codegraphcontext-fork[neo4j]'")
+        return
+
     console.print("[bold cyan]Welcome to the Neo4j Setup Wizard![/bold cyan]")
     
     questions = [
@@ -704,7 +719,7 @@ def configure_mcp_client():
     """
     console.print("[bold cyan]MCP Client Configuration[/bold cyan]\n")
     console.print("This will configure CodeGraphContext integration with your IDE or CLI tool.")
-    console.print("CodeGraphContext works with FalkorDB by default (no database setup needed).\n")
+    console.print("CodeGraphContext includes LadybugDB as its default embedded backend.\n")
     
     # Load current configuration (includes project-local .env if present)
     try:

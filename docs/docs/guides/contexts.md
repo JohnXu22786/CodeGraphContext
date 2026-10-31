@@ -15,12 +15,12 @@ ${CGC_HOME:-~/.codegraphcontext}/ <-- Global configuration directory
     global/
         .cgcignore              <-- Global ignore patterns
         db/
-            falkordb/           <-- Global-mode FalkorDB Lite storage (default on Unix)
+            ladybugdb/          <-- Global-mode default embedded storage
             kuzudb/             <-- Global-mode KuzuDB storage directory
     contexts/
         ProjectA/
             db/
-                kuzudb/         <-- Named-context KuzuDB storage directory
+                ladybugdb/     <-- Named-context default storage directory
             .cgcignore          <-- Context-specific ignore patterns
 ```
 
@@ -33,7 +33,7 @@ When executing a CLI command (e.g., `cgc index`) or starting an MCP session, CGC
 1. **Context Override Flag**: If `--context <name>` or `-c <name>` is provided, CGC routes all writes and queries to the specified named context.
 2. **Local Repository Scope**: If the current directory contains the selected repository-context folder (default `.codegraphcontext`), CGC operates in per-repo mode.
 3. **Global Config Setting**: CGC reads the active mode (`global`, `per-repo`, or `named`) and default context name specified in `CGC_HOME/config.yaml` (default `~/.codegraphcontext/config.yaml`).
-4. **Default Fallback**: On Linux/macOS with Python 3.12+, connects to FalkorDB Lite under `CGC_HOME/global/db/falkordb/`; otherwise KuzuDB under `CGC_HOME/global/db/kuzudb/`.
+4. **Default Fallback**: Uses the included LadybugDB backend under `CGC_HOME/global/db/ladybugdb/`. Install and select an optional backend extra to use FalkorDB Lite, KùzuDB, or a remote database.
 
 ---
 
@@ -79,7 +79,7 @@ When indexing inside a project, a local database folder is created within the re
 ```bash
 cd ~/projects/service-api
 cgc index .
-# Creates: ~/projects/service-api/.codegraphcontext/db/kuzudb/ (or the selected CGC_REPO_CONTEXT_DIR)
+# Creates: ~/projects/service-api/.codegraphcontext/db/ladybugdb/ (or the selected CGC_REPO_CONTEXT_DIR)
 ```
 
 Graphs are completely isolated, and commands run within a repository only inspect the local database.
@@ -121,6 +121,7 @@ cgc stats
 ### Create a Named Context
 Create a context and optionally specify its target database driver and storage path:
 ```bash
+python -m pip install 'codegraphcontext-fork[kuzu]'
 cgc context create mobile-app --database kuzudb   # Or use shorthand aliases: --db, -db, -d
 cgc context create mobile-app --db-path /mnt/fast/cgc
 ```

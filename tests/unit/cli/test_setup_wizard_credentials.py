@@ -27,7 +27,8 @@ neo4j_stub.GraphDatabase = _DummyGraphDatabase
 neo4j_stub.Driver = _DummyDriver
 sys.modules.setdefault("neo4j", neo4j_stub)
 
-from codegraphcontext.cli import setup_wizard
+from codegraphcontext.cli import setup_wizard  # noqa: E402
+from codegraphcontext.core.database import DatabaseManager  # noqa: E402
 
 
 def _make_neo4j_creds_file(tmp_path: Path) -> Path:
@@ -55,8 +56,8 @@ def test_file_credentials_can_proceed_after_failed_validation(tmp_path, monkeypa
 
     monkeypatch.setattr(setup_wizard, "prompt", prompt_mock)
     monkeypatch.setattr(setup_wizard, "find_latest_neo4j_creds_file", lambda: creds_file)
-    monkeypatch.setattr(setup_wizard.DatabaseManager, "validate_config", lambda *args, **kwargs: (True, None))
-    monkeypatch.setattr(setup_wizard.DatabaseManager, "test_connection", lambda *args, **kwargs: (False, "Connection failed"))
+    monkeypatch.setattr(DatabaseManager, "validate_config", lambda *args, **kwargs: (True, None))
+    monkeypatch.setattr(DatabaseManager, "test_connection", lambda *args, **kwargs: (False, "Connection failed"))
     monkeypatch.setattr(setup_wizard, "_save_neo4j_credentials", save_mock)
     monkeypatch.setattr(setup_wizard, "console", MagicMock())
 
@@ -86,8 +87,8 @@ def test_file_credentials_retry_reopens_wizard(tmp_path, monkeypatch, entrypoint
 
     monkeypatch.setattr(setup_wizard, "prompt", prompt_mock)
     monkeypatch.setattr(setup_wizard, "find_latest_neo4j_creds_file", lambda: creds_file)
-    monkeypatch.setattr(setup_wizard.DatabaseManager, "validate_config", lambda *args, **kwargs: (True, None))
-    monkeypatch.setattr(setup_wizard.DatabaseManager, "test_connection", lambda *args, **kwargs: (False, "Connection failed"))
+    monkeypatch.setattr(DatabaseManager, "validate_config", lambda *args, **kwargs: (True, None))
+    monkeypatch.setattr(DatabaseManager, "test_connection", lambda *args, **kwargs: (False, "Connection failed"))
     monkeypatch.setattr(setup_wizard, "_save_neo4j_credentials", save_mock)
     monkeypatch.setattr(setup_wizard, "console", MagicMock())
 

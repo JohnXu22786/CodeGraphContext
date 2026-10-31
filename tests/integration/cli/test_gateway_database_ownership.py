@@ -223,7 +223,6 @@ def test_update_delegates_when_configured_backend_falls_back(tmp_path):
     repo = _make_repo(tmp_path)
     env = _runtime_env(tmp_path)
     configured_path = tmp_path / "db" / "falkordb"
-    effective_path = tmp_path / "db" / "ladybugdb"
     env["CGC_RUNTIME_DB_TYPE"] = "falkordb"
     env["CGC_RUNTIME_DB_PATH"] = str(configured_path)
 
@@ -240,12 +239,12 @@ def test_update_delegates_when_configured_backend_falls_back(tmp_path):
     )
 
     gateway, _port, _log_path = _start_gateway(
-        tmp_path, repo, env, expected_database="falkordb"
+        tmp_path, repo, env, expected_database="ladybugdb"
     )
     try:
-        owner = read_database_owner(str(effective_path))
+        owner = read_database_owner(str(configured_path))
         assert owner["backend"] == "ladybugdb"
-        assert owner["database_path"] == str(effective_path.resolve())
+        assert owner["database_path"] == str(configured_path.resolve())
 
         result = _run_cli(["update", str(repo)], repo, env)
 
