@@ -9,8 +9,9 @@ import os
 import re
 import threading
 from datetime import datetime
+from copy import copy
 from pathlib import Path, PureWindowsPath
-from dataclasses import asdict, replace
+from dataclasses import asdict
 
 from typing import Any, Dict, Coroutine, Optional, List, Set
 
@@ -651,9 +652,8 @@ class MCPServer:
             ):
                 ctx.db_path = selected_db_path
             if ctx.mode == "global":
-                self._startup_global_context = replace(
-                    ctx, db_path=runtime_db_path or ctx.db_path
-                )
+                self._startup_global_context = copy(ctx)
+                self._startup_global_context.db_path = runtime_db_path or ctx.db_path
             elif global_context_for_restore is not None:
                 self._startup_global_context = global_context_for_restore
             if initialize_database:
