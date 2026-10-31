@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+import subprocess
 import threading
 from contextlib import contextmanager
 import pytest
@@ -27,6 +28,7 @@ from codegraphcontext.tools.handlers.query_handlers import (
     _scope_cypher_query,
     execute_cypher_query,
 )
+from codegraphcontext.utils.branch_identity import repository_identity
 from codegraphcontext.tools.handlers import query_handlers
 
 
@@ -179,7 +181,7 @@ def test_default_repository_scope_normalizes_windows_path_separators():
     assert captured[0]["repo_path"] == "C:/Users/dev/repo"
 
 
-def test_default_repository_scope_tracks_context_switch(tmp_path):
+def test_default_repository_scope_tracks_context_switch(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
     from codegraphcontext.cli.config_manager import ResolvedContext
@@ -188,6 +190,18 @@ def test_default_repository_scope_tracks_context_switch(tmp_path):
     new_repo = tmp_path / "new-repo"
     old_repo.mkdir()
     new_repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=new_repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=new_repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=new_repo, check=True)
+    (new_repo / "main.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "main.py"], cwd=new_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=new_repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=new_repo,
+        check=True,
+    )
+    subprocess.run(["git", "switch", "-c", "feature"], cwd=new_repo, check=True, capture_output=True)
     cgc_dir = new_repo / ".codegraphcontext"
     cgc_dir.mkdir()
 
@@ -215,7 +229,7 @@ def test_default_repository_scope_tracks_context_switch(tmp_path):
     new_manager = MagicMock()
     with patch("codegraphcontext.utils.path_sandbox.is_path_allowed", return_value=True), \
          patch("codegraphcontext.server.get_repo_context_path", return_value=cgc_dir), \
-         patch("codegraphcontext.server.get_database_manager", return_value=new_manager), \
+         patch("codegraphcontext.server.get_database_manager", return_value=new_manager) as get_db, \
          patch("codegraphcontext.server._teardown_db_manager"), \
          patch("codegraphcontext.server.GraphBuilder"), \
          patch("codegraphcontext.server.CodeFinder"), \
@@ -223,8 +237,87 @@ def test_default_repository_scope_tracks_context_switch(tmp_path):
         switched = server.switch_context_tool(context_path=str(new_repo), save=False)
 
     assert switched["status"] == "ok", switched
+    selected_db_path = Path(get_db.call_args.kwargs["db_path"])
+    assert selected_db_path.parent.name == repository_identity(new_repo).storage_key
+
+    runtime_db_path = tmp_path / "explicit-shared-db"
+    monkeypatch.setenv("CGC_RUNTIME_DB_PATH", str(runtime_db_path))
+    with patch("codegraphcontext.utils.path_sandbox.is_path_allowed", return_value=True), \
+         patch("codegraphcontext.server.get_repo_context_path", return_value=cgc_dir), \
+         patch("codegraphcontext.server.get_database_manager", return_value=new_manager) as get_runtime_db, \
+         patch("codegraphcontext.server._teardown_db_manager"), \
+         patch("codegraphcontext.server.GraphBuilder"), \
+         patch("codegraphcontext.server.CodeFinder"), \
+         patch("codegraphcontext.server.CodeWatcher"):
+        switched = server.switch_context_tool(context_path=str(new_repo), save=False)
+
+    assert switched["status"] == "ok", switched
+    assert get_runtime_db.call_args.kwargs["db_path"] == str(runtime_db_path)
+    assert server.resolved_context.is_local is False
     asyncio.run(server.handle_tool_call("find_code", {"query": "needle"}))
     assert captured[0]["repo_path"] == str(new_repo)
+
+
+def test_mcp_watch_rejects_unselected_repository_before_indexing(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    selected_repo = tmp_path / "selected"
+    requested_repo = tmp_path / "requested"
+    selected_repo.mkdir()
+    requested_repo.mkdir()
+    selected_identity = repository_identity(selected_repo).as_dict()
+
+    server = MCPServer.__new__(MCPServer)
+    server._context_transition_lock = threading.RLock()
+    server.cwd = selected_repo
+    server.active_repo_path = selected_repo
+    server.resolved_context = SimpleNamespace(
+        is_local=True, repository_identity=selected_identity
+    )
+    server.code_watcher = object()
+    server.list_indexed_repositories_tool = MagicMock()
+    server.add_code_to_graph_tool = MagicMock()
+    server._generation_tracking_kwargs = lambda: {}
+    watch = MagicMock()
+    monkeypatch.setattr("codegraphcontext.server.watcher_handlers.watch_directory", watch)
+
+    result = server.watch_directory_tool(path=str(requested_repo))
+
+    assert "does not match" in result["error"]
+    server.add_code_to_graph_tool.assert_not_called()
+    watch.assert_not_called()
+
+
+def test_mcp_add_code_rejects_unselected_repository_before_scheduling(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    selected_repo = tmp_path / "selected"
+    requested_repo = tmp_path / "requested"
+    selected_repo.mkdir()
+    requested_repo.mkdir()
+    selected_identity = repository_identity(selected_repo).as_dict()
+
+    server = MCPServer.__new__(MCPServer)
+    server._context_transition_lock = threading.RLock()
+    server.cwd = selected_repo
+    server.active_repo_path = selected_repo
+    server.resolved_context = SimpleNamespace(
+        is_local=True, repository_identity=selected_identity
+    )
+    server.graph_builder = object()
+    server.job_manager = object()
+    server.loop = object()
+    server.list_indexed_repositories_tool = MagicMock()
+    server._generation_tracking_kwargs = lambda: {}
+    add_code = MagicMock()
+    monkeypatch.setattr("codegraphcontext.server.indexing_handlers.add_code_to_graph", add_code)
+
+    result = server.add_code_to_graph_tool(path=str(requested_repo))
+
+    assert "does not match" in result["error"]
+    add_code.assert_not_called()
 
 
 def test_switching_back_to_global_clears_selected_repository_scope(tmp_path):

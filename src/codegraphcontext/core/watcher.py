@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 import typing
 
@@ -33,6 +34,7 @@ from ..utils.git_utils import (
     get_repo_commit_hash,
     has_unborn_git_head,
 )
+from ..utils.branch_identity import repository_identity
 
 
 POLLING_ENV_VAR = "CGC_WATCH_POLLING"
@@ -59,10 +61,36 @@ class RepositoryEventHandler(FileSystemEventHandler):
         cgcignore_path: str = None,
         ignore_spec: "PathSpec" = None,
         sync_on_start: bool = False,
+        generation_db_path: str = None,
+        generation_identity: dict = None,
     ):
         super().__init__()
         self.graph_builder = graph_builder
         self.repo_path = repo_path.resolve()
+        self._bound_repository_identity = (
+            repository_identity(self.repo_path)
+            if generation_db_path and generation_identity
+            else None
+        )
+        self._bound_identity_key = (
+            self._bound_repository_identity.storage_key
+            if self._bound_repository_identity is not None
+            else None
+        )
+        if (
+            generation_identity
+            and generation_identity.get("kind") in {"git", "non-git"}
+            and generation_identity.get("storage_key") != self._bound_identity_key
+        ):
+            raise RuntimeError(
+                "Watcher database identity changed while resolving the context; "
+                "reopen the watcher for the current branch/worktree."
+            )
+        self._generation_db_path = generation_db_path
+        self._generation_identity = generation_identity
+        self._generation_update_depth = 0
+        self._generation_update_failed = False
+        self._identity_mismatch_reported = False
         self._watch_update_lock = threading.RLock()
         self.git_metadata_dirs = self._discover_git_metadata_dirs()
         self._git_head_snapshot = self._read_git_head_snapshot()
@@ -344,7 +372,56 @@ class RepositoryEventHandler(FileSystemEventHandler):
         )
         return [f for f in files if not self._should_ignore(f)]
 
+    @contextmanager
+    def _generation_update(self):
+        """Mark the index incomplete for the full outermost watcher mutation."""
+        db_path = getattr(self, "_generation_db_path", None)
+        identity = getattr(self, "_generation_identity", None)
+        if not db_path or not identity:
+            yield
+            return
+
+        from .index_generation import generation_update
+
+        depth = getattr(self, "_generation_update_depth", 0)
+        if depth == 0:
+            self._generation_update_failed = False
+            if identity.get("kind") == "git":
+                current_identity = repository_identity(self.repo_path).as_dict()
+                if current_identity.get("storage_key") != self._bound_identity_key:
+                    raise RuntimeError(
+                        "Watcher repository identity changed before the graph update; "
+                        "reopen the watcher for the current branch/worktree."
+                    )
+                identity = current_identity
+                self._generation_identity = current_identity
+            generation_id = (
+                f"{identity.get('storage_key', '')}:"
+                f"{identity.get('commit') or 'uncommitted'}"
+            )
+            marker_update = generation_update(
+                db_path, identity, generation_id=generation_id
+            )
+            self._active_generation_marker_update = marker_update
+            self._active_generation_update_state = marker_update.__enter__()
+        self._generation_update_depth = depth + 1
+        try:
+            yield
+        except BaseException:
+            self._generation_update_failed = True
+            raise
+        finally:
+            self._generation_update_depth -= 1
+            if self._generation_update_depth == 0:
+                if self._generation_update_failed:
+                    self._active_generation_update_state.leave_incomplete()
+                self._active_generation_marker_update.__exit__(None, None, None)
+
     def _initial_scan(self):
+        with self._update_lock, self._generation_update():
+            return self._initial_scan_locked()
+
+    def _initial_scan_locked(self):
         info_logger(f"Initial scan: {self.repo_path}")
         all_files = self._iter_supported_files()
 
@@ -372,6 +449,14 @@ class RepositoryEventHandler(FileSystemEventHandler):
         info_logger("Initial scan complete")
 
     def synchronize_with_disk(self) -> None:
+        if not self._identity_matches_bound_index():
+            return
+        with self._update_lock, self._generation_update():
+            return self._synchronize_with_disk_locked()
+
+    def _synchronize_with_disk_locked(self) -> None:
+        if not self._identity_matches_bound_index():
+            return
         info_logger(f"Syncing: {self.repo_path}")
 
         # Ignore files define which files belong in the graph. Re-read them
@@ -508,7 +593,7 @@ class RepositoryEventHandler(FileSystemEventHandler):
     def _require_disk_resync(self) -> None:
         """Collapse pending actions and reconcile disk after an event failure."""
         with self._event_condition:
-            if self._stopped:
+            if self._stopped or not self._identity_matches_bound_index():
                 return
             self._event_generation += 1
             self._pending_events.clear()
@@ -548,6 +633,8 @@ class RepositoryEventHandler(FileSystemEventHandler):
                     del self._pending_events[event_key]
 
             if resync_generation is not None:
+                if not self._identity_matches_bound_index():
+                    continue
                 try:
                     self.synchronize_with_disk()
                 except Exception as exc:  # noqa: BLE001 - watcher must keep serving later events
@@ -576,6 +663,8 @@ class RepositoryEventHandler(FileSystemEventHandler):
                 continue
 
             try:
+                if not self._identity_matches_bound_index():
+                    continue
                 action()
             except Exception as exc:  # noqa: BLE001 - one bad file must not kill the worker
                 error_logger(f"[WATCH] failed to process {event_key}: {exc}")
@@ -666,13 +755,40 @@ class RepositoryEventHandler(FileSystemEventHandler):
 
     def _handle_modification(self, event_path_str: str):
         """Incremental update: re-parse and re-link only the changed file and its neighbours."""
+        if not self._identity_matches_bound_index():
+            return
         # Serialised: concurrent handlers previously did read-modify-write on
         # the shared imports_map (lost updates) and interleaved
         # delete_file_from_graph / add_file_to_graph /
         # delete_outgoing_calls_from_files for overlapping caller sets, so one
         # could delete edges another had just created.
         with self._update_lock:
-            self._handle_modification_locked(event_path_str)
+            # The lock may wait behind another event while Git switches
+            # branches; validate again at the actual mutation boundary.
+            if not self._identity_matches_bound_index():
+                return
+            with self._generation_update():
+                self._handle_modification_locked(event_path_str)
+
+    def _identity_matches_bound_index(self) -> bool:
+        """Reject events after this checkout switches to another index identity."""
+        # A few lightweight callers construct handlers with __new__ and seed
+        # only the fields under test; production handlers always bind in init.
+        bound_key = getattr(self, "_bound_identity_key", None)
+        if bound_key is None:
+            return True
+        if getattr(self, "_bound_repository_identity", None) is None:
+            return True
+        matches = repository_identity(self.repo_path).storage_key == bound_key
+        if matches:
+            return True
+        if not self._identity_mismatch_reported:
+            warning_logger(
+                "Watcher paused after branch/worktree identity changed; restart CGC "
+                "to select the matching isolated index."
+            )
+            self._identity_mismatch_reported = True
+        return False
 
     def _handle_modification_locked(self, event_path_str: str):
         info_logger(f"File change detected (incremental update): {event_path_str}")
@@ -1025,7 +1141,7 @@ class RepositoryEventHandler(FileSystemEventHandler):
 
     def _handle_move(self, src_path: str, dest_path: str) -> None:
         """Index the moved file before removing its old path and relinking callers."""
-        with self._update_lock:
+        with self._update_lock, self._generation_update():
             self._handle_modification(dest_path)
             self._handle_removal(src_path)
 
@@ -1079,6 +1195,8 @@ class CodeWatcher:
         perform_initial_scan: bool = True,
         cgcignore_path: str = None,
         sync_on_start: bool = False,
+        generation_db_path: str = None,
+        generation_identity: dict = None,
     ):
         path_obj = Path(path).resolve()
         path_str = str(path_obj)
@@ -1089,12 +1207,19 @@ class CodeWatcher:
             if path_str in self.watched_paths:
                 return {"message": "Already watching"}
 
+        generation_kwargs = {}
+        if generation_db_path and generation_identity:
+            generation_kwargs = {
+                "generation_db_path": generation_db_path,
+                "generation_identity": generation_identity,
+            }
         handler = RepositoryEventHandler(
             self.graph_builder,
             path_obj,
             perform_initial_scan=perform_initial_scan,
             sync_on_start=sync_on_start,
             cgcignore_path=cgcignore_path,
+            **generation_kwargs,
         )
 
         return self._register_watch_handler(path_obj, path_str, handler)

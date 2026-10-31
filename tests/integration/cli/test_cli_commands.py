@@ -474,6 +474,7 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs, 
         ["setup-scip"],
         ["api", "start"],
         ["index", "."],
+        ["snapshot", "list"],
         ["update", "."],
         ["clean"],
         ["stats"],
@@ -563,6 +564,10 @@ def test_all_canonical_cli_commands_run_with_kuzudb(kuzudb_env, cli_test_stubs, 
     expected_set.discard(("bundle", "verify"))
     expected_set.discard(("bundle", "inspect"))
     expected_set.discard(("bundle", "diff"))
+    # Snapshot save and graph diff require a completed, generation-marked index
+    # and a saved snapshot; their behavior is covered by the G1 snapshot tests.
+    expected_set.discard(("snapshot", "save"))
+    expected_set.discard(("root", "diff"))
     assert _matrix_command_set(command_matrix) == expected_set
 
     for args in command_matrix:

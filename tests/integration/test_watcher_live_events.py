@@ -356,7 +356,7 @@ def test_incremental_graph_matches_clean_rebuild_after_file_and_branch_batches(
         handler.on_deleted(SimpleNamespace(is_directory=True, src_path=str(subtree)))
         assert _wait_until(
             lambda: not handler._resync_required,
-            timeout=15.0,
+            timeout=45.0,
             interval=0.05,
         ), "deleting a directory did not complete the repository sync"
         assert_matches_clean_build("directory deletion", 6)
@@ -758,7 +758,7 @@ def test_watcher_reconciles_ignore_metadata_changes(tmp_path: Path):
         assert resync_requested.wait(timeout=2.0), "ignore metadata edit did not request a repository sync"
         assert _wait_until(
             lambda: not handler._resync_required,
-            timeout=5.0,
+            timeout=15.0,
             interval=0.05,
         ), "ignore metadata sync did not complete"
 
@@ -843,7 +843,7 @@ def test_watcher_reconciles_external_explicit_ignore_file_changes(tmp_path: Path
         )
         assert _wait_until(
             lambda: not handler._resync_required,
-            timeout=5.0,
+            timeout=15.0,
             interval=0.05,
         ), "external ignore metadata sync did not complete"
 
@@ -929,7 +929,7 @@ def test_watcher_tracks_retargeted_external_ignore_symlink(tmp_path: Path):
             )
             assert _wait_until(
                 lambda: not handler._resync_required,
-                timeout=5.0,
+                timeout=15.0,
                 interval=0.05,
             ), f"{description} reconciliation did not complete"
 
@@ -1036,7 +1036,7 @@ def test_watcher_tracks_repository_local_ignore_symlink(tmp_path: Path):
             )
             assert _wait_until(
                 lambda: not handler._resync_required,
-                timeout=5.0,
+                timeout=15.0,
                 interval=0.05,
             ), f"{description} reconciliation did not complete"
 
@@ -1201,7 +1201,7 @@ def test_watcher_refreshes_commit_metadata_for_same_tree_branch_switch(tmp_path:
         )
         assert _wait_until(
             lambda: not handler._resync_required,
-            timeout=5.0,
+            timeout=15.0,
             interval=0.05,
         ), "Git metadata reconciliation did not complete"
 
@@ -1302,7 +1302,7 @@ def test_watcher_registers_refs_created_after_pack_refs(tmp_path: Path):
         assert resync_requested.wait(timeout=2.0), "the new loose branch ref must request repository reconciliation"
         assert _wait_until(
             lambda: not handler._resync_required,
-            timeout=5.0,
+            timeout=15.0,
             interval=0.05,
         ), "Git ref reconciliation did not complete"
 

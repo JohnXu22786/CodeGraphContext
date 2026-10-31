@@ -1,5 +1,6 @@
 # src/codegraphcontext/cli/cli_helpers.py
 import asyncio
+from contextlib import contextmanager
 import json
 import re
 import shlex
@@ -58,6 +59,23 @@ console = Console()
 def _fail_services_init() -> None:
     """Abort the CLI command when database/services could not be initialized."""
     raise typer.Exit(code=1)
+
+
+@contextmanager
+def _generation_update_for_context(db_manager, ctx):
+    """Track a synchronous CLI graph mutation for the selected local DB."""
+    db_path = getattr(db_manager, "db_path", None)
+    backend = getattr(db_manager, "get_backend_type", lambda: "")()
+    if not db_path or backend not in {"falkordb", "kuzudb", "ladybugdb"}:
+        yield None
+        return
+
+    from ..core.index_generation import generation_update
+    from .snapshot_commands import effective_snapshot_identity
+
+    identity, _ = effective_snapshot_identity(ctx, Path.cwd())
+    with generation_update(db_path, identity) as update:
+        yield update
 
 
 def _reject_external_file_symlink(path: Path) -> None:
@@ -338,7 +356,6 @@ def _initialize_services(
             mark_falkordb_unavailable()
             console.print(f"[yellow]⚠ FalkorDB Lite is not functional in this environment: {e}[/yellow]")
             console.print("[cyan]Falling back to an installed embedded backend...[/cyan]")
-            
             # Close the broken driver/socket
             try:
                 db_manager.close_driver()
@@ -527,6 +544,29 @@ def index_helper(path: str, context: Optional[str] = None, no_progress: bool = F
         _fail_services_init()
 
     db_manager, graph_builder, code_finder, ctx = services
+    from contextlib import nullcontext
+    from codegraphcontext.core.index_generation import generation_is_current, generation_update
+    from .snapshot_commands import effective_snapshot_identity
+
+    generation_identity, generation_repository_root = effective_snapshot_identity(ctx, path_obj)
+    generation_db_path = getattr(db_manager, "db_path", None)
+    generation_marker_enabled = bool(
+        generation_db_path
+        and getattr(db_manager, "get_backend_type", lambda: "")()
+        in {"falkordb", "kuzudb", "ladybugdb"}
+    )
+
+    index_generation_update = (
+        generation_update(
+            generation_db_path,
+            generation_identity,
+            generation_id=(
+                f"{generation_identity.get('storage_key', '')}:"
+                f"{generation_identity.get('commit') or 'uncommitted'}"
+            ),
+        )
+        if generation_marker_enabled else nullcontext()
+    )
 
     # Register the repo in its named context BEFORE the already-indexed skip
     # guard below: the early return used to sit above this call, so a graph
@@ -545,6 +585,9 @@ def index_helper(path: str, context: Optional[str] = None, no_progress: bool = F
 
     indexed_repos = code_finder.list_indexed_repositories()
     repo_exists = any_repo_matches_path(indexed_repos, path_obj)
+    marker_stale = generation_marker_enabled and not generation_is_current(
+        generation_db_path, generation_identity
+    )
 
     if repo_exists:
         # Check if the repository actually has files (not just an empty node from interrupted indexing)
@@ -562,7 +605,12 @@ def index_helper(path: str, context: Optional[str] = None, no_progress: bool = F
                 if file_count > 0:
                     expected = graph_builder.estimate_processing_time(path_obj, cgcignore_path=ctx.cgcignore_path) if path_obj.is_dir() else None
                     expected_file_count = expected[0] if expected else None
-                    if expected_file_count is None or file_count >= expected_file_count:
+                    if marker_stale:
+                        console.print(
+                            "[yellow]Stored index generation does not match the current "
+                            "branch/worktree/commit; rebuilding it.[/yellow]"
+                        )
+                    elif expected_file_count is None or file_count >= expected_file_count:
                         console.print(f"[yellow]Repository '{path}' is already indexed with {file_count} files. Skipping.[/yellow]")
                         console.print("[dim]💡 Tip: Use 'cgc index --force' to re-index[/dim]")
                         db_manager.close_driver()
@@ -604,7 +652,22 @@ def index_helper(path: str, context: Optional[str] = None, no_progress: bool = F
     console.print(f"Starting indexing for: {path_obj}")
 
     try:
-        asyncio.run(_run_index_with_progress(graph_builder, path_obj, is_dependency=False, cgcignore_path=ctx.cgcignore_path, disable_progress=no_progress))
+        with index_generation_update as generation_update_state:
+            if marker_stale and repo_exists:
+                console.print(
+                    "[yellow]Clearing records from the stale generation before rebuilding.[/yellow]"
+                )
+                graph_builder.delete_repository_from_graph(str(path_obj))
+            asyncio.run(_run_index_with_progress(graph_builder, path_obj, is_dependency=False, cgcignore_path=ctx.cgcignore_path, disable_progress=no_progress))
+            if (
+                getattr(ctx, "is_local", False)
+                and generation_identity.get("kind") in {"git", "non-git"}
+                and generation_update_state is not None
+                and path_obj.is_dir()
+                and generation_repository_root is not None
+                and path_obj.resolve() == generation_repository_root.resolve()
+            ):
+                generation_update_state.mark_complete()
         time_end = time.time()
         elapsed = time_end - time_start
         _print_call_resolution_diagnostics(graph_builder)
@@ -707,7 +770,8 @@ def add_package_helper(package_name: str, language: str, context: Optional[str] 
     console.print(f"Starting indexing for package '{package_name}' at: {package_path}")
 
     try:
-        asyncio.run(_run_index_with_progress(graph_builder, package_path, is_dependency=True, cgcignore_path=ctx.cgcignore_path))
+        with _generation_update_for_context(db_manager, ctx):
+            asyncio.run(_run_index_with_progress(graph_builder, package_path, is_dependency=True, cgcignore_path=ctx.cgcignore_path))
         _print_call_resolution_diagnostics(graph_builder)
         _print_index_execution_summary(graph_builder)
         console.print(f"[green]Successfully finished indexing package: {package_name}[/green]")
@@ -757,12 +821,13 @@ def delete_helper(repo_path: str, context: Optional[str] = None):
     db_manager, graph_builder, _, ctx = services
     
     try:
-        if graph_builder.delete_repository_from_graph(repo_path):
-            console.print(f"[green]Successfully deleted repository: {repo_path}[/green]")
-        else:
-            console.print(f"[yellow]Repository not found in graph: {repo_path}[/yellow]")
-            console.print("[dim]Tip: Use 'cgc list' to see available repositories.[/dim]")
-            raise typer.Exit(code=1)
+        with _generation_update_for_context(db_manager, ctx):
+            if graph_builder.delete_repository_from_graph(repo_path):
+                console.print(f"[green]Successfully deleted repository: {repo_path}[/green]")
+            else:
+                console.print(f"[yellow]Repository not found in graph: {repo_path}[/yellow]")
+                console.print("[dim]Tip: Use 'cgc list' to see available repositories.[/dim]")
+                raise typer.Exit(code=1)
     except typer.Exit:
         # Control flow, not an error — let it through so the exit code survives.
         raise
@@ -1359,6 +1424,10 @@ def reindex_helper(path: str, context: Optional[str] = None, no_progress: bool =
         gateway_ctx = resolve_context(context, cwd=index_cwd)
     except ContextNotFoundError:
         gateway_ctx = None
+    from contextlib import nullcontext
+    from codegraphcontext.core.index_generation import generation_update
+    from .snapshot_commands import effective_snapshot_identity
+
     if gateway_ctx is not None:
         inherited_ladybug_context = (
             str(gateway_ctx.database).lower() == "ladybugdb"
@@ -1377,6 +1446,31 @@ def reindex_helper(path: str, context: Optional[str] = None, no_progress: bool =
             )
         ):
             os.environ["DEFAULT_DATABASE"] = gateway_ctx.database
+        backend = (
+            os.getenv("CGC_RUNTIME_DB_TYPE")
+            or os.getenv("DEFAULT_DATABASE")
+            or gateway_ctx.database
+            or ""
+        ).lower()
+        database_path = os.getenv("CGC_RUNTIME_DB_PATH") or gateway_ctx.db_path
+        gateway_identity, gateway_repository_root = effective_snapshot_identity(
+            gateway_ctx, path_obj
+        )
+        gateway_generation_enabled = bool(
+            database_path and backend in {"falkordb", "kuzudb", "ladybugdb"}
+        )
+
+        gateway_generation_update = (
+            generation_update(
+                database_path,
+                gateway_identity,
+                generation_id=(
+                    f"{gateway_identity.get('storage_key', '')}:"
+                    f"{gateway_identity.get('commit') or 'uncommitted'}"
+                ),
+            )
+            if gateway_generation_enabled else nullcontext()
+        )
         registration = None
         for candidate_path, candidate_backend in _gateway_candidates_for_context(
             gateway_ctx
@@ -1390,9 +1484,19 @@ def reindex_helper(path: str, context: Optional[str] = None, no_progress: bool =
                 f"{registration.endpoint}...[/cyan]"
             )
             try:
-                registration.update_repository(
-                    path_obj, cgcignore_path=gateway_ctx.cgcignore_path
-                )
+                with gateway_generation_update as generation_update_state:
+                    registration.update_repository(
+                        path_obj, cgcignore_path=gateway_ctx.cgcignore_path
+                    )
+                    if (
+                        getattr(gateway_ctx, "is_local", False)
+                        and gateway_identity.get("kind") in {"git", "non-git"}
+                        and generation_update_state is not None
+                        and path_obj.is_dir()
+                        and gateway_repository_root is not None
+                        and path_obj.resolve() == gateway_repository_root.resolve()
+                    ):
+                        generation_update_state.mark_complete()
             except GatewayUnavailableError:
                 # The endpoint was live during discovery but failed before
                 # the operation completed. The subsequent lease attempt
@@ -1411,25 +1515,54 @@ def reindex_helper(path: str, context: Optional[str] = None, no_progress: bool =
         _fail_services_init()
 
     db_manager, graph_builder, code_finder, ctx = services
+    generation_identity, generation_repository_root = effective_snapshot_identity(
+        ctx, path_obj
+    )
+    generation_db_path = getattr(db_manager, "db_path", None)
+    generation_marker_enabled = bool(
+        generation_db_path
+        and getattr(db_manager, "get_backend_type", lambda: "")()
+        in {"falkordb", "kuzudb", "ladybugdb"}
+    )
+
+    reindex_generation_update = (
+        generation_update(
+            generation_db_path,
+            generation_identity,
+            generation_id=(
+                f"{generation_identity.get('storage_key', '')}:"
+                f"{generation_identity.get('commit') or 'uncommitted'}"
+            ),
+        )
+        if generation_marker_enabled else nullcontext()
+    )
 
     # Check if already indexed
     indexed_repos = code_finder.list_indexed_repositories()
     repo_exists = any_repo_matches_path(indexed_repos, path_obj)
 
-    if repo_exists:
-        console.print(f"[yellow]Deleting existing index for: {path_obj}[/yellow]")
-        try:
-            graph_builder.delete_repository_from_graph(str(path_obj))
-            console.print("[green]✓[/green] Deleted old index")
-        except Exception as e:
-            console.print(f"[red]Error deleting old index: {e}[/red]")
-            db_manager.close_driver()
-            raise typer.Exit(code=1)
-    
     console.print(f"[cyan]Re-indexing: {path_obj}[/cyan]")
     
     try:
-        asyncio.run(_run_index_with_progress(graph_builder, path_obj, is_dependency=False, cgcignore_path=ctx.cgcignore_path, disable_progress=no_progress))
+        with reindex_generation_update as generation_update_state:
+            if repo_exists:
+                console.print(f"[yellow]Deleting existing index for: {path_obj}[/yellow]")
+                try:
+                    graph_builder.delete_repository_from_graph(str(path_obj))
+                    console.print("[green]✓[/green] Deleted old index")
+                except Exception as e:
+                    console.print(f"[red]Error deleting old index: {e}[/red]")
+                    raise typer.Exit(code=1)
+            asyncio.run(_run_index_with_progress(graph_builder, path_obj, is_dependency=False, cgcignore_path=ctx.cgcignore_path, disable_progress=no_progress))
+            if (
+                getattr(ctx, "is_local", False)
+                and generation_identity.get("kind") in {"git", "non-git"}
+                and generation_update_state is not None
+                and path_obj.is_dir()
+                and generation_repository_root is not None
+                and path_obj.resolve() == generation_repository_root.resolve()
+            ):
+                generation_update_state.mark_complete()
         time_end = time.time()
         elapsed = time_end - time_start
         _print_call_resolution_diagnostics(graph_builder)
@@ -1477,35 +1610,36 @@ def clean_helper(context: Optional[str] = None):
     console.print("[cyan]🧹 Cleaning database (removing orphaned nodes)...[/cyan]")
     
     try:
-        total_deleted = 0
-        batch_size = 500
-        
-        with db_manager.get_driver().session() as session:
-            # Delete nodes with no incoming relationships (true orphans).
-            # Parameters (HAS_PARAMETER), import Modules (IMPORTS), etc. are kept.
-            while True:
-                result = session.run("""
-                    MATCH (n)
-                    WHERE NOT n:Repository
-                      AND NOT ()-[]->(n)
-                    WITH n LIMIT $batch_size
-                    DETACH DELETE n
-                    RETURN count(n) as deleted
-                """, batch_size=batch_size)
-                record = result.single()
-                deleted_count = record["deleted"] if record else 0
-                total_deleted += deleted_count
-                
-                if deleted_count == 0:
-                    break
-                    
-                console.print(f"[dim]  Deleted {deleted_count} orphaned nodes (batch)...[/dim]")
+        with _generation_update_for_context(db_manager, ctx):
+            total_deleted = 0
+            batch_size = 500
+
+            with db_manager.get_driver().session() as session:
+                # Delete nodes with no incoming relationships (true orphans).
+                # Parameters (HAS_PARAMETER), import Modules (IMPORTS), etc. are kept.
+                while True:
+                    result = session.run("""
+                        MATCH (n)
+                        WHERE NOT n:Repository
+                          AND NOT ()-[]->(n)
+                        WITH n LIMIT $batch_size
+                        DETACH DELETE n
+                        RETURN count(n) as deleted
+                    """, batch_size=batch_size)
+                    record = result.single()
+                    deleted_count = record["deleted"] if record else 0
+                    total_deleted += deleted_count
+
+                    if deleted_count == 0:
+                        break
+
+                    console.print(f"[dim]  Deleted {deleted_count} orphaned nodes (batch)...[/dim]")
             
             if total_deleted > 0:
                 console.print(f"[green]✓[/green] Deleted {total_deleted} orphaned nodes total")
             else:
                 console.print("[green]✓[/green] No orphaned nodes found")
-            
+
         console.print("[green]✅ Database cleanup complete![/green]")
     except Exception as e:
         console.print(f"[bold red]An error occurred during cleanup:[/bold red] {e}")
@@ -1639,13 +1773,12 @@ def watch_helper(
     logging.getLogger('watchdog.observers').setLevel(logging.WARNING)
     logging.getLogger('watchdog.observers.inotify_buffer').setLevel(logging.WARNING)
     
-    services = _initialize_services(context)
+    path_obj = Path(path).resolve()
+    services = _initialize_services(context, cwd=path_obj)
     if not all(services[:3]):
         _fail_services_init()
 
     db_manager, graph_builder, code_finder, ctx = services
-    path_obj = Path(path).resolve()
-
     if not path_obj.exists():
         console.print(f"[red]Error: Path does not exist: {path_obj}[/red]")
         db_manager.close_driver()
@@ -1685,6 +1818,29 @@ def watch_helper(
     # Create watcher instance
     job_manager = JobManager()
     watcher = CodeWatcher(graph_builder, job_manager, use_polling=use_polling)
+    from .snapshot_commands import effective_snapshot_identity
+    from ..core.index_generation import async_generation_update
+
+    watch_identity, _ = effective_snapshot_identity(ctx, path_obj)
+    watch_db_path = getattr(db_manager, "db_path", None)
+    watch_generation_enabled = bool(
+        watch_db_path
+        and getattr(db_manager, "get_backend_type", lambda: "")()
+        in {"falkordb", "kuzudb", "ladybugdb"}
+    )
+    watch_generation_kwargs = (
+        {
+            "generation_db_path": watch_db_path,
+            "generation_identity": watch_identity,
+        }
+        if watch_generation_enabled
+        else {}
+    )
+
+    watch_generation_update = (
+        async_generation_update(watch_db_path, watch_identity)
+        if watch_generation_enabled else None
+    )
     
     try:
         # Start the observer thread
@@ -1704,17 +1860,26 @@ def watch_helper(
                 perform_initial_scan=False,
                 sync_on_start=sync_on_start,
                 cgcignore_path=ctx.cgcignore_path,
+                **watch_generation_kwargs,
             )
         else:
             console.print("[yellow]⚠[/yellow]  Not indexed yet. Performing initial scan...")
             
             # Index the repository first (like MCP does)
             async def do_index():
-                await graph_builder.build_graph_from_path_async(
-                    path_obj,
-                    is_dependency=False,
-                    cgcignore_path=ctx.cgcignore_path,
-                )
+                if watch_generation_update is None:
+                    await graph_builder.build_graph_from_path_async(
+                        path_obj,
+                        is_dependency=False,
+                        cgcignore_path=ctx.cgcignore_path,
+                    )
+                else:
+                    async with watch_generation_update:
+                        await graph_builder.build_graph_from_path_async(
+                            path_obj,
+                            is_dependency=False,
+                            cgcignore_path=ctx.cgcignore_path,
+                        )
             
             asyncio.run(do_index())
             console.print("[green]✓[/green] Initial scan complete")
@@ -1724,6 +1889,7 @@ def watch_helper(
                 str(path_obj),
                 perform_initial_scan=False,
                 cgcignore_path=ctx.cgcignore_path,
+                **watch_generation_kwargs,
             )
         
         console.print("[bold green]👀 Monitoring for file changes...[/bold green] (Press Ctrl+C to stop)")

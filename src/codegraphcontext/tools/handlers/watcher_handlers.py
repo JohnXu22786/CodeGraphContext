@@ -44,6 +44,12 @@ def watch_directory(code_watcher, list_repositories_func, add_code_func, **args)
 
     path_obj = Path(path).resolve()
     path_str = str(path_obj)
+    generation_kwargs = {}
+    if args.get("generation_db_path") and args.get("generation_identity"):
+        generation_kwargs = {
+            "generation_db_path": args["generation_db_path"],
+            "generation_identity": args["generation_identity"],
+        }
 
     if not is_path_allowed(path_obj):
         return {
@@ -75,6 +81,7 @@ def watch_directory(code_watcher, list_repositories_func, add_code_func, **args)
                 path_str,
                 perform_initial_scan=False,
                 sync_on_start=True,
+                **generation_kwargs,
             )
             return {
                 "success": True,
@@ -86,7 +93,9 @@ def watch_directory(code_watcher, list_repositories_func, add_code_func, **args)
         if "error" in scan_job_result:
             return scan_job_result
 
-        code_watcher.watch_directory(path_str, perform_initial_scan=False)
+        code_watcher.watch_directory(
+            path_str, perform_initial_scan=False, **generation_kwargs
+        )
 
         return {
             "success": True,

@@ -57,6 +57,7 @@ from codegraphcontext.runtime_paths import (
     get_default_debug_log_path,
     get_repo_context_path,
 )
+from codegraphcontext.utils.branch_identity import branch_database_path
 
 
 def _atomic_write_text(path: Path, content: str, *, secure: bool = False) -> None:
@@ -1324,6 +1325,7 @@ class ResolvedContext:
     db_path: str          # absolute path to the DB directory
     cgcignore_path: str   # path to the applicable .cgcignore
     is_local: bool = False  # True when a repository-local context was found
+    repository_identity: Optional[dict] = None  # identity used to resolve per-repo storage
     database_is_explicit: bool = False  # backend stored by this context, not inherited
 
 
@@ -1397,10 +1399,15 @@ def resolve_context(
 
     # --- 2. Repository-local context directory (per-repo mode only) ---
     local_cgc = find_local_cgc_dir(cwd) if cfg.mode == "per-repo" else None
+    mapping = (
+        get_workspace_mapping(cwd)
+        if local_cgc is None and cfg.mode == "per-repo"
+        else None
+    )
 
     # A saved workspace mapping can point at a context directory other than the
-    # repository's default location. Prefer it when there is no local context.
-    mapping = get_workspace_mapping(cwd) if local_cgc is None and cfg.mode == "per-repo" else None
+    # repository's default location. Prefer it when there is no local context,
+    # while keeping the mapped repository isolated by branch/worktree.
     if mapping:
         mapped_ctx_path = Path(mapping["context_path"])
         if mapped_ctx_path.exists() and mapped_ctx_path.is_dir():
@@ -1408,28 +1415,36 @@ def resolve_context(
                 mapped_ctx_path, _configured_default_database()
             )
             mapped_database_is_explicit = (
-                bool(
-                    mapping.get("database_is_explicit", mapping.get("database"))
-                )
+                bool(mapping.get("database_is_explicit", mapping.get("database")))
                 or _context_database_setting(mapped_ctx_path) is not None
             )
             if not mapped_database_is_explicit and mapped_db == "ladybugdb":
-                # An earlier run may have used an embedded backend after
-                # LadybugDB was unavailable. Keep opening that graph when a
-                # later run can use LadybugDB again.
+                # Preserve graphs created by an earlier optional backend
+                # fallback when the default backend is now available.
                 mapped_db = _infer_legacy_context_database(mapped_ctx_path, mapped_db)
             mapped_db, mapped_db_path = _existing_context_fallback_storage(
                 mapped_ctx_path,
                 mapped_db,
                 database_is_explicit=mapped_database_is_explicit,
             )
+            from codegraphcontext.utils.branch_identity import repository_identity
+
+            resolved_identity = repository_identity(cwd)
+            branch_db_path = branch_database_path(
+                mapped_ctx_path, mapped_db, cwd, resolved_identity,
+                persist_default=not read_only,
+            )
+            legacy_db_path = mapped_ctx_path / "db" / mapped_db
+            if branch_db_path != legacy_db_path or Path(mapped_db_path) == legacy_db_path:
+                mapped_db_path = branch_db_path
             return ResolvedContext(
                 mode="per-repo",
                 context_name="",
                 database=mapped_db,
-                db_path=mapped_db_path,
+                db_path=str(mapped_db_path),
                 cgcignore_path=str(mapped_ctx_path / ".cgcignore"),
                 is_local=True,
+                repository_identity=resolved_identity.as_dict(),
                 database_is_explicit=mapped_database_is_explicit,
             )
     
@@ -1489,6 +1504,20 @@ def resolve_context(
             local_db,
             database_is_explicit=(configured_local_db is not None or runtime_db is not None),
         )
+        # Default local indexes are isolated per branch/worktree. Keep the
+        # root checkout's default branch on its legacy path so existing local
+        # indexes remain readable; explicit global/named/runtime paths are
+        # resolved elsewhere and remain authoritative.
+        from codegraphcontext.utils.branch_identity import repository_identity
+
+        resolved_identity = repository_identity(cwd)
+        branch_db_path = branch_database_path(
+            local_cgc, local_db, cwd, resolved_identity,
+            persist_default=not read_only,
+        )
+        legacy_db_path = local_cgc / "db" / local_db
+        if branch_db_path != legacy_db_path or Path(db_path) == legacy_db_path:
+            db_path = str(branch_db_path)
         cgcignore = str(local_cgc / ".cgcignore")
         return ResolvedContext(
             mode="per-repo",
@@ -1497,7 +1526,10 @@ def resolve_context(
             db_path=db_path,
             cgcignore_path=cgcignore,
             is_local=True,
-            database_is_explicit=_context_database_setting(local_cgc) is not None,
+            repository_identity=resolved_identity.as_dict(),
+            database_is_explicit=(
+                configured_local_db is not None or runtime_db is not None
+            ),
         )
 
     # --- 3. Global config.yaml ---

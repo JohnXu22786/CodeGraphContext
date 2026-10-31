@@ -398,7 +398,7 @@ def load_bundle_command(bundle_name: str, clear_existing: bool = False):
         Tuple of (success: bool, message: str, stats: dict)
     """
     from pathlib import Path
-    from .cli_helpers import _initialize_services
+    from .cli_helpers import _generation_update_for_context, _initialize_services
     from ..core.cgc_bundle import CGCBundle
     
     try:
@@ -407,7 +407,7 @@ def load_bundle_command(bundle_name: str, clear_existing: bool = False):
         if not all(services):
             return (False, "Failed to initialize database services", {})
         
-        db_manager, _, _, _ = services
+        db_manager, _, _, ctx = services
         
         # Check if bundle exists locally
         bundle_path = Path(bundle_name)
@@ -426,10 +426,13 @@ def load_bundle_command(bundle_name: str, clear_existing: bool = False):
         
         # Load the bundle
         bundle = CGCBundle(db_manager)
-        success, message = bundle.import_from_bundle(
-            bundle_path=bundle_path,
-            clear_existing=clear_existing
-        )
+        with _generation_update_for_context(db_manager, ctx) as generation_update:
+            success, message = bundle.import_from_bundle(
+                bundle_path=bundle_path,
+                clear_existing=clear_existing
+            )
+            if not success and generation_update:
+                generation_update.leave_incomplete()
         
         if success:
             # Extract stats from message if available
