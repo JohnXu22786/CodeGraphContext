@@ -245,7 +245,7 @@ def mcp_setup():
     - Cline, RooCode, Amazon Q Developer, Goose
     - OpenCode (prints stdio config + link to vendor docs)
     
-    Works with FalkorDB by default (no database setup needed).
+    Works with the included LadybugDB backend by default (no database setup needed).
     """
     console.print("\n[bold cyan]MCP Client Setup[/bold cyan]")
     console.print("Configure your IDE or CLI tool to use CodeGraphContext.\n")
@@ -271,7 +271,7 @@ def mcp_start():
     except ValueError as e:
         # This typically happens if credentials are still not found after all checks.
         console.print(f"[bold red]Configuration Error:[/bold red] {e}")
-        console.print("Please run `cgc neo4j setup` or use FalkorDB (default).")
+        console.print("Please run `cgc neo4j setup` or use the default LadybugDB backend.")
         raise typer.Exit(code=1) from e
     except KeyboardInterrupt:
         # Handle graceful shutdown on Ctrl+C.
@@ -335,8 +335,15 @@ def neo4j_setup():
     - Hosted (Neo4j AuraDB or remote instance)
     - Connect to existing Neo4j instance
     
-    Note: This is optional. CodeGraphContext works with FalkorDB by default.
+    Note: This is optional. CodeGraphContext works with LadybugDB by default.
     """
+    from codegraphcontext.core import _is_neo4j_available
+
+    if not _is_neo4j_available():
+        console.print("Neo4j support is not installed.", markup=False)
+        console.print("Install it with: pip install 'codegraphcontext-fork[neo4j]'", markup=False)
+        raise typer.Exit(code=1)
+
     console.print("\n[bold cyan]Neo4j Database Setup[/bold cyan]")
     console.print("Configure Neo4j database connection for CodeGraphContext.\n")
     run_neo4j_setup_wizard()
@@ -390,8 +397,32 @@ def context_create(
 ):
     """Create a new logical context."""
     if database is None:
-        database = config_manager.get_config_value("DEFAULT_DATABASE") or "falkordb"
-    config_manager.create_context(name, database, db_path)
+        database = config_manager.get_config_value("DEFAULT_DATABASE") or "ladybugdb"
+        database_is_explicit = config_manager._has_explicit_database_default()
+        if (
+            database.lower() == "ladybugdb"
+            and os.environ.get("CGC_DB_SELECTION_SOURCE", "").startswith(
+                "context ("
+            )
+        ):
+            selected_context = config_manager.resolve_context(read_only=True)
+            if (
+                selected_context.database.lower() == "ladybugdb"
+                and not selected_context.database_is_explicit
+            ):
+                database_is_explicit = (
+                    config_manager._has_explicit_database_default(
+                        include_runtime=False, include_project_env=False
+                    )
+                )
+    else:
+        database_is_explicit = True
+    config_manager.create_context(
+        name,
+        database,
+        db_path,
+        database_is_explicit=database_is_explicit,
+    )
 
 @context_app.command("delete")
 def context_delete(
@@ -455,6 +486,8 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
     config_source_names = []
     key_source_map = {}
     key_defined_in = {}
+    project_env_source_names = set()
+    global_env_source_values = {}
 
     def _append_source(source_name: str, source_values: dict):
         if not source_values:
@@ -491,7 +524,8 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
     if global_env_path.exists():
         try:
             with open(global_env_path, "r", encoding="utf-8", errors="replace") as f:
-                _append_source(str(global_env_path), dotenv_values(stream=f))
+                global_env_source_values = dotenv_values(stream=f)
+                _append_source(str(global_env_path), global_env_source_values)
         except Exception as e:
             console.print(f"[yellow]Warning: Could not load global .env: {e}[/yellow]")
     
@@ -506,7 +540,9 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
             local_dot_env = Path.cwd() / ".env"
             if local_dot_env.exists() and local_dot_env.resolve() != global_env_path.resolve():
                 with open(local_dot_env, "r", encoding="utf-8", errors="replace") as f:
-                    _append_source(str(local_dot_env), dotenv_values(stream=f))
+                    source_name = str(local_dot_env)
+                    _append_source(source_name, dotenv_values(stream=f))
+                    project_env_source_names.add(source_name)
         except Exception as e:
             console.print(f"[yellow]Warning: Could not load .env from current directory: {e}[/yellow]")
 
@@ -516,7 +552,9 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
             if local_cgc_env and local_cgc_env.resolve() != global_env_path.resolve():
                 with open(local_cgc_env, "r", encoding="utf-8", errors="replace") as f:
                     vals = dotenv_values(stream=f)
-                    _append_source(str(local_cgc_env), vals)
+                    source_name = str(local_cgc_env)
+                    _append_source(source_name, vals)
+                    project_env_source_names.add(source_name)
         except Exception as e:
             console.print(
                 f"[yellow]Warning: Could not load {get_repo_context_dir_name()}/.env at cwd: {e}[/yellow]"
@@ -539,6 +577,28 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
             if "PATH" in key:
                 value = normalize_config_path(str(value), absolute=True)
             os.environ[key] = str(value)
+
+    config_manager._record_global_environment_values(
+        {
+            key: normalize_config_path(str(value), absolute=True)
+            if "PATH" in key
+            else str(value)
+            for key, value in global_env_source_values.items()
+            if value is not None and key not in runtime_env
+        },
+        runtime_env,
+    )
+    config_manager._record_project_environment_values(
+        {
+            key: os.environ[key]
+            for key, source_name in key_source_map.items()
+            if source_name in project_env_source_names
+            and key not in runtime_env
+            and merged_config.get(key) is not None
+            and key in os.environ
+        },
+        runtime_env,
+    )
     
     # Report what was loaded
     if config_source_names:
@@ -592,9 +652,45 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
         or "DEFAULT_DATABASE" in runtime_env
     )
 
+    inherited_ladybug_context = False
+    context_db_path = getattr(ctx, "db_path", None) if ctx else None
+    if ctx and str(ctx.database).lower() == "ladybugdb" and context_db_path:
+        if ctx.mode == "per-repo":
+            context_path = Path(context_db_path).parent.parent
+            inherited_ladybug_context = (
+                config_manager._context_database_setting(context_path) is None
+                and not getattr(ctx, "database_is_explicit", False)
+            )
+        elif ctx.mode == "named":
+            inherited_ladybug_context = not getattr(
+                ctx, "database_is_explicit", True
+            )
+
+    inferred_global_context_backend = bool(
+        ctx
+        and ctx.mode == "global"
+        and ctx.database
+        and str(ctx.database).lower() != "ladybugdb"
+        and not os.environ.get("FALKORDB_HOST")
+        and "DATABASE_TYPE" not in key_source_map
+        and "DEFAULT_DATABASE" not in key_source_map
+    )
+
+    context_backend = bool(
+        ctx
+        and ctx.database
+        and (
+            (ctx.mode != "global" and not inherited_ladybug_context)
+            or inferred_global_context_backend
+        )
+    )
+
     # If there is no runtime override, but the context defines a database,
     # set DEFAULT_DATABASE to the context database to ensure that's what gets initialized.
-    if not has_runtime_override and ctx and ctx.mode != "global" and ctx.database:
+    if (
+        not has_runtime_override
+        and context_backend
+    ):
         os.environ["DEFAULT_DATABASE"] = ctx.database
 
     # Now select the database based on precedence:
@@ -603,6 +699,7 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
     # 3. Context database
     # 4. DATABASE_TYPE or DEFAULT_DATABASE from merged config files (.env files)
     # 5. Auto-detect fallback
+    preview_fallbacks = ()
     if runtime_db:
         default_db = runtime_db.lower()
         db_source = "runtime-env (CGC_RUNTIME_DB_TYPE)"
@@ -612,9 +709,15 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
     elif "DEFAULT_DATABASE" in runtime_env:
         default_db = runtime_env["DEFAULT_DATABASE"].lower()
         db_source = "environment (DEFAULT_DATABASE)"
-    elif not has_runtime_override and ctx and ctx.mode != "global" and ctx.database:
+    elif (
+        not has_runtime_override
+        and context_backend
+    ):
         default_db = ctx.database.lower()
-        db_source = f"context ({ctx.context_name or 'resolved'})"
+        context_label = (
+            "global" if ctx.mode == "global" else (ctx.context_name or "resolved")
+        )
+        db_source = f"context ({context_label})"
     elif os.environ.get("DATABASE_TYPE") and "DATABASE_TYPE" in key_source_map:
         default_db = os.environ["DATABASE_TYPE"].lower()
         db_source = key_source_map["DATABASE_TYPE"]
@@ -625,21 +728,29 @@ def _load_credentials(cli_context_flag: Optional[str] = None, *, read_only: bool
         # No explicit choice — ask the factory which backend it will use
         if read_only:
             # A preview only needs a label; avoid constructing a database manager.
-            from codegraphcontext.core import _is_falkordb_available
-            default_db = "falkordb" if _is_falkordb_available() else "kuzudb"
+            from codegraphcontext.core import _default_backend_preview
+            default_db, preview_fallbacks = _default_backend_preview()
         else:
             try:
                 from codegraphcontext.core import get_database_manager
-                _mgr = get_database_manager()
+                probe_db_path = os.environ.get("CGC_RUNTIME_DB_PATH") or context_db_path
+                _mgr = get_database_manager(db_path=probe_db_path)
                 default_db = _mgr.get_backend_type()   # e.g. 'falkordb' / 'kuzudb'
             except Exception:
                 # Factory failed entirely — still show a best-guess
-                from codegraphcontext.core import _is_falkordb_available
-                default_db = "falkordb" if _is_falkordb_available() else "kuzudb"
+                from codegraphcontext.core import _default_backend_preview
+                default_db, preview_fallbacks = _default_backend_preview()
         db_source = "auto-detect"
 
     # Print selection banner
-    if default_db == "neo4j":
+    if preview_fallbacks:
+        fallback_text = ", ".join(preview_fallbacks)
+        console.print(
+            f"[cyan]Using database: {default_db} (source: {db_source}; "
+            f"possible fallback candidates if the selected backend cannot start: "
+            f"{fallback_text})[/cyan]"
+        )
+    elif default_db == "neo4j":
         has_neo4j_creds = all([
             os.environ.get("NEO4J_URI"),
             os.environ.get("NEO4J_USERNAME"),
@@ -1645,11 +1756,19 @@ def doctor():
     console.print("\n[bold]2. Checking Database Connection...[/bold]")
     try:
         _load_credentials()
-        default_db = os.environ.get("CGC_SELECTED_DATABASE") or config.get("DEFAULT_DATABASE", "falkordb")
+        default_db = os.environ.get("CGC_SELECTED_DATABASE") or config.get("DEFAULT_DATABASE", "ladybugdb")
         db_source = os.environ.get("CGC_DB_SELECTION_SOURCE", "unknown")
         console.print(f"   Default database: {default_db} (source: {db_source})")
         
         if default_db == "neo4j":
+            from codegraphcontext.core import _is_neo4j_available
+
+            if not _is_neo4j_available():
+                raise ValueError(
+                    "Neo4j support is not installed. "
+                    "Run `python -m pip install 'codegraphcontext-fork[neo4j]'`."
+                )
+
             uri = os.environ.get("NEO4J_URI")
             username = os.environ.get("NEO4J_USERNAME")
             password = os.environ.get("NEO4J_PASSWORD")
@@ -1691,18 +1810,32 @@ def doctor():
             if find_spec("kuzu") is not None:
                 console.print("   [green]✓[/green] KuzuDB is installed")
             else:
+                from codegraphcontext.core import _kuzudb_install_guidance
+
                 console.print("   [red]✗[/red] KuzuDB is not installed")
-                console.print("       Run: pip install kuzu")
+                console.print(f"       {_kuzudb_install_guidance()}", markup=False)
                 all_checks_passed = False
         elif default_db == "ladybugdb":
             from codegraphcontext.core import ladybugdb_unavailable_reason
 
             ladybug_reason = ladybugdb_unavailable_reason()
             if ladybug_reason is None:
-                console.print("   [green]✓[/green] LadybugDB core (ladybug) is installed")
+                from codegraphcontext.core import get_database_manager
+
+                active_context = config_manager.resolve_context(
+                    cwd=Path.cwd(), create_local_context=False, read_only=True
+                )
+                database_path = os.environ.get("CGC_RUNTIME_DB_PATH") or active_context.db_path
+                probe_manager = get_database_manager(db_path=database_path)
+                try:
+                    with probe_manager.get_driver().session() as probe_session:
+                        probe_session.run("RETURN 1")
+                    console.print("   [green]✓[/green] LadybugDB connection successful")
+                finally:
+                    probe_manager.close_driver()
             else:
                 console.print(f"   [red]✗[/red] {ladybug_reason}")
-                console.print("       Run: pip install ladybug")
+                console.print("       Install: pip install 'codegraphcontext-fork[ladybug]'", markup=False)
                 all_checks_passed = False
         elif default_db == "falkordb-remote":
             from codegraphcontext.core.database_falkordb_remote import FalkorDBRemoteManager
@@ -1718,7 +1851,10 @@ def doctor():
                     console.print("   [green]✓[/green] FalkorDB client is installed")
                 except ImportError:
                     console.print("   [red]✗[/red] FalkorDB client is not installed")
-                    console.print("       Run: pip install falkordb")
+                    console.print(
+                        "       Install: pip install 'codegraphcontext-fork[falkordb-remote]'",
+                        markup=False,
+                    )
                     all_checks_passed = False
 
                 if all_checks_passed:
@@ -1741,7 +1877,7 @@ def doctor():
                     console.print("   [green]✓[/green] FalkorDB Lite is installed")
                     # An import probe is not a connection check. This section is
                     # titled "Checking Database Connection" and the neo4j /
-                    # falkordb-remote branches genuinely connect, so the default
+                    # falkordb-remote branches genuinely connect, so the configured
                     # backend must too — otherwise `doctor` reports a healthy
                     # system without ever touching the database.
                     try:
@@ -1768,11 +1904,29 @@ def doctor():
                 else:
                     raise ImportError("FalkorDB Lite is not available on this platform")
             except ImportError:
-                # falkordb is the configured/default backend, so a missing
+                # falkordb is the configured backend, so a missing
                 # FalkorDB Lite means the database cannot work — fail the check.
                 console.print("   [red]✗[/red] FalkorDB Lite not installed (Python 3.12+ only)")
-                console.print("       Run: pip install falkordblite")
+                console.print(
+                    "       Install: pip install 'codegraphcontext-fork[falkordb-embedded]'",
+                    markup=False,
+                )
                 all_checks_passed = False
+        elif default_db == "nornic":
+            from codegraphcontext.core import _is_neo4j_available
+
+            if not _is_neo4j_available():
+                console.print("   [red]✗[/red] Nornic support requires the Neo4j driver")
+                console.print(
+                    "       Install: python -m pip install 'codegraphcontext-fork[neo4j]'",
+                    markup=False,
+                )
+                all_checks_passed = False
+            else:
+                console.print(
+                    f"   [yellow]⚠[/yellow] No connectivity probe for backend '{default_db}'"
+                )
+                warnings_found = True
         else:
             console.print(f"   [yellow]⚠[/yellow] No connectivity probe for backend '{default_db}'")
             warnings_found = True

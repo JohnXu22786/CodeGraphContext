@@ -42,7 +42,7 @@ from ..tools.indexing.discovery import (
 from ..utils import graph_shapes
 from ..tools.package_resolver import get_local_package_path
 from ..utils.debug_log import info_logger, warning_logger
-from ..core.database import Neo4jConnectionError
+from ..core.database_errors import Neo4jConnectionError
 from ..utils.repo_path import any_repo_matches_path
 from .config_manager import (
     resolve_context,
@@ -86,22 +86,62 @@ def _reject_external_file_symlink(path: Path) -> None:
         raise typer.Exit(code=1)
 
 
-def _kuzu_fallback_path(ctx: ResolvedContext) -> Optional[str]:
-    """Derive a KùzuDB directory when falling back from another backend."""
-    runtime = os.getenv("CGC_RUNTIME_DB_PATH")
-    if runtime:
-        return str(Path(runtime).expanduser().resolve())
-    if ctx.db_path:
-        return str(Path(ctx.db_path).parent / "kuzudb")
-    try:
-        from .config_manager import _default_global_db_path
-        return _default_global_db_path("kuzudb")
-    except Exception:
-        return None
+def _embedded_fallback_manager(ctx: ResolvedContext, reason: str):
+    """Select an installed embedded backend and keep its storage path scoped."""
+    from ..core import _try_fallback_backends
+
+    runtime_path = os.getenv("CGC_RUNTIME_DB_PATH")
+    database_path = runtime_path or ctx.db_path
+    requested_backend = (
+        os.getenv("CGC_RUNTIME_DB_TYPE") or getattr(ctx, "database", "") or ""
+    ).lower()
+    candidates = (
+        ("kuzudb", "ladybugdb")
+        if requested_backend == "falkordb"
+        else ("ladybugdb", "kuzudb")
+    )
+    return _try_fallback_backends(
+        database_path,
+        candidates,
+        reason=reason,
+        preserve_db_path=bool(runtime_path),
+    )
+
+
+def _print_embedded_backend_unavailable() -> None:
+    """Explain how to install or select an embedded backend after fallback fails."""
+    console.print("No embedded database backend is available.", style="bold red")
+    from ..core import _kuzudb_install_guidance
+
+    console.print(
+        f"{_kuzudb_install_guidance()} Use `--db kuzudb`, or use the included "
+        "`--db ladybugdb` backend if its native engine is available.",
+        markup=False,
+    )
+
+
+def _record_selected_backend(ctx: ResolvedContext, db_manager: Any) -> None:
+    """Keep the resolved context aligned with a factory-selected fallback."""
+    selected_database = getattr(
+        db_manager, "get_backend_type", lambda: ctx.database
+    )()
+    if isinstance(selected_database, str) and selected_database:
+        ctx.database = selected_database
+        os.environ["CGC_RUNTIME_DB_TYPE"] = selected_database
+    selected_db_path = getattr(db_manager, "db_path", None)
+    if (
+        isinstance(selected_db_path, str)
+        and selected_db_path
+        and not os.getenv("CGC_RUNTIME_DB_PATH")
+    ):
+        ctx.db_path = selected_db_path
 
 
 def _embedded_gateway_candidates(
-    database_path: Optional[str], backend: Optional[str]
+    database_path: Optional[str],
+    backend: Optional[str],
+    *,
+    preserve_db_path: bool = False,
 ) -> list[tuple[str, str]]:
     """Return effective embedded paths that the configured backend can use.
 
@@ -121,7 +161,7 @@ def _embedded_gateway_candidates(
         "falkordb": ("kuzudb", "ladybugdb"),
         "kuzudb": ("ladybugdb",),
         "ladybugdb": (),
-        "": ("kuzudb", "ladybugdb"),
+        "": ("ladybugdb", "kuzudb"),
     }
     if requested not in fallbacks:
         return []
@@ -131,12 +171,56 @@ def _embedded_gateway_candidates(
     from ..core import _fallback_db_path_for
 
     candidates: list[tuple[str, str]] = []
-    if requested in {"kuzudb", "ladybugdb"}:
+    if requested in {"falkordb", "kuzudb", "ladybugdb"}:
         candidates.append((database_path, requested))
     for fallback_backend in fallbacks[requested]:
-        fallback_path = _fallback_db_path_for(database_path, fallback_backend)
+        fallback_path = (
+            database_path
+            if preserve_db_path
+            else _fallback_db_path_for(database_path, fallback_backend)
+        )
         if fallback_path:
             candidates.append((fallback_path, fallback_backend))
+    return candidates
+
+
+def _gateway_candidates_for_context(ctx: ResolvedContext) -> list[tuple[str, str]]:
+    """Resolve gateway paths for the selected context without opening a manager."""
+    runtime_path = os.getenv("CGC_RUNTIME_DB_PATH")
+    database_path = runtime_path or ctx.db_path
+    implicit_ladybug_default = (
+        str(ctx.database).lower() == "ladybugdb"
+        and (ctx.mode == "global" or not ctx.database_is_explicit)
+        and not os.getenv("CGC_RUNTIME_DB_TYPE")
+        and not os.getenv("DEFAULT_DATABASE")
+    )
+    if implicit_ladybug_default:
+        from ..core import _default_backend_preview, _fallback_db_path_for
+
+        backend, _possible_fallbacks = _default_backend_preview()
+        if not runtime_path and backend in {"falkordb", "kuzudb", "ladybugdb"}:
+            database_path = _fallback_db_path_for(database_path, backend) or database_path
+    else:
+        backend = (
+            os.getenv("CGC_RUNTIME_DB_TYPE")
+            or os.getenv("DEFAULT_DATABASE")
+            or ctx.database
+            or ""
+        ).lower()
+    candidates = _embedded_gateway_candidates(
+        database_path, backend, preserve_db_path=bool(runtime_path)
+    )
+    if implicit_ladybug_default and backend == "ladybugdb":
+        from ..core import _fallback_db_path_for
+
+        for fallback_backend in ("falkordb", "kuzudb"):
+            fallback_path = (
+                database_path
+                if runtime_path
+                else _fallback_db_path_for(database_path, fallback_backend)
+            )
+            if fallback_path:
+                candidates.append((fallback_path, fallback_backend))
     return candidates
 
 
@@ -236,17 +320,21 @@ def _initialize_services(
     console.print("[dim]Initializing services and database connection...[/dim]")
     try:
         # Respect runtime/backend overrides. Context DB is only a default when
-        # neither runtime override nor DEFAULT_DATABASE is already set.
+        # neither runtime override nor DEFAULT_DATABASE is already set. Leave
+        # inherited LadybugDB implicit so the factory can fall back, while
+        # preserving LadybugDB explicitly selected by this context.
         if (
             ctx.database
             and not os.getenv("CGC_RUNTIME_DB_TYPE")
             and not os.getenv("DEFAULT_DATABASE")
+            and (ctx.database != "ladybugdb" or ctx.database_is_explicit)
         ):
             os.environ["DEFAULT_DATABASE"] = ctx.database
         
         # Pass the exact DB path resolved from the context, or the runtime override
         runtime_path = os.getenv("CGC_RUNTIME_DB_PATH")
         db_manager = get_database_manager(db_path=runtime_path or ctx.db_path)
+        _record_selected_backend(ctx, db_manager)
     except ValueError as e:
         console.print(f"[bold red]Database Configuration Error:[/bold red] {e}")
         _fail_services_init()
@@ -267,23 +355,32 @@ def _initialize_services(
             from ..core import mark_falkordb_unavailable
             mark_falkordb_unavailable()
             console.print(f"[yellow]⚠ FalkorDB Lite is not functional in this environment: {e}[/yellow]")
-            console.print("[cyan]Falling back to KùzuDB for a reliable experience...[/cyan]")
-
+            console.print("[cyan]Falling back to an installed embedded backend...[/cyan]")
             # Close the broken driver/socket
             try:
                 db_manager.close_driver()
             except Exception:
                 pass
             
-            # Re-initialize explicitly with KùzuDB (never reuse the FalkorDB directory)
-            from ..core.database_kuzu import KuzuDBManager
-            kuzu_path = _kuzu_fallback_path(ctx)
-            db_manager = KuzuDBManager(db_path=kuzu_path)
+            # Use KùzuDB when installed; the default LadybugDB remains available otherwise.
+            db_manager = _embedded_fallback_manager(
+                ctx,
+                "FalkorDB Lite failed its initial connection check.",
+            )
+            if db_manager is None:
+                _print_embedded_backend_unavailable()
+                _fail_services_init()
+            _record_selected_backend(ctx, db_manager)
             try:
                 db_manager.get_driver()
-                console.print("[green]✓[/green] Successfully switched to KùzuDB fallback")
-            except Exception as kuzu_e:
-                console.print(f"[bold red]Critical Error:[/bold red] Both FalkorDB and KùzuDB failed: {kuzu_e}")
+                console.print(
+                    f"[green]✓[/green] Successfully switched to {db_manager.get_backend_type()} fallback"
+                )
+            except Exception as fallback_error:
+                console.print(
+                    f"[bold red]Critical Error:[/bold red] FalkorDB and the embedded fallback failed: "
+                    f"{fallback_error}"
+                )
                 _fail_services_init()
         else:
             selected_db = (
@@ -298,18 +395,38 @@ def _initialize_services(
                 allow_fallback = os.environ.get("CGC_ALLOW_NEO4J_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
 
                 if selected_db == "neo4j" and allow_fallback:
-                    console.print("[cyan]Neo4j failed and CGC_ALLOW_NEO4J_FALLBACK=true. Falling back to KuzuDB...[/cyan]")
+                    console.print(
+                        "[cyan]Neo4j failed and CGC_ALLOW_NEO4J_FALLBACK=true. "
+                        "Falling back to an installed embedded backend...[/cyan]"
+                    )
+                    db_manager = _embedded_fallback_manager(
+                        ctx,
+                        "Neo4j failed and embedded fallback was enabled.",
+                    )
+                    if db_manager is None:
+                        _print_embedded_backend_unavailable()
+                        _fail_services_init()
+                    _record_selected_backend(ctx, db_manager)
                     try:
-                        from ..core.database_kuzu import KuzuDBManager
-                        db_manager = KuzuDBManager(db_path=_kuzu_fallback_path(ctx))
                         db_manager.get_driver()
-                        console.print("[green]✓[/green] Successfully switched to KuzuDB fallback")
-                    except Exception as kuzu_e:
-                        console.print(f"[bold red]Critical Error:[/bold red] Neo4j failed and KuzuDB fallback failed: {kuzu_e}")
+                        console.print(
+                            f"[green]✓[/green] Successfully switched to {db_manager.get_backend_type()} fallback"
+                        )
+                    except Exception as fallback_error:
+                        console.print(
+                            "[bold red]Critical Error:[/bold red] Neo4j and the embedded fallback failed: "
+                            f"{fallback_error}"
+                        )
                         _fail_services_init()
                 else:
                     if selected_db == "neo4j":
-                        console.print("[yellow]Tip:[/yellow] To continue without Neo4j, rerun with --db kuzudb")
+                        console.print("Tip:", style="yellow")
+                        console.print(
+                            "To continue without Neo4j, use the included default with "
+                            "`--db ladybugdb`, or install KùzuDB with `pip install "
+                            "'codegraphcontext-fork[kuzu]'` and rerun with `--db kuzudb`.",
+                            markup=False,
+                        )
                     _fail_services_init()
             else:
                 console.print(f"[bold red]Database Connection Error:[/bold red] {e}")
@@ -1312,10 +1429,21 @@ def reindex_helper(path: str, context: Optional[str] = None, no_progress: bool =
     from .snapshot_commands import effective_snapshot_identity
 
     if gateway_ctx is not None:
+        inherited_ladybug_context = (
+            str(gateway_ctx.database).lower() == "ladybugdb"
+            and not gateway_ctx.database_is_explicit
+        )
         if (
             gateway_ctx.database
             and not os.getenv("CGC_RUNTIME_DB_TYPE")
             and not os.getenv("DEFAULT_DATABASE")
+            and not (
+                str(gateway_ctx.database).lower() == "ladybugdb"
+                and (
+                    gateway_ctx.mode == "global"
+                    or inherited_ladybug_context
+                )
+            )
         ):
             os.environ["DEFAULT_DATABASE"] = gateway_ctx.database
         backend = (
@@ -1343,10 +1471,9 @@ def reindex_helper(path: str, context: Optional[str] = None, no_progress: bool =
             )
             if gateway_generation_enabled else nullcontext()
         )
-
         registration = None
-        for candidate_path, candidate_backend in _embedded_gateway_candidates(
-            database_path, backend
+        for candidate_path, candidate_backend in _gateway_candidates_for_context(
+            gateway_ctx
         ):
             registration = find_active_gateway(candidate_path, candidate_backend)
             if registration is not None:

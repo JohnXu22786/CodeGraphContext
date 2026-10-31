@@ -111,6 +111,7 @@ def test_factory_retries_falkordb_for_a_different_database_path(monkeypatch):
     monkeypatch.delenv("CGC_RUNTIME_DB_TYPE", raising=False)
     monkeypatch.setattr(core, "_FALKORDB_DISABLED", False)
     monkeypatch.setattr(core, "_is_falkordb_available", lambda: True)
+    monkeypatch.setattr(core, "_is_ladybugdb_available", lambda: False)
     monkeypatch.setattr(core, "_is_kuzudb_available", lambda: True)
     monkeypatch.setattr(database_falkordb, "FalkorDBManager", PathScopedFalkorManager)
     monkeypatch.setattr(database_kuzu, "KuzuDBManager", FallbackKuzuManager)

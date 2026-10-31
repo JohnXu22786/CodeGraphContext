@@ -309,7 +309,10 @@ class TestFalkorDBRemoteManager:
 
             with patch.dict('sys.modules', {'falkordb': None}):
                 with patch('builtins.__import__', side_effect=ImportError("no falkordb")):
-                    with pytest.raises(ValueError, match="FalkorDB client missing"):
+                    with pytest.raises(
+                        ValueError,
+                        match=r"FalkorDB client missing.*codegraphcontext-fork\[falkordb-remote\]",
+                    ):
                         manager.get_driver()
 
 

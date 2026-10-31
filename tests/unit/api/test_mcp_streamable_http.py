@@ -10,6 +10,7 @@ configs (see docs/INTEGRATION_GUIDE.md); tests below cover both.
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import anyio
@@ -52,19 +53,24 @@ class _FakeMCPServer:
 
 @asynccontextmanager
 async def _running_client(env=None, monkeypatch=None):
-    """Build create_app() with env applied, drive its lifespan (starts the
-    MCP session manager's task group), and yield an AsyncClient against it."""
-    for key, value in (env or {}).items():
-        monkeypatch.setenv(key, value)
-
+    """Build the HTTP app without opening a native database engine."""
+    from codegraphcontext.api import app as app_module
+    from codegraphcontext.api import router as api_router
     from codegraphcontext.api.app import create_app
 
-    app = create_app()
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test", follow_redirects=False
-        ) as client:
-            yield client
+    async def fake_server_startup():
+        return SimpleNamespace(db_manager=None)
+
+    monkeypatch.setattr(app_module, "get_server_for_gateway_startup", fake_server_startup)
+    monkeypatch.setattr(app_module, "shutdown_server", lambda: None)
+    with patch.dict("os.environ", env or {}):
+        app = create_app()
+        app.dependency_overrides[api_router.get_server] = fake_server_startup
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test", follow_redirects=False
+            ) as client:
+                yield client
 
 
 @pytest.mark.asyncio
@@ -721,17 +727,24 @@ async def _running_server(port: int):
     actually completes a request/response cycle under mcp 2.x."""
     from codegraphcontext.api.app import create_app
 
-    app = create_app()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    task = asyncio.create_task(server.serve())
-    try:
-        while not server.started:
-            await asyncio.sleep(0.05)
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.should_exit = True
-        await task
+    async def fake_server_startup():
+        return SimpleNamespace(db_manager=None)
+
+    with (
+        patch("codegraphcontext.api.app.get_server_for_gateway_startup", fake_server_startup),
+        patch("codegraphcontext.api.app.shutdown_server"),
+    ):
+        app = create_app()
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        server = uvicorn.Server(config)
+        task = asyncio.create_task(server.serve())
+        try:
+            while not server.started:
+                await asyncio.sleep(0.05)
+            yield f"http://127.0.0.1:{port}"
+        finally:
+            server.should_exit = True
+            await task
 
 
 @pytest.mark.asyncio

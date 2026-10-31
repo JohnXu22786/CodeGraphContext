@@ -22,7 +22,7 @@ KUZU_SPEC = EmbeddedBackendSpec(
     path_env_var="KUZUDB_PATH",
     config_key="KUZUDB_PATH",
     default_dir="kuzudb",
-    install_hint="Run 'pip install kuzu'",
+    install_hint="Run `python -m pip install 'codegraphcontext-fork[kuzu]'`",
 )
 
 

@@ -264,9 +264,12 @@ class FalkorDBManager:
                     except ImportError as e:
                         error_logger(
                             "FalkorDB client is not installed. Install it with:\n"
-                            "  pip install falkordblite"
+                            "  python -m pip install 'codegraphcontext-fork[falkordb-embedded]'"
                         )
-                        raise ValueError("FalkorDB client missing.") from e
+                        raise ValueError(
+                            "FalkorDB Lite client missing. Install the optional backend with "
+                            "`python -m pip install 'codegraphcontext-fork[falkordb-embedded]'`."
+                        ) from e
                     except FalkorDBUnavailableError:
                         FalkorDBManager._failed_configurations.add(self._configuration_key)
                         raise
@@ -558,7 +561,7 @@ class FalkorDBManager:
         except ImportError:
             return False, (
                 "FalkorDB client is not installed.\n"
-                "Install it with: pip install falkordblite"
+                "Install it with: python -m pip install 'codegraphcontext-fork[falkordb-embedded]'"
             )
 
 
