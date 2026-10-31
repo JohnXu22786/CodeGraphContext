@@ -67,8 +67,16 @@ class RepositoryEventHandler(FileSystemEventHandler):
         super().__init__()
         self.graph_builder = graph_builder
         self.repo_path = repo_path.resolve()
-        self._bound_repository_identity = repository_identity(self.repo_path)
-        self._bound_identity_key = self._bound_repository_identity.storage_key
+        self._bound_repository_identity = (
+            repository_identity(self.repo_path)
+            if generation_db_path and generation_identity
+            else None
+        )
+        self._bound_identity_key = (
+            self._bound_repository_identity.storage_key
+            if self._bound_repository_identity is not None
+            else None
+        )
         if (
             generation_identity
             and generation_identity.get("kind") in {"git", "non-git"}
