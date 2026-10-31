@@ -322,6 +322,7 @@ def test_falkordb_gateway_candidates_preserve_kuzu_fallback_order():
     candidates = _embedded_gateway_candidates("/runtime/db/falkordb", "falkordb")
 
     assert candidates == [
+        ("/runtime/db/falkordb", "falkordb"),
         ("/runtime/db/kuzudb", "kuzudb"),
         ("/runtime/db/ladybugdb", "ladybugdb"),
     ]

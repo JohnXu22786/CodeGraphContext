@@ -153,7 +153,7 @@ def _embedded_gateway_candidates(
     from ..core import _fallback_db_path_for
 
     candidates: list[tuple[str, str]] = []
-    if requested in {"kuzudb", "ladybugdb"}:
+    if requested in {"falkordb", "kuzudb", "ladybugdb"}:
         candidates.append((database_path, requested))
     for fallback_backend in fallbacks[requested]:
         fallback_path = (
