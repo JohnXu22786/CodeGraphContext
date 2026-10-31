@@ -55,6 +55,7 @@ class _FakeMCPServer:
 async def _running_client(env=None, monkeypatch=None):
     """Build the HTTP app without opening a native database engine."""
     from codegraphcontext.api import app as app_module
+    from codegraphcontext.api import router as api_router
     from codegraphcontext.api.app import create_app
 
     async def fake_server_startup():
@@ -64,6 +65,7 @@ async def _running_client(env=None, monkeypatch=None):
     monkeypatch.setattr(app_module, "shutdown_server", lambda: None)
     with patch.dict("os.environ", env or {}):
         app = create_app()
+        app.dependency_overrides[api_router.get_server] = fake_server_startup
         async with app.router.lifespan_context(app):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test", follow_redirects=False
