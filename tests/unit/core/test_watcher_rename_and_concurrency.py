@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from codegraphcontext.core import watcher as watcher_mod
+from codegraphcontext.core.index_generation import read_generation_state, write_generation_state
 from codegraphcontext.core.watcher import RepositoryEventHandler
 
 
@@ -335,3 +336,70 @@ def test_cancel_pending_events_discards_delayed_actions(tmp_path):
     handler.stop()
 
     assert not fired.is_set()
+
+
+def test_watcher_marks_generation_incomplete_while_mutating(tmp_path, monkeypatch):
+    handler = _handler(tmp_path)
+    identity = {"kind": "git", "repository_id": "repo", "storage_key": "branch"}
+    handler._bound_identity_key = "branch"
+    db_path = tmp_path / "db" / "ladybugdb"
+    write_generation_state(db_path, identity, state="complete", generation_id="initial")
+    handler._generation_db_path = str(db_path)
+    handler._generation_identity = identity
+    handler._identity_matches_bound_index = lambda: True
+    monkeypatch.setattr(
+        watcher_mod, "repository_identity",
+        lambda _path: SimpleNamespace(as_dict=lambda: identity),
+    )
+    entered_update = threading.Event()
+    finish_update = threading.Event()
+
+    def blocked_update(_path):
+        entered_update.set()
+        finish_update.wait(timeout=5)
+
+    handler._handle_modification_locked = blocked_update
+    worker = threading.Thread(target=handler._handle_modification, args=(str(tmp_path / "x.py"),))
+    worker.start()
+    try:
+        assert entered_update.wait(timeout=2)
+        state = read_generation_state(db_path, identity)
+        assert state["state"] == "building"
+        finish_update.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert read_generation_state(db_path, identity)["state"] == "complete"
+    finally:
+        finish_update.set()
+
+
+def test_watcher_generation_marker_tracks_new_commit_on_bound_branch(tmp_path, monkeypatch):
+    handler = _handler(tmp_path)
+    identity = {
+        "kind": "git", "repository_id": "repo", "worktree_id": "worktree",
+        "storage_key": "branch-key", "branch": "main", "commit": "old-commit",
+    }
+    current_identity = {**identity, "commit": "new-commit"}
+    db_path = tmp_path / "db" / "ladybugdb"
+    handler._bound_identity_key = "branch-key"
+    handler._generation_db_path = str(db_path)
+    handler._generation_identity = identity
+    write_generation_state(db_path, identity, state="complete", generation_id="old-commit")
+    monkeypatch.setattr(
+        watcher_mod,
+        "repository_identity",
+        lambda _path: SimpleNamespace(
+            storage_key="branch-key", as_dict=lambda: current_identity
+        ),
+    )
+
+    with handler._generation_update():
+        building = read_generation_state(db_path)
+        assert building["identity"] == current_identity
+        assert building["state"] == "building"
+        assert building["generation_id"] == "branch-key:new-commit"
+
+    complete = read_generation_state(db_path)
+    assert complete["identity"] == current_identity
+    assert complete["state"] == "incomplete"
+    assert handler._generation_identity == current_identity

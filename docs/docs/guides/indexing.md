@@ -129,3 +129,58 @@ env/
 .idea/
 .project
 ```
+
+## 6. Branch and worktree indexes
+
+In the default **per-repository** mode, CGC keeps the root checkout's default
+branch at the existing `.codegraphcontext/db/<backend>` location. Other
+branches, detached checkouts, and linked worktrees use separate hashed
+directories below `.codegraphcontext/db/branches/`. The hash includes the
+repository, branch, and worktree identity; snapshot documents include the Git
+commit, context, generation ID, and completion state without storing checkout
+absolute paths.
+
+Before CGC can certify an older local database as a complete generation, run
+`cgc index` once on the full checkout root. Indexing a subdirectory or running
+a partial operation such as package indexing, cleanup, or a watcher event
+cannot certify a database that was previously unknown or incomplete. Databases
+without a verified identity marker are reindexed instead of being assumed to
+match the current branch or commit.
+
+An explicit `--context`, named context, or `CGC_RUNTIME_DB_PATH` continues to
+use the configured shared database. That is an intentional opt-out from
+automatic branch isolation. CGC does not move or migrate those databases.
+Non-Git directories continue to use their existing per-repository database
+location. Detached HEADs are identified by commit SHA.
+
+Completion markers are currently supported for embedded FalkorDB, Kùzu, and
+LadybugDB stores. Neo4j and other remote/shared backends do not yet have a
+durable CGC generation marker, so their snapshots remain marked incomplete and
+`cgc diff` refuses to compare them until that backend can report a verified
+completed generation.
+
+Watchers are bound to the branch/worktree that selected their database. If the
+checkout switches to a different branch or worktree while a watcher is running,
+the watcher stops applying updates to that database; restart CGC to resolve the
+new identity. Same-branch commits continue to use the same branch index.
+Embedded-backend watcher updates temporarily mark the generation as building;
+snapshot capture overlapping an update is rejected and can be retried after the
+watcher finishes.
+
+Save and compare graph snapshots with:
+
+```bash
+cgc snapshot save --name before-refactor
+cgc snapshot list
+cgc diff --against before-refactor
+```
+
+Snapshots are kept under the user's CGC configuration directory, grouped by a
+safe repository hash, and are not pruned automatically. Diff output sorts graph
+records deterministically. A symbol move is paired only when its structural
+signature is unique on both sides; ambiguous duplicate names remain additions
+and removals. Diffs reject incomplete/stale generations, different repositories,
+and different contexts. The matching and ambiguity handling are adapted from
+the MIT-licensed upstream draft PR [#1736](https://github.com/CodeGraphContext/CodeGraphContext/pull/1736)
+by yashraj4; its branch-isolation and generation behavior were not included in
+that draft.

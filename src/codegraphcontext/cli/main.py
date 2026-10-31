@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 from rich import box
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 import asyncio
 import logging
 import json
@@ -52,6 +52,7 @@ from .cli_helpers import (
     clean_helper,
     stats_helper,
     _initialize_services,
+    _generation_update_for_context,
     watch_helper,
     unwatch_helper,
     list_watching_helper,
@@ -98,6 +99,113 @@ app = typer.Typer(
     # `-h` is accepted as --help on every command, not just at the root.
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+snapshot_app = typer.Typer(help="Save and compare deterministic graph snapshots")
+app.add_typer(snapshot_app, name="snapshot")
+
+
+def _snapshot_identity(ctx: Any):
+    from .snapshot_commands import effective_snapshot_identity
+
+    identity, repository_root = effective_snapshot_identity(ctx, Path.cwd())
+    return identity, repository_root
+
+
+def _snapshot_services(context: Optional[str]):
+    services = _initialize_services(context, cwd=Path.cwd())
+    if not all(services[:3]):
+        raise typer.Exit(code=1)
+    db_manager, _graph_builder, _code_finder, ctx = services
+    identity, repository_root = _snapshot_identity(ctx)
+    from .snapshot_commands import generation_info
+
+    backend = getattr(db_manager, "get_backend_type", lambda: "")()
+    generation = generation_info(
+        ctx, identity, getattr(db_manager, "db_path", None), backend
+    )
+    return db_manager, ctx, identity, generation, repository_root
+
+
+@snapshot_app.command("save")
+def snapshot_save(
+    name: Optional[str] = typer.Option(None, "--name", help="Snapshot name (defaults to UTC timestamp)"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing snapshot"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific named context"),
+    as_json: bool = typer.Option(False, "--json", help="Print a JSON receipt"),
+):
+    """Save a complete graph generation for later diffing."""
+    from .snapshot_commands import run_snapshot_save
+    from ..core.graph_snapshot import default_snapshot_name
+
+    db_manager, ctx, identity, generation, repository_root = _snapshot_services(context)
+    try:
+        snapshot = run_snapshot_save(
+            db_manager,
+            name=name or default_snapshot_name(),
+            force=force,
+            ctx=ctx,
+            identity=identity,
+            generation=generation,
+            repository_root=repository_root,
+            as_json=as_json,
+        )
+        if not snapshot.generation.get("complete") or not snapshot.generation.get("current"):
+            console.print(
+                "[yellow]Snapshot saved as incomplete; finish indexing before diffing it.[/yellow]"
+            )
+    except Exception as exc:
+        console.print(f"[red]Could not save snapshot: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        db_manager.close_driver()
+
+
+@snapshot_app.command("list")
+def snapshot_list(
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific named context"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+):
+    """List snapshots for the current branch/worktree identity."""
+    from .snapshot_commands import run_snapshot_list
+    resolved = config_manager.resolve_context(context, cwd=Path.cwd(), read_only=True)
+    identity, _repository_root = _snapshot_identity(resolved)
+    run_snapshot_list(
+        identity, resolved, as_json=as_json
+    )
+
+
+@app.command("diff")
+def graph_diff(
+    against: Optional[str] = typer.Option(None, "--against", help="Snapshot name; defaults to the newest snapshot"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific named context"),
+    as_json: bool = typer.Option(False, "--json", help="Print a machine-readable diff"),
+    limit: Optional[int] = typer.Option(None, "--limit", min=0, help="Limit human-readable change rows"),
+):
+    """Compare the current graph generation with a saved snapshot."""
+    from .snapshot_commands import load_base_snapshot, run_diff
+
+    db_manager, ctx, identity, generation, repository_root = _snapshot_services(context)
+    try:
+        base = load_base_snapshot(against, identity, ctx)
+        changed = run_diff(
+            db_manager,
+            base=base,
+            ctx=ctx,
+            identity=identity,
+            generation=generation,
+            repository_root=repository_root,
+            as_json=as_json,
+            limit=limit,
+        )
+        if changed:
+            raise typer.Exit(code=1)
+    except Exception as exc:
+        if isinstance(exc, typer.Exit):
+            raise
+        console.print(f"[red]Could not diff snapshots: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        db_manager.close_driver()
 console = Console(stderr=True)
 # `analyze` prints its primary product (the table, and the notice that there is
 # none), so it goes to stdout like `cgc stats` / `cgc diagram` already do;
@@ -873,12 +981,15 @@ def bundle_import(
         console.print(f"[cyan]Importing bundle from {bundle_path}...[/cyan]")
         
         bundle = CGCBundle(db_manager)
-        success, message = bundle.import_from_bundle(
-            bundle_path,
-            clear_existing=clear,
-            password=password,
-            verify_key=verify_key,
-        )
+        with _generation_update_for_context(db_manager, services[3]) as generation_update:
+            success, message = bundle.import_from_bundle(
+                bundle_path,
+                clear_existing=clear,
+                password=password,
+                verify_key=verify_key,
+            )
+            if not success and generation_update:
+                generation_update.leave_incomplete()
         
         if success:
             console.print(f"[bold green]{message}[/bold green]")
@@ -1927,7 +2038,7 @@ def delete(
         services = _initialize_services(context)
         if not all(services[:3]):
             raise typer.Exit(code=1)
-        db_manager, graph_builder, code_finder = services[:3]
+        db_manager, graph_builder, code_finder, ctx = services
         
         try:
             # Get list of repositories
@@ -1962,26 +2073,28 @@ def delete(
                 console.print("[yellow]Deletion cancelled. Confirmation text did not match.[/yellow]")
                 return
             
-            # Delete all repositories
-            console.print("\n[cyan]Deleting all repositories...[/cyan]")
-            deleted_count = 0
-            
-            for repo in repos:
-                repo_path = repo.get("path", "")
-                try:
-                    graph_builder.delete_repository_from_graph(repo_path)
-                    console.print(f"[green]✓[/green] Deleted: {repo.get('name', '')}")
-                    deleted_count += 1
-                except Exception as e:
-                    console.print(f"[red]✗[/red] Failed to delete {repo.get('name', '')}: {e}")
-            
-            if deleted_count < len(repos):
-                console.print(
-                    f"\n[bold yellow]Deleted {deleted_count}/{len(repos)} repositories; "
-                    "some deletions failed.[/bold yellow]"
-                )
-                raise typer.Exit(code=1)
-            console.print(f"\n[bold green]Successfully deleted {deleted_count}/{len(repos)} repositories![/bold green]")
+            with _generation_update_for_context(db_manager, ctx) as generation_update:
+                console.print("\n[cyan]Deleting all repositories...[/cyan]")
+                deleted_count = 0
+
+                for repo in repos:
+                    repo_path = repo.get("path", "")
+                    try:
+                        graph_builder.delete_repository_from_graph(repo_path)
+                        console.print(f"[green]✓[/green] Deleted: {repo.get('name', '')}")
+                        deleted_count += 1
+                    except Exception as e:
+                        console.print(f"[red]✗[/red] Failed to delete {repo.get('name', '')}: {e}")
+
+                if deleted_count < len(repos):
+                    if generation_update:
+                        generation_update.leave_incomplete()
+                    console.print(
+                        f"\n[bold yellow]Deleted {deleted_count}/{len(repos)} repositories; "
+                        "some deletions failed.[/bold yellow]"
+                    )
+                    raise typer.Exit(code=1)
+                console.print(f"\n[bold green]Successfully deleted {deleted_count}/{len(repos)} repositories![/bold green]")
 
         finally:
             db_manager.close_driver()

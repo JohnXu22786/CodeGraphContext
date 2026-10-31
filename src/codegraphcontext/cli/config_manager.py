@@ -56,6 +56,7 @@ from codegraphcontext.runtime_paths import (
     get_default_debug_log_path,
     get_repo_context_path,
 )
+from codegraphcontext.utils.branch_identity import branch_database_path
 
 
 def _atomic_write_text(path: Path, content: str, *, secure: bool = False) -> None:
@@ -1010,6 +1011,7 @@ class ResolvedContext:
     db_path: str          # absolute path to the DB directory
     cgcignore_path: str   # path to the applicable .cgcignore
     is_local: bool = False  # True when a repository-local context was found
+    repository_identity: Optional[dict] = None  # identity used to resolve per-repo storage
 
 
 def find_local_cgc_dir(start: Optional[Path] = None) -> Optional[Path]:
@@ -1075,6 +1077,32 @@ def resolve_context(
 
     # --- 2. Repository-local context directory (per-repo mode only) ---
     local_cgc = find_local_cgc_dir(cwd) if cfg.mode == "per-repo" else None
+    mapping = get_workspace_mapping(cwd) if cfg.mode == "per-repo" else None
+
+    # A saved workspace mapping is the per-repo fallback when the current
+    # directory has no repository-local context of its own. Resolve it before
+    # auto-creating a new context so mapped repositories retain their selected
+    # shared context directory while still getting branch/worktree isolation.
+    if local_cgc is None and mapping:
+        mapped_ctx_path = Path(mapping["context_path"])
+        if mapped_ctx_path.exists() and mapped_ctx_path.is_dir():
+            mapped_db = mapping.get("database", "falkordb")
+            from codegraphcontext.utils.branch_identity import repository_identity
+
+            resolved_identity = repository_identity(cwd)
+            mapped_db_path = branch_database_path(
+                mapped_ctx_path, mapped_db, cwd, resolved_identity,
+                persist_default=not read_only,
+            )
+            return ResolvedContext(
+                mode="per-repo",
+                context_name="",
+                database=mapped_db,
+                db_path=str(mapped_db_path),
+                cgcignore_path=str(mapped_ctx_path / ".cgcignore"),
+                is_local=True,
+                repository_identity=resolved_identity.as_dict(),
+            )
     
     # In per-repo mode, resolve the path without creating it for read-only callers.
     if local_cgc is None and cfg.mode == "per-repo":
@@ -1122,7 +1150,19 @@ def resolve_context(
                 local_db = local_raw.get("database", local_db)
             except Exception:
                 pass
-        db_path = str(local_cgc / "db" / local_db)
+        # Default local indexes are isolated per branch/worktree. Keep the
+        # root checkout's default branch on its legacy path so existing local
+        # indexes remain readable; explicit global/named/runtime paths are
+        # resolved elsewhere and remain authoritative.
+        from codegraphcontext.utils.branch_identity import repository_identity
+
+        resolved_identity = repository_identity(cwd)
+        db_path = str(
+            branch_database_path(
+                local_cgc, local_db, cwd, resolved_identity,
+                persist_default=not read_only,
+            )
+        )
         cgcignore = str(local_cgc / ".cgcignore")
         return ResolvedContext(
             mode="per-repo",
@@ -1131,22 +1171,8 @@ def resolve_context(
             db_path=db_path,
             cgcignore_path=cgcignore,
             is_local=True,
+            repository_identity=resolved_identity.as_dict(),
         )
-
-    # --- 2b. Saved workspace mapping (per-repo mode only) ---
-    mapping = get_workspace_mapping(cwd) if cfg.mode == "per-repo" else None
-    if mapping:
-        mapped_ctx_path = Path(mapping["context_path"])
-        if mapped_ctx_path.exists() and mapped_ctx_path.is_dir():
-            mapped_db = mapping.get("database", "falkordb")
-            return ResolvedContext(
-                mode="per-repo",
-                context_name="",
-                database=mapped_db,
-                db_path=str(mapped_ctx_path / "db" / mapped_db),
-                cgcignore_path=str(mapped_ctx_path / ".cgcignore"),
-                is_local=True,
-            )
 
     # --- 3. Global config.yaml ---
     if cfg.mode == "named":

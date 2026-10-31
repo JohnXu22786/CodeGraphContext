@@ -10,6 +10,31 @@ from ...utils.repo_path import repo_record_matches_path
 from ..package_resolver import get_local_package_path
 
 
+def _track_generation(coroutine, job_manager, job_id, db_path, identity):
+    """Keep marker-backed snapshots unverified for the lifetime of an MCP job."""
+    if not db_path or not identity:
+        return coroutine
+
+    async def tracked():
+        from ...core.index_generation import async_generation_update
+
+        generation_id = (
+            f"{identity.get('storage_key', '')}:"
+            f"{identity.get('commit') or 'uncommitted'}"
+        )
+        async with async_generation_update(
+            db_path, identity, generation_id=generation_id
+        ) as update:
+            result = await coroutine
+            job = job_manager.get_job(job_id) if job_id else None
+            status = getattr(getattr(job, "status", None), "value", None)
+            if status in {"failed", "cancelled"}:
+                update.leave_incomplete()
+            return result
+
+    return tracked()
+
+
 def _get_timeout_seconds(args: Dict[str, Any]):
     """Return a validated optional indexing deadline and an error response."""
     raw_timeout = args.get("timeout_seconds")
@@ -26,7 +51,15 @@ def _get_timeout_seconds(args: Dict[str, Any]):
     return timeout_seconds, None
 
 
-def add_code_to_graph(graph_builder, job_manager, loop, list_repos_func, **args) -> Dict[str, Any]:
+def add_code_to_graph(
+    graph_builder,
+    job_manager,
+    loop,
+    list_repos_func,
+    generation_db_path=None,
+    generation_identity=None,
+    **args,
+) -> Dict[str, Any]:
     """
     Tool implementation to index a directory of code.
     Runs indexing asynchronously via a background job.
@@ -108,6 +141,13 @@ def add_code_to_graph(graph_builder, job_manager, loop, list_repos_func, **args)
         coro = graph_builder.build_graph_from_path_async(
             path_obj, is_dependency, job_id
         )
+        coro = _track_generation(
+            coro,
+            job_manager,
+            job_id,
+            generation_db_path,
+            generation_identity,
+        )
         asyncio.run_coroutine_threadsafe(coro, loop)
         
         debug_log(f"Started background job {job_id} for path: {str(path_obj)}, is_dependency: {is_dependency}")
@@ -127,7 +167,15 @@ def add_code_to_graph(graph_builder, job_manager, loop, list_repos_func, **args)
         debug_log(f"Error creating background job: {str(e)}")
         return {"error": f"Failed to start background processing: {str(e)}"}
 
-def add_package_to_graph(graph_builder, job_manager, loop, list_repos_func, **args) -> Dict[str, Any]:
+def add_package_to_graph(
+    graph_builder,
+    job_manager,
+    loop,
+    list_repos_func,
+    generation_db_path=None,
+    generation_identity=None,
+    **args,
+) -> Dict[str, Any]:
     """Tool to add a package to the graph by auto-discovering its location"""
     package_name = args.get("package_name")
     language = args.get("language")
@@ -178,6 +226,13 @@ def add_package_to_graph(graph_builder, job_manager, loop, list_repos_func, **ar
         
         coro = graph_builder.build_graph_from_path_async(
             path_obj, is_dependency, job_id
+        )
+        coro = _track_generation(
+            coro,
+            job_manager,
+            job_id,
+            generation_db_path,
+            generation_identity,
         )
         asyncio.run_coroutine_threadsafe(coro, loop)
         

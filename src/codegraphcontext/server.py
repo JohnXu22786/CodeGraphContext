@@ -42,6 +42,7 @@ from .runtime_paths import (
     get_repo_context_dir_name,
     get_repo_context_path,
 )
+from .utils.branch_identity import branch_database_path, repository_identity
 from .mcp_service import MCP_SERVER_VERSION, dispatch_tool_call
 from .utils.gcf_encoder import encode_response
 
@@ -706,7 +707,10 @@ class MCPServer:
         return management_handlers.list_indexed_repositories(self.code_finder, **args)
 
     def delete_repository_tool(self, **args) -> Dict[str, Any]:
-        return management_handlers.delete_repository(self.graph_builder, **args)
+        with self._context_transition_lock:
+            return self._track_generation_mutation(
+                lambda: management_handlers.delete_repository(self.graph_builder, **args)
+            )
 
     def check_job_status_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.check_job_status(self.job_manager, **args)
@@ -716,6 +720,59 @@ class MCPServer:
     
     def list_jobs_tool(self, **args: Any) -> Dict[str, Any]:
         return management_handlers.list_jobs(self.job_manager)
+
+    def _generation_tracking_kwargs(self) -> Dict[str, Any]:
+        """Marker identity for MCP writes to the active embedded context."""
+        db_manager = getattr(self, "db_manager", None)
+        context = getattr(self, "resolved_context", None)
+        if db_manager is None or context is None:
+            return {}
+        db_path = getattr(db_manager, "db_path", None)
+        backend = getattr(db_manager, "get_backend_type", lambda: "")()
+        if not db_path or backend not in {"falkordb", "kuzudb", "ladybugdb"}:
+            return {}
+        from .cli.snapshot_commands import effective_snapshot_identity
+
+        identity_root = getattr(self, "active_repo_path", None) or getattr(self, "cwd", Path.cwd())
+        identity, _ = effective_snapshot_identity(context, identity_root)
+        return {"generation_db_path": db_path, "generation_identity": identity}
+
+    def _validate_local_context_path(self, target_path: Any) -> Optional[str]:
+        """Reject repository-scoped operations aimed outside the selected checkout."""
+        if not target_path:
+            return None
+        from .cli.snapshot_commands import effective_snapshot_identity
+
+        identity_root = getattr(self, "active_repo_path", None) or getattr(
+            self, "cwd", Path.cwd()
+        )
+        selected_identity, _ = effective_snapshot_identity(
+            getattr(self, "resolved_context", None), Path(identity_root)
+        )
+        if selected_identity.get("kind") not in {"git", "non-git"}:
+            return None
+        target_identity = repository_identity(Path(target_path))
+        if target_identity.storage_key != selected_identity.get("storage_key"):
+            return (
+                "Target path does not match the repository/worktree selected for "
+                "this database context. Switch context first."
+            )
+        return None
+
+    def _track_generation_mutation(self, operation):
+        """Mark synchronous MCP graph mutations on the active local DB."""
+        tracking = self._generation_tracking_kwargs()
+        if not tracking:
+            return operation()
+        from .core.index_generation import generation_update
+
+        with generation_update(
+            tracking["generation_db_path"], tracking["generation_identity"]
+        ) as update:
+            result = operation()
+            if isinstance(result, dict) and result.get("error"):
+                update.leave_incomplete()
+            return result
 
     def list_watched_paths_tool(self, **args) -> Dict[str, Any]:
         return watcher_handlers.list_watched_paths(self.code_watcher, **args)
@@ -727,35 +784,58 @@ class MCPServer:
         # Register the pending job before a concurrent context switch can pass
         # its active-job guard and tear down the DB this handler is preparing to use.
         with self._context_transition_lock:
+            args.pop("generation_db_path", None)
+            args.pop("generation_identity", None)
+            mismatch = self._validate_local_context_path(
+                args.get("path") or args.get("repo_path")
+            )
+            if mismatch:
+                return {"error": mismatch}
             return indexing_handlers.add_code_to_graph(
                 self.graph_builder,
                 self.job_manager,
                 self.loop,
                 self.list_indexed_repositories_tool,
+                **self._generation_tracking_kwargs(),
                 **args
             )
     
     def add_package_to_graph_tool(self, **args) -> Dict[str, Any]:
         with self._context_transition_lock:
+            args.pop("generation_db_path", None)
+            args.pop("generation_identity", None)
             return indexing_handlers.add_package_to_graph(
                 self.graph_builder,
                 self.job_manager,
                 self.loop,
                 self.list_indexed_repositories_tool,
+                **self._generation_tracking_kwargs(),
                 **args
             )
 
     def watch_directory_tool(self, **args) -> Dict[str, Any]:
         # watch_directory needs to call metadata tools.
-        return watcher_handlers.watch_directory(
-            self.code_watcher,
-            self.list_indexed_repositories_tool,
-            self.add_code_to_graph_tool,
-            **args
-        )
+        with self._context_transition_lock:
+            args.pop("generation_db_path", None)
+            args.pop("generation_identity", None)
+            tracking = self._generation_tracking_kwargs()
+            requested_path = args.get("path") or args.get("repo_path")
+            mismatch = self._validate_local_context_path(requested_path)
+            if mismatch:
+                return {"error": mismatch}
+            return watcher_handlers.watch_directory(
+                self.code_watcher,
+                self.list_indexed_repositories_tool,
+                self.add_code_to_graph_tool,
+                **tracking,
+                **args
+            )
 
     def load_bundle_tool(self, **args) -> Dict[str, Any]:
-        return management_handlers.load_bundle(self.code_finder, **args)
+        with self._context_transition_lock:
+            return self._track_generation_mutation(
+                lambda: management_handlers.load_bundle(self.code_finder, **args)
+            )
     
     def search_registry_bundles_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.search_registry_bundles(self.code_finder, **args)
@@ -1046,7 +1126,14 @@ class MCPServer:
             except Exception:
                 pass
 
-        new_db_path = str(cgc_dir / "db" / local_db)
+        runtime_db_path = os.getenv("CGC_RUNTIME_DB_PATH")
+        selected_database = os.getenv("CGC_RUNTIME_DB_TYPE") or local_db
+        repository_selection = repository_identity(repository_root)
+        new_db_path = runtime_db_path or str(
+            branch_database_path(
+                cgc_dir, selected_database, repository_root, repository_selection
+            )
+        )
 
         try:
             watcher_was_running = self._stop_current_watcher()
@@ -1057,7 +1144,7 @@ class MCPServer:
             if close_error:
                 return close_error
 
-            os.environ['CGC_RUNTIME_DB_TYPE'] = local_db
+            os.environ['CGC_RUNTIME_DB_TYPE'] = selected_database
             new_manager = get_database_manager(db_path=new_db_path)
             new_manager.get_driver()
 
@@ -1065,10 +1152,13 @@ class MCPServer:
             self.resolved_context = type(self.resolved_context)(
                 mode="per-repo",
                 context_name="",
-                database=local_db,
+                database=selected_database,
                 db_path=new_db_path,
                 cgcignore_path=str(cgc_dir / ".cgcignore"),
-                is_local=True,
+                is_local=not bool(runtime_db_path),
+                repository_identity=(
+                    repository_selection.as_dict() if not runtime_db_path else None
+                ),
             )
 
             # Rebuild dependent components with the new DB manager
@@ -1086,7 +1176,7 @@ class MCPServer:
             return {
                 "status": "ok",
                 "message": f"Switched to context at {cgc_dir}.",
-                "database": local_db,
+                "database": selected_database,
                 "db_path": new_db_path,
                 "saved": should_save,
             }
