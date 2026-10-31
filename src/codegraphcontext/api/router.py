@@ -3,6 +3,8 @@ import asyncio
 import hmac
 import ipaddress
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+import json
+from fastapi.encoders import jsonable_encoder
 from typing import Dict, Any, List
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from .schemas import (
     LocalUpdateRequest,
 )
 from .auth import require_api_key
-from codegraphcontext.server import MCPServer
+from codegraphcontext.server import MCPServer, _apply_final_output_limits
 from codegraphcontext.core.jobs import JobStatus, wait_task_until_stopped
 from codegraphcontext.core.database_ownership import (
     DatabaseOwnershipLease,
@@ -244,6 +246,60 @@ async def update_through_local_gateway(
         "data": {"path": str(path), "job_id": job_id},
     }
 
+
+def _bounded_api_tool_data(tool_name: str, result: Any) -> Any:
+    """Limit tool data against the serialized REST response envelope."""
+    response_text = json.dumps(
+        jsonable_encoder(result), ensure_ascii=False, separators=(",", ":")
+    )
+
+    def serialize_wrapped(text: str) -> bytes:
+        wrapped = ApiResponse(status="ok", data=json.loads(text))
+        return json.dumps(
+            jsonable_encoder(wrapped),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    bounded_text = _apply_final_output_limits(
+        tool_name, response_text, serialize_wrapped
+    )
+    return json.loads(bounded_text)
+
+
+def _bounded_api_error(tool_name: str, error: Any) -> ApiResponse:
+    """Limit error details against the same serialized REST envelope cap."""
+    error_text = json.dumps(error, ensure_ascii=False, separators=(",", ":"))
+
+    def serialize_wrapped(text: str) -> bytes:
+        payload = json.loads(text)
+        if isinstance(payload, dict) and payload.get("truncated") is True:
+            response = ApiResponse(
+                status="error",
+                error=payload.get("notice", "Error response truncated."),
+                data=payload,
+            )
+        else:
+            response = ApiResponse(status="error", error=str(payload))
+        return json.dumps(
+            jsonable_encoder(response),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    bounded_text = _apply_final_output_limits(
+        tool_name, error_text, serialize_wrapped
+    )
+    payload = json.loads(bounded_text)
+    if isinstance(payload, dict) and payload.get("truncated") is True:
+        return ApiResponse(
+            status="error",
+            error=payload.get("notice", "Error response truncated."),
+            data=payload,
+        )
+    return ApiResponse(status="error", error=str(payload))
+
+
 def raise_service_unavailable(exc: Exception):
     raise HTTPException(
         status_code=503,
@@ -282,24 +338,18 @@ async def call_tool(
         )
 
         if "error" in result:
-            return ApiResponse(
-                status="error",
-                error=result["error"]
-            )
+            return _bounded_api_error(request.name, result["error"])
 
         return ApiResponse(
             status="ok",
-            data=result
+            data=_bounded_api_tool_data(request.name, result),
         )
 
     except (OSError, socket.error) as exc:
         raise_service_unavailable(exc)
 
     except Exception as e:
-        return ApiResponse(
-            status="error",
-            error=str(e)
-        )
+        return _bounded_api_error(request.name, str(e))
     
 
 @router.post("/index", response_model=ApiResponse)
@@ -339,21 +389,33 @@ async def execute_query(
     request: QueryRequest,
     server: MCPServer = Depends(get_server)
 ):
+    arguments = {
+        "cypher_query": request.query,
+        "params": request.params,
+    }
+    if request.repo_path is not None:
+        arguments["repo_path"] = request.repo_path
+    if request.global_scope:
+        arguments["global_scope"] = True
+    if request.offset:
+        arguments["offset"] = request.offset
+    if request.page_size is not None:
+        arguments["page_size"] = request.page_size
     try:
         result = await server.handle_tool_call(
             "execute_cypher_query",
-            {
-                "cypher_query": request.query,
-                "params": request.params,
-            },
+            arguments,
         )
     except (OSError, socket.error) as exc:
         raise_service_unavailable(exc)
 
     if "error" in result:
-        return ApiResponse(status="error", error=result["error"])
+        return _bounded_api_error("execute_cypher_query", result["error"])
 
-    return ApiResponse(status="ok", data=result)
+    return ApiResponse(
+        status="ok",
+        data=_bounded_api_tool_data("execute_cypher_query", result),
+    )
 
 @router.get("/repositories", response_model=ApiResponse)
 async def list_repositories(
@@ -367,7 +429,10 @@ async def list_repositories(
     except (OSError, socket.error) as exc:
         raise_service_unavailable(exc)
 
+    if "error" in result:
+        return _bounded_api_error("list_indexed_repositories", result["error"])
+
     return ApiResponse(
         status="ok",
-        data=result
+        data=_bounded_api_tool_data("list_indexed_repositories", result),
     )

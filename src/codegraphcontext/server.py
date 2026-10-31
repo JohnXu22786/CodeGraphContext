@@ -9,7 +9,7 @@ import os
 import re
 import threading
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from dataclasses import asdict, replace
 
 from typing import Any, Dict, Coroutine, Optional, List, Set
@@ -31,6 +31,7 @@ from .cli.config_manager import (
     discover_child_contexts,
     save_workspace_mapping,
     get_workspace_mapping,
+    load_context_config,
     _default_global_db_path,
     _global_default_database,
     _has_explicit_database_default,
@@ -49,7 +50,8 @@ from .runtime_paths import (
     get_repo_context_dir_name,
     get_repo_context_path,
 )
-from .mcp_service import MCP_SERVER_VERSION, dispatch_tool_call, encode_tool_payload
+from .mcp_service import MCP_SERVER_VERSION, dispatch_tool_call
+from .utils.gcf_encoder import encode_response
 
 # Import Tool Definitions and Handlers
 from .tool_definitions import TOOLS
@@ -125,6 +127,7 @@ def _cancel_stdio_tool_request(request_id, active_requests, cancelling_requests)
         cancelling_requests.add(request_id)
         tool_task.cancel()
 
+WORKSPACE_PREFIX = "/workspace/"
 
 def _teardown_db_manager(db_manager) -> None:
     """Release DB resources; stop FalkorDB Lite worker when switching contexts."""
@@ -140,6 +143,413 @@ def _set_runtime_db_type(database: Optional[str]) -> None:
         os.environ.pop("CGC_RUNTIME_DB_TYPE", None)
     else:
         os.environ["CGC_RUNTIME_DB_TYPE"] = database
+
+
+def _is_path_key(key: str) -> bool:
+    """Check if a dict key represents a file path field.
+
+    Matches keys like 'path', 'clone_path', 'caller_file_path', and also
+    Cypher-aliased keys like 'f.path', 'n.caller_file_path'.
+    """
+    # Strip Cypher alias prefix (e.g. "f.path" -> "path")
+    bare = key.rsplit(".", 1)[-1] if "." in key else key
+    return bare == "path" or bare.endswith("_path")
+
+
+def _strip_path_value(value):
+    """Strip /workspace/ prefix from a single string value."""
+    if isinstance(value, str) and value.startswith(WORKSPACE_PREFIX):
+        return value[len(WORKSPACE_PREFIX):]
+    return value
+
+
+def _strip_workspace_prefix(obj):
+    """Recursively strip /workspace/ prefix from path values in results."""
+    if isinstance(obj, dict):
+        return {
+            k: _strip_path_value(v) if _is_path_key(k) else _strip_workspace_prefix(v)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, list):
+        return [_strip_workspace_prefix(item) for item in obj]
+    return obj
+
+
+# Approximate chars-per-token used by the legacy configurable response budget.
+# The hard output cap below is measured in serialized UTF-8 bytes.
+_CHARS_PER_TOKEN = 4
+MAX_TOOL_RESPONSE_BYTES = 64 * 1024
+MAX_TOOL_RESPONSE_LINES = 200
+MAX_JSONRPC_ID_BYTES = 1024
+
+_REPOSITORY_SCOPED_QUERY_TOOLS = frozenset({
+    "find_code",
+    "analyze_code_relationships",
+    "find_dead_code",
+    "calculate_cyclomatic_complexity",
+    "find_most_complex_functions",
+    "execute_cypher_query",
+    "visualize_graph_query",
+    "find_java_spring_endpoints",
+    "find_java_spring_beans",
+    "get_repository_stats",
+    "find_datasource_nodes",
+    "generate_report",
+    "simulate_metrics",
+    "simulate_architectural_change",
+    "analyze_architectural_evolution",
+})
+
+
+def _initial_active_repo_path(cwd: Path, context, child_contexts=()) -> Optional[Path]:
+    """Resolve one repository for default query scope, if the context is unambiguous."""
+    cwd = Path(cwd).resolve()
+    if getattr(context, "is_local", False):
+        cgcignore_path = getattr(context, "cgcignore_path", "")
+        if cgcignore_path:
+            local_root = Path(cgcignore_path).resolve().parent.parent
+            local_context_dir = Path(cgcignore_path).expanduser().parent
+        else:
+            local_root = cwd
+            local_context_dir = None
+
+        roots = set()
+        walk_errors = []
+        try:
+            for current, directories, files in os.walk(
+                local_root, onerror=walk_errors.append
+            ):
+                current_path = Path(current).resolve()
+                if ".git" in directories or ".git" in files:
+                    roots.add(current_path)
+                    directories[:] = [name for name in directories if name != ".git"]
+                if len(roots) > 1:
+                    return None
+        except OSError:
+            return None
+        if walk_errors:
+            return None
+        if roots:
+            return next(iter(roots))
+        if local_context_dir is not None and local_context_dir.is_dir():
+            return local_root
+        return None
+
+    if getattr(context, "mode", None) == "named":
+        context_name = getattr(context, "context_name", "")
+        try:
+            config = load_context_config(create_if_missing=False)
+            selected = config.contexts.get(context_name)
+            registered = {
+                Path(repo).expanduser().resolve()
+                for repo in (getattr(selected, "repos", ()) if selected else ())
+                if repo
+            }
+        except Exception:
+            return None
+        if not registered:
+            return None
+        matches = [
+            repo for repo in registered
+            if cwd == repo or repo in cwd.parents
+        ]
+        if matches:
+            return max(matches, key=lambda repo: len(repo.parts))
+        return next(iter(registered)) if len(registered) == 1 else None
+
+    roots = set()
+    for child in child_contexts:
+        child_path = getattr(child, "path", None)
+        if child_path:
+            roots.add(Path(child_path).resolve())
+
+    # A workspace root can contain several Git repositories without CGC local
+    # contexts. Walk for Git markers so a deeply nested repository does not get
+    # hidden behind an outer Git root selected as the only visible root.
+    repository_ancestor = next(
+        (
+            candidate
+            for candidate in (cwd, *cwd.parents)
+            if (candidate / ".git").exists()
+        ),
+        None,
+    )
+    scan_root = repository_ancestor or cwd
+    try:
+        walk_errors = []
+        for current, directories, files in os.walk(
+            scan_root, onerror=walk_errors.append
+        ):
+            current_path = Path(current).resolve()
+            if ".git" in directories or ".git" in files:
+                roots.add(current_path)
+                directories[:] = [name for name in directories if name != ".git"]
+            if len(roots) > 1:
+                return None
+    except OSError:
+        return None
+    if walk_errors:
+        return None
+
+    if len(roots) == 1:
+        return next(iter(roots))
+    if roots or len(child_contexts) > 1:
+        return None
+    # A global context with no discoverable repository root is ambiguous. The
+    # current directory may be a workspace containing repositories nested at
+    # arbitrary depth, so using it as a prefix could expose all of them.
+    return None
+
+
+def _effective_char_limit(max_tokens: int, max_chars_direct: int) -> int:
+    """Return the effective character budget from both config knobs.
+
+    Picks the stricter (smallest) non-zero value.  Returns 0 when both
+    are zero, meaning no limit is active.
+    """
+    candidates = [c for c in (max_tokens * _CHARS_PER_TOKEN, max_chars_direct) if c > 0]
+    return min(candidates) if candidates else 0
+
+
+def _limit_source_label(max_tokens: int, max_chars_direct: int, effective: int) -> str:
+    """Human-readable description of which config key produced *effective*."""
+    token_chars = max_tokens * _CHARS_PER_TOKEN
+    both_active = token_chars > 0 and max_chars_direct > 0
+    if both_active:
+        winner = "MAX_TOOL_RESPONSE_TOKENS" if token_chars <= max_chars_direct else "MAX_PROMPT_CHARS"
+        return f"{winner} ({effective} chars)"
+    if token_chars > 0:
+        return f"MAX_TOOL_RESPONSE_TOKENS ({max_tokens} tokens → {effective} chars)"
+    return f"MAX_PROMPT_CHARS ({effective} chars)"
+
+
+def _pagination_retry_metadata(payload=None, fallback=None):
+    """Build a smaller same-page retry hint from structured pagination data."""
+    source = payload if isinstance(payload, dict) else None
+    nested = source.get("continuation") if source else None
+    if not isinstance(nested, dict) and isinstance(fallback, dict):
+        nested = fallback.get("continuation")
+    if isinstance(nested, dict):
+        retry = {}
+        for offset_key, page_size_key in (
+            ("offset", "page_size"),
+            ("table_offset", "table_page_size"),
+            ("column_offset", "column_page_size"),
+            ("key_pattern_offset", "key_pattern_page_size"),
+        ):
+            offset = nested.get(offset_key)
+            if type(offset) is not int:
+                continue
+            retry[offset_key] = offset
+            page_size = nested.get(page_size_key)
+            # A prior truncation already reduced this page. Reduce it again if
+            # the protocol wrapper still cannot fit the serialized response.
+            if type(page_size) is int and page_size > 0:
+                retry[page_size_key] = max(1, page_size // 2)
+        if retry:
+            return retry
+
+    if source and isinstance(source.get("offset"), int):
+        offset = source["offset"]
+        page_size = source.get("page_size")
+    elif isinstance(fallback, dict) and isinstance(fallback.get("offset"), int):
+        offset = fallback["offset"]
+        page_size = fallback.get("page_size")
+    else:
+        return None
+
+    continuation = {"offset": offset}
+    if isinstance(page_size, int) and page_size > 0:
+        continuation["page_size"] = max(1, page_size // 2)
+    return continuation
+
+
+def _valid_jsonrpc_id(request_id) -> bool:
+    """Keep reflected response IDs small enough for the hard envelope cap."""
+    if request_id is None:
+        return True
+    if type(request_id) not in (str, int, float):
+        return False
+    try:
+        serialized = json.dumps(
+            request_id, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return len(serialized) <= MAX_JSONRPC_ID_BYTES
+
+
+def _apply_response_token_limit(tool_name: str, text: str, *, pagination=None) -> str:
+    """Truncate *text* to the configured budget and append a visible notice.
+
+    Reads two independent config knobs at call time so live changes are
+    respected without a server restart:
+
+    * ``MAX_TOOL_RESPONSE_TOKENS`` — token-based cap (4 chars/token)
+    * ``MAX_PROMPT_CHARS``         — direct character cap
+
+    The stricter non-zero value wins.  When both are 0 the text is returned
+    unchanged.  A structured warning is printed to stdout whenever truncation
+    fires so operators can trace oversized payloads.
+    """
+    from .cli.config_manager import get_config_value
+
+    raw_tokens = get_config_value("MAX_TOOL_RESPONSE_TOKENS") or "0"
+    try:
+        max_tokens = int(raw_tokens)
+    except ValueError:
+        max_tokens = 0
+
+    raw_chars = get_config_value("MAX_PROMPT_CHARS") or "0"
+    try:
+        max_chars_direct = int(raw_chars)
+    except ValueError:
+        max_chars_direct = 0
+
+    max_chars = _effective_char_limit(max_tokens, max_chars_direct)
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+
+    label = _limit_source_label(max_tokens, max_chars_direct, max_chars)
+    notice = (
+        f"[CGC] Response truncated: output exceeded {label} "
+        f"for tool '{tool_name}'. "
+        "Increase the limit or narrow your query for full results."
+    )
+
+    print(
+        f"[CGC WARNING] Truncation fired | tool={tool_name} | "
+        f"original_chars={len(text)} | truncated_chars={max_chars} | "
+        f"limit={label}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    budget = max(0, max_chars - 200)
+    try:
+        payload = json.loads(text)
+        preview = json.dumps(payload, indent=2)
+        if len(preview) <= budget:
+            return preview
+        truncated_payload = {"truncated": True, "preview": preview[:budget], "notice": notice}
+        continuation = _pagination_retry_metadata(payload, pagination)
+        if continuation is not None:
+            truncated_payload["continuation"] = continuation
+        return json.dumps(truncated_payload, indent=2)
+    except json.JSONDecodeError:
+        truncated_payload = {"truncated": True, "preview": text[:budget], "notice": notice}
+        continuation = _pagination_retry_metadata(fallback=pagination)
+        if continuation is not None:
+            truncated_payload["continuation"] = continuation
+        return json.dumps(truncated_payload, indent=2)
+
+
+def _apply_final_output_limits(
+    tool_name: str,
+    response_text: str,
+    serialize_wrapped,
+    *,
+    max_bytes: int = MAX_TOOL_RESPONSE_BYTES,
+    max_lines: int = MAX_TOOL_RESPONSE_LINES,
+    pagination=None,
+) -> str:
+    """Bound the final serialized protocol result, retaining retry metadata."""
+    serialized = serialize_wrapped(response_text)
+    if isinstance(serialized, str):
+        serialized = serialized.encode("utf-8")
+    line_count = len(response_text.splitlines())
+    if len(serialized) <= max_bytes and line_count <= max_lines:
+        return response_text
+
+    try:
+        payload = json.loads(response_text)
+    except (TypeError, json.JSONDecodeError):
+        payload = None
+
+    continuation = _pagination_retry_metadata(payload, pagination)
+
+    base = {
+        "truncated": True,
+        "notice": "Final serialized response limit exceeded.",
+    }
+    if continuation is not None:
+        base["continuation"] = continuation
+
+    def candidate_for(preview_length: int) -> str:
+        candidate = dict(base)
+        if preview_length:
+            candidate["preview"] = response_text[:preview_length]
+        return json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+
+    max_preview_length = len(response_text)
+    if line_count > max_lines:
+        if max_lines <= 0:
+            max_preview_length = 0
+        else:
+            max_preview_length = sum(
+                len(line) for line in response_text.splitlines(keepends=True)[:max_lines]
+            )
+
+    low, high = 0, max_preview_length
+    best = candidate_for(0)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = candidate_for(middle)
+        candidate_size = serialize_wrapped(candidate)
+        if isinstance(candidate_size, str):
+            candidate_size = candidate_size.encode("utf-8")
+        if len(candidate_size) <= max_bytes:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+
+    best_size = serialize_wrapped(best)
+    if isinstance(best_size, str):
+        best_size = best_size.encode("utf-8")
+    if len(best_size) <= max_bytes:
+        return best
+
+    # At production limits the fixed protocol envelope is small. If a caller
+    # chooses an impractically tiny test/config limit, keep the content valid.
+    return json.dumps({"truncated": True, "tool": tool_name}, separators=(",", ":"))
+
+
+def _serialize_bounded_jsonrpc_response(response: Dict[str, Any]) -> str:
+    """Serialize a complete stdio response within the hard byte ceiling."""
+    serialized = json.dumps(response)
+    if len(serialized.encode("utf-8")) <= MAX_TOOL_RESPONSE_BYTES:
+        return serialized
+
+    error = response.get("error")
+    error_code = error.get("code") if isinstance(error, dict) else None
+    if not isinstance(error_code, int):
+        error_code = -32603
+    bounded = {
+        "jsonrpc": "2.0",
+        "id": response.get("id"),
+        "error": {
+            "code": error_code,
+            "message": "Serialized response exceeded the maximum size.",
+        },
+    }
+    serialized = json.dumps(bounded, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) <= MAX_TOOL_RESPONSE_BYTES:
+        return serialized
+
+    # Request IDs are validated before dispatch. Keep a final minimal response
+    # available in case a future caller bypasses that guard.
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {
+                "code": -32603,
+                "message": "Serialized response exceeded the maximum size.",
+            },
+        },
+        separators=(",", ":"),
+    )
 
 
 class MCPServer:
@@ -193,6 +603,10 @@ class MCPServer:
             )
         )
         self._startup_global_context: Optional[ResolvedContext] = None
+        # `cwd` remains the server's workspace/config anchor across context
+        # switches. Query defaults follow the repository currently selected by
+        # switch_context, which may differ from that original directory.
+        self.active_repo_path = None
         self.discovered_child_contexts: List[dict] = []
         self._context_note_pending = False
         self.disabled_tools: Set[str] = set()
@@ -206,6 +620,7 @@ class MCPServer:
                 if ctx.mode != "global"
                 else None
             )
+            self.active_repo_path = _initial_active_repo_path(self.cwd, ctx)
 
             # Keep only an inherited LadybugDB default implicit so the factory
             # can auto-detect remote FalkorDB or choose an installed fallback.
@@ -247,6 +662,9 @@ class MCPServer:
             if not ctx.is_local:
                 try:
                     children = discover_child_contexts(self.cwd, max_depth=1)
+                    self.active_repo_path = _initial_active_repo_path(
+                        self.cwd, ctx, children
+                    )
                     if children:
                         self.discovered_child_contexts = [asdict(c) for c in children]
                         self._context_note_pending = True
@@ -481,6 +899,7 @@ class MCPServer:
                 self.db_manager,
                 output_path=output_path,
                 include_java=bool(args.get("include_java", False)),
+                repo_path=args.get("repo_path"),
                 god_node_limit=int(args.get("god_node_limit", 15)),
                 complexity_limit=int(args.get("complexity_limit", 15)),
                 cross_module_limit=int(args.get("cross_module_limit", 20)),
@@ -733,6 +1152,10 @@ class MCPServer:
                     cgcignore_path=str(CONFIG_DIR / "global" / ".cgcignore"),
                     is_local=False,
                 )
+                # The global database has no selected repository. Reusing the
+                # repository path from the previous local context would silently
+                # constrain subsequent default queries to that stale repository.
+                self.active_repo_path = None
 
                 # Rebuild dependent components
                 self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, self.loop)
@@ -765,8 +1188,10 @@ class MCPServer:
         # Accept either the repo directory or its selected context directory.
         if target.name == get_repo_context_dir_name():
             cgc_dir = target
+            repository_root = target.parent
         else:
             cgc_dir = get_repo_context_path(target)
+            repository_root = target
 
         if not cgc_dir.exists() or not cgc_dir.is_dir():
             return {"error": f"No repository context directory found at {cgc_dir}."}
@@ -896,6 +1321,7 @@ class MCPServer:
                     database_is_explicit=local_database_is_explicit,
                 )
 
+            self.active_repo_path = repository_root
             self._context_note_pending = False
 
             return {
@@ -937,6 +1363,34 @@ class MCPServer:
                 args["path"] = args["repo_path"]
             elif "path" in args and "repo_path" not in args and not path_means_file:
                 args["repo_path"] = args["path"]
+
+            repo_path = args.get("repo_path")
+            if isinstance(repo_path, str) and not repo_path.strip():
+                args.pop("repo_path")
+
+            if (
+                tool_name in _REPOSITORY_SCOPED_QUERY_TOOLS
+                and not (
+                    tool_name in {
+                        "execute_cypher_query",
+                        "find_datasource_nodes",
+                        "visualize_graph_query",
+                    }
+                    and args.get("global_scope") is True
+                )
+                and not args.get("repo_path")
+            ):
+                active_repo_path = getattr(self, "active_repo_path", self.cwd)
+                if active_repo_path is None:
+                    return {
+                        "error": (
+                            "No single repository is selected for the default query scope. "
+                            "Pass repo_path or switch to a repository context."
+                        )
+                    }
+                args["repo_path"] = PureWindowsPath(
+                    str(active_repo_path)
+                ).as_posix()
 
         tool_map: Dict[str, Coroutine] = {
             "add_package_to_graph": self.add_package_to_graph_tool,
@@ -1038,15 +1492,36 @@ class MCPServer:
         cancelling_requests = set()
         pending_tool_requests = set()
 
-        async def dispatch_stdio_tool_call(request_id, tool_name, args):
+        async def dispatch_stdio_tool_call(
+            has_request_id, request_id, tool_name, args
+        ):
             try:
                 result = await dispatch_tool_call(self, tool_name, args)
-                if request_id is None:
+                if not has_request_id:
                     return
                 if result.error_kind == "tool":
+                    error_text = json.dumps(result.payload, ensure_ascii=False)
+                    error_text = _apply_final_output_limits(
+                        tool_name,
+                        error_text,
+                        lambda text: json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "code": -32000,
+                                "message": "Tool execution error",
+                                "data": json.loads(text),
+                            },
+                        }).encode("utf-8"),
+                        pagination=result.payload,
+                    )
                     response = {
                         "jsonrpc": "2.0", "id": request_id,
-                        "error": {"code": -32000, "message": "Tool execution error", "data": result.payload}
+                        "error": {
+                            "code": -32000,
+                            "message": "Tool execution error",
+                            "data": json.loads(error_text),
+                        },
                     }
                 elif result.error_kind == "invalid_params":
                     response = {
@@ -1054,16 +1529,31 @@ class MCPServer:
                         "error": {"code": -32602, "message": result.error_message}
                     }
                 else:
-                    response_text = encode_tool_payload(tool_name, result.payload)
+                    response_text = encode_response(result.payload)
+                    response_text = _apply_response_token_limit(
+                        tool_name, response_text, pagination=result.payload
+                    )
+                    response_text = _apply_final_output_limits(
+                        tool_name,
+                        response_text,
+                        lambda text: json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "result": {
+                                "content": [{"type": "text", "text": text}]
+                            },
+                        }).encode("utf-8"),
+                        pagination=result.payload,
+                    )
                     response = {
                         "jsonrpc": "2.0", "id": request_id,
                         "result": {"content": [{"type": "text", "text": response_text}]}
                     }
-                print(json.dumps(response), flush=True)
+                print(_serialize_bounded_jsonrpc_response(response), flush=True)
             except asyncio.CancelledError:
-                if request_id is not None:
+                if has_request_id:
                     print(
-                        json.dumps({
+                        _serialize_bounded_jsonrpc_response({
                             "jsonrpc": "2.0", "id": request_id,
                             "error": {"code": -32800, "message": "Request cancelled"},
                         }),
@@ -1071,9 +1561,9 @@ class MCPServer:
                     )
             except Exception as e:
                 error_logger(f"Error processing request: {e}\n{traceback.format_exc()}")
-                if request_id is not None:
+                if has_request_id:
                     print(
-                        json.dumps({
+                        _serialize_bounded_jsonrpc_response({
                             "jsonrpc": "2.0", "id": request_id,
                             "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
                         }),
@@ -1101,7 +1591,20 @@ class MCPServer:
                 method = request.get('method')
                 params = request.get('params', {})
                 request_id = request.get('id')
+                has_request_id = "id" in request
                 request_count += 1
+
+                if has_request_id and not _valid_jsonrpc_id(request_id):
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32600,
+                            "message": "Request id is invalid or exceeds the supported size.",
+                        },
+                    }
+                    print(_serialize_bounded_jsonrpc_response(response), flush=True)
+                    continue
                 
                 response = {}
                 # Route the request based on the JSON-RPC method.
@@ -1135,7 +1638,9 @@ class MCPServer:
                     tool_name = params.get('name')
                     args = params.get('arguments', {})
                     tool_task = asyncio.create_task(
-                        dispatch_stdio_tool_call(request_id, tool_name, args)
+                        dispatch_stdio_tool_call(
+                            has_request_id, request_id, tool_name, args
+                        )
                     )
                     pending_tool_requests.add(tool_task)
                     if request_id is not None:
@@ -1169,15 +1674,15 @@ class MCPServer:
                     pass
                 else:
                     # Handle unknown methods.
-                    if request_id is not None:
+                    if has_request_id:
                         response = {
                             "jsonrpc": "2.0", "id": request_id,
                             "error": {"code": -32601, "message": f"Method not found: {method}"}
                         }
                 
                 # Send the response to standard output if it's not a notification.
-                if request_id is not None and response:
-                    print(json.dumps(response), flush=True)
+                if has_request_id and response:
+                    print(_serialize_bounded_jsonrpc_response(response), flush=True)
 
             except Exception as e:
                 error_logger(f"Error processing request: {e}\n{traceback.format_exc()}")
@@ -1185,6 +1690,7 @@ class MCPServer:
                 # errors while handling a parsed request keep that request's id.
                 request_id = request.get('id') if isinstance(request, dict) else None
                 is_parse_error = not isinstance(request, dict)
+                has_request_id = isinstance(request, dict) and "id" in request
 
                 error_response = {
                     "jsonrpc": "2.0", "id": request_id,
@@ -1196,7 +1702,8 @@ class MCPServer:
                         ),
                     },
                 }
-                print(json.dumps(error_response), flush=True)
+                if is_parse_error or has_request_id:
+                    print(_serialize_bounded_jsonrpc_response(error_response), flush=True)
 
     def shutdown(self):
         """Gracefully shuts down the server and its components."""

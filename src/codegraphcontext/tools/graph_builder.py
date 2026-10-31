@@ -209,7 +209,10 @@ class GraphBuilder:
 
     # Language-agnostic method
     def add_repository_to_graph(
-        self, repo_path: Path, is_dependency: bool = False, index_state: str = "ready"
+        self,
+        repo_path: Path,
+        is_dependency: Optional[bool] = False,
+        index_state: str = "ready",
     ) -> None:
         """Add a repository node to the graph.
 
@@ -220,7 +223,10 @@ class GraphBuilder:
         repo_path : Path
             Filesystem path to the repository root.
         is_dependency : bool, optional
-            Whether this repository is a dependency (default ``False``).
+            Whether this repository is a dependency (default ``False``). Use
+            ``None`` to preserve an existing dependency classification.
+        index_state : str, optional
+            Repository indexing state (default ``"ready"``).
         """
         self._writer.add_repository_to_graph(repo_path, is_dependency, index_state=index_state)
 
@@ -378,6 +384,10 @@ class GraphBuilder:
         """
         return self._writer.get_caller_file_paths(file_path_str)
 
+    def get_caller_file_paths_for_files(self, file_paths: list[str]) -> set:
+        """Return all files that call any of the supplied files."""
+        return self._writer.get_caller_file_paths_for_files(file_paths)
+
     def get_importer_file_paths(
         self, names: set[str], repo_path: Path, changed_path: Path
     ) -> set:
@@ -398,6 +408,10 @@ class GraphBuilder:
             Set of absolute file paths in the repository.
         """
         return self._writer.get_repo_file_paths(repo_path)
+
+    def get_repository_path_for_file(self, file_path: str) -> Optional[str]:
+        """Return the most specific indexed repository that owns a file."""
+        return self._writer.get_repository_path_for_file(file_path)
 
     def get_inheritance_neighbor_paths(self, file_path_str: str) -> set:
         """Get files with INHERITS relationships to/from the given file.

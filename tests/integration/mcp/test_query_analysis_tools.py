@@ -330,7 +330,11 @@ def test_find_code_returns_matching_fixture_function(mcp_graph):
     )
 
     assert result["success"] is True
-    assert any(row["name"] == "getOrders" for row in result["results"]["functions_by_name"])
+    row = next(row for row in result["results"]["functions_by_name"] if row["name"] == "getOrders")
+    assert row["confidence_label"] == "EXTRACTED"
+    assert row["evidence_kind"] == "PARSER_INDEXED_SOURCE"
+    assert row["relative_path"] == "OrderController.java"
+    assert isinstance(row["end_line"], int)
 
 
 def test_find_code_returns_no_matches_for_unknown_repository_filter(mcp_graph):
@@ -357,6 +361,21 @@ def test_analyze_code_relationships_returns_real_callees(mcp_graph):
 
     assert result["success"] is True
     assert any(row.get("called_function") == "normalize_value" for row in result["results"]["results"])
+
+
+def test_transitive_impact_results_are_marked_as_graph_inference(mcp_graph):
+    result = _call(
+        mcp_graph["server"],
+        "analyze_code_relationships",
+        {
+            "query_type": "find_all_callees",
+            "target": "getOrders",
+            "repo_path": str(mcp_graph["repo"]),
+        },
+    )
+
+    assert result["success"] is True
+    assert result["results"]["analysis_basis"] == "INFERRED_FROM_INDEXED_GRAPH"
 
 
 def test_analyze_code_relationships_rejects_invalid_depth(mcp_graph):
@@ -387,7 +406,10 @@ def test_execute_cypher_query_rejects_write_query_without_mutating_graph(mcp_gra
     before = _call(
         mcp_graph["server"],
         "execute_cypher_query",
-        {"cypher_query": "MATCH (n) RETURN count(n) AS count"},
+        {
+            "cypher_query": "MATCH (n) RETURN count(n) AS count",
+            "global_scope": True,
+        },
     )
     assert before["success"] is True
     assert len(before["results"]) == 1
@@ -405,7 +427,10 @@ def test_execute_cypher_query_rejects_write_query_without_mutating_graph(mcp_gra
     after = _call(
         mcp_graph["server"],
         "execute_cypher_query",
-        {"cypher_query": "MATCH (n) RETURN count(n) AS count"},
+        {
+            "cypher_query": "MATCH (n) RETURN count(n) AS count",
+            "global_scope": True,
+        },
     )
     assert after["success"] is True
     assert len(after["results"]) == 1
@@ -425,6 +450,14 @@ def test_find_dead_code_reports_unreferenced_fixture_method(mcp_graph):
         for row in result["results"]["potentially_unused_functions"]
     }
     assert "unusedRoutine" in unused_names
+    unused = next(
+        row for row in result["results"]["potentially_unused_functions"]
+        if row["function_name"] == "unusedRoutine"
+    )
+    assert unused["confidence_label"] == "INFERRED"
+    assert unused["evidence_kind"] == "NO_INBOUND_CALLS"
+    assert unused["relative_path"] == "OrderController.java"
+    assert isinstance(unused["end_line"], int)
 
 
 def test_find_dead_code_returns_no_results_for_unknown_repository_filter(mcp_graph):
@@ -559,7 +592,7 @@ def test_find_datasource_nodes_returns_disposable_fixture_metadata(mcp_graph):
     result = _call(
         mcp_graph["server"],
         "find_datasource_nodes",
-        {"kind": "mysql", "include_columns": True},
+        {"kind": "mysql", "include_columns": True, "global_scope": True},
     )
 
     assert result.get("success") is True, result
@@ -576,7 +609,7 @@ def test_find_datasource_nodes_returns_disposable_fixture_metadata(mcp_graph):
         falkor_result = _call(
             falkor_server,
             "find_datasource_nodes",
-            {"kind": "mysql", "include_columns": True},
+            {"kind": "mysql", "include_columns": True, "global_scope": True},
         )
         assert falkor_result.get("success") is True, falkor_result
         assert falkor_result["datasources"] == result["datasources"]
@@ -600,19 +633,31 @@ def test_find_datasource_nodes_filters_by_name(mcp_graph):
         servers.append(mcp_graph["falkor_server"])
 
     for server in servers:
-        matching = _call(server, "find_datasource_nodes", {"name": "fixture-mysql"})
+        matching = _call(
+            server,
+            "find_datasource_nodes",
+            {"name": "fixture-mysql", "global_scope": True},
+        )
         assert matching.get("success") is True, matching
         assert matching["count"] == 1
         assert matching["datasources"][0]["datasource"] == "fixture-mysql"
 
-        missing = _call(server, "find_datasource_nodes", {"name": "missing"})
+        missing = _call(
+            server,
+            "find_datasource_nodes",
+            {"name": "missing", "global_scope": True},
+        )
         assert missing.get("success") is True, missing
         assert missing["count"] == 0
         assert missing["datasources"] == []
 
 
 def test_find_datasource_nodes_keeps_redis_key_patterns_optional(mcp_graph):
-    result = _call(mcp_graph["server"], "find_datasource_nodes", {"kind": "redis"})
+    result = _call(
+        mcp_graph["server"],
+        "find_datasource_nodes",
+        {"kind": "redis", "global_scope": True},
+    )
     assert result.get("success") is True, result
     assert result["count"] == 1
     datasource = result["datasources"][0]
@@ -624,7 +669,11 @@ def test_find_datasource_nodes_keeps_redis_key_patterns_optional(mcp_graph):
 
     falkor_server = mcp_graph["falkor_server"]
     if falkor_server is not None:
-        falkor_result = _call(falkor_server, "find_datasource_nodes", {"kind": "redis"})
+        falkor_result = _call(
+            falkor_server,
+            "find_datasource_nodes",
+            {"kind": "redis", "global_scope": True},
+        )
         assert falkor_result.get("success") is True, falkor_result
         assert falkor_result["count"] == 1
         assert falkor_result["datasources"][0]["datasource"] == "fixture-redis"
@@ -670,6 +719,39 @@ def test_visualize_graph_query_encodes_a_read_query(mcp_graph):
     parsed = urlparse(result["visualization_url"])
     assert parsed.path == "/index.html"
     assert parse_qs(parsed.query)["cypher_query"] == [query]
+    assert parse_qs(parsed.query)["repo_path"] == [str(mcp_graph["repo"])]
+
+
+def test_visualize_graph_query_requires_explicit_global_scope(mcp_graph):
+    query = "MATCH (f:Function) RETURN f.name AS name LIMIT 5"
+    result = _call(
+        mcp_graph["server"],
+        "visualize_graph_query",
+        {"cypher_query": query, "global_scope": True},
+    )
+
+    parsed = urlparse(result["visualization_url"])
+    assert result["success"] is True
+    params = parse_qs(parsed.query)
+    assert "repo_path" not in params
+    assert params["global_scope"] == ["true"]
+
+
+def test_visualize_graph_query_forwards_global_scope_with_repository_path(mcp_graph):
+    query = "MATCH (f:Function) RETURN f.name AS name LIMIT 5"
+    result = _call(
+        mcp_graph["server"],
+        "visualize_graph_query",
+        {
+            "cypher_query": query,
+            "repo_path": str(mcp_graph["repo"]),
+            "global_scope": True,
+        },
+    )
+
+    params = parse_qs(urlparse(result["visualization_url"]).query)
+    assert params["repo_path"] == [str(mcp_graph["repo"])]
+    assert params["global_scope"] == ["true"]
 
 
 def test_visualize_graph_query_rejects_write_query(mcp_graph):

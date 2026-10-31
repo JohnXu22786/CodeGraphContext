@@ -1,6 +1,7 @@
 # src/codegraphcontext/api/app.py
 from contextlib import asynccontextmanager
 import asyncio
+import json
 from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,11 @@ from .auth import (
     _keys_match,
     _origin_matches,
 )
+from codegraphcontext.server import (
+    MAX_JSONRPC_ID_BYTES,
+    MAX_TOOL_RESPONSE_BYTES,
+    _valid_jsonrpc_id,
+)
 from .mcp_sse import handle_messages, handle_sse, mcp_server
 from mcp.server.transport_security import TransportSecuritySettings
 from codegraphcontext.runtime_paths import get_instance_name
@@ -34,6 +40,10 @@ from codegraphcontext.core.database_ownership import (
 import uvicorn
 
 logger = logging.getLogger(__name__)
+
+# A string ID can shrink by up to six bytes per character when JSON escapes
+# such as ``\u0061`` are decoded and the value is serialized again.
+_MAX_JSONRPC_ID_RAW_TOKEN_BYTES = MAX_JSONRPC_ID_BYTES * 6 + 2
 
 
 class _TransportSecurityMiddleware:
@@ -110,6 +120,433 @@ class _ApiKeyMiddleware:
                 return
 
         await self.app(scope, receive, send)
+
+
+class _ChunkedJsonCursor:
+    """Read JSON token boundaries across ASGI chunks without joining the body."""
+
+    _WHITESPACE = {0x20, 0x09, 0x0A, 0x0D}
+
+    def __init__(self, chunks):
+        self._chunks = [memoryview(chunk) for chunk in chunks if chunk]
+        self._chunk_index = 0
+        self._position = 0
+
+    def peek(self):
+        while self._chunk_index < len(self._chunks):
+            chunk = self._chunks[self._chunk_index]
+            if self._position < len(chunk):
+                return chunk[self._position]
+            self._chunk_index += 1
+            self._position = 0
+        return None
+
+    def read(self):
+        value = self.peek()
+        if value is not None:
+            self._position += 1
+        return value
+
+    def skip_whitespace(self):
+        while self.peek() in self._WHITESPACE:
+            self.read()
+
+    def read_string(self, capture_limit):
+        if self.read() != 0x22:
+            return None, False, False
+        token = bytearray(b'"') if capture_limit else None
+        too_long = False
+        while True:
+            current = self.read()
+            if current is None:
+                return None, too_long, False
+            if token is not None:
+                if len(token) < capture_limit:
+                    token.append(current)
+                else:
+                    too_long = True
+            if current == 0x5C:
+                escaped = self.read()
+                if escaped is None:
+                    return None, too_long, False
+                if token is not None:
+                    if len(token) < capture_limit:
+                        token.append(escaped)
+                    else:
+                        too_long = True
+            elif current == 0x22:
+                return (bytes(token) if token is not None and not too_long else None), too_long, True
+
+    def consume_value(self, capture_limit=0):
+        self.skip_whitespace()
+        first = self.peek()
+        if first is None:
+            return None, False, False
+        if first == 0x22:
+            token, too_long, complete = self.read_string(capture_limit)
+            return ("string", token, too_long), True, complete
+        if first in (0x7B, 0x5B):
+            stack = [0x7D if first == 0x7B else 0x5D]
+            self.read()
+            while stack:
+                current = self.read()
+                if current is None:
+                    return None, False, False
+                if current == 0x22:
+                    self._position -= 1
+                    _, _, complete = self.read_string(0)
+                    if not complete:
+                        return None, False, False
+                elif current == 0x7B:
+                    stack.append(0x7D)
+                    if len(stack) > 1_000:
+                        return None, False, False
+                elif current == 0x5B:
+                    stack.append(0x5D)
+                    if len(stack) > 1_000:
+                        return None, False, False
+                elif current in (0x7D, 0x5D):
+                    if not stack or current != stack.pop():
+                        return None, False, False
+            return ("composite", None, False), True, True
+
+        token = bytearray()
+        too_long = False
+        while True:
+            current = self.peek()
+            if current is None or current in self._WHITESPACE or current in (0x2C, 0x5D, 0x7D):
+                break
+            current = self.read()
+            if capture_limit and len(token) < capture_limit:
+                token.append(current)
+            elif capture_limit:
+                too_long = True
+        return ("scalar", bytes(token) if not too_long else None, too_long), True, bool(token) or too_long
+
+
+def _has_invalid_jsonrpc_id(chunks) -> bool:
+    """Inspect only the top-level id while leaving full request parsing downstream."""
+    cursor = _ChunkedJsonCursor(chunks)
+    cursor.skip_whitespace()
+    if cursor.peek() != 0x7B:  # Ignore batches and non-object JSON for protocol validation.
+        return False
+    cursor.read()
+    invalid_id = False
+    found_id = False
+    while True:
+        cursor.skip_whitespace()
+        if cursor.peek() == 0x7D:
+            cursor.read()
+            cursor.skip_whitespace()
+            return found_id and invalid_id and cursor.peek() is None
+        key_token, key_too_long, key_complete = cursor.read_string(128)
+        if not key_complete:
+            return False
+        if key_too_long or key_token is None:
+            # A valid spelling of the two-character key "id" is far shorter
+            # than this bound, so an oversized key cannot select that member.
+            key = None
+        else:
+            try:
+                key = json.loads(key_token)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return False
+        cursor.skip_whitespace()
+        if cursor.read() != 0x3A:
+            return False
+        value_token, value_ok, value_complete = cursor.consume_value(
+            capture_limit=_MAX_JSONRPC_ID_RAW_TOKEN_BYTES if key == "id" else 0
+        )
+        if not value_ok or not value_complete or value_token is None:
+            return False
+        if key == "id":
+            found_id = True
+            value_type, raw_value, too_long = value_token
+            if value_type == "composite" or too_long:
+                invalid_id = True
+            else:
+                try:
+                    request_id = json.loads(raw_value)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    invalid_id = False
+                except ValueError:
+                    # Python refuses to parse extremely long integer tokens;
+                    # those tokens already exceed the reflected-ID budget.
+                    invalid_id = True
+                else:
+                    invalid_id = not _valid_jsonrpc_id(request_id)
+        cursor.skip_whitespace()
+        separator = cursor.read()
+        if separator == 0x2C:
+            continue
+        if separator == 0x7D:
+            cursor.skip_whitespace()
+            return found_id and invalid_id and cursor.peek() is None
+        return False
+
+
+class _JsonRpcRequestIdLimitMiddleware:
+    """Reject reflected request IDs that could exceed the MCP output budget."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        request_messages = []
+        more_body = True
+        while more_body:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                continue
+            request_messages.append(message)
+            more_body = message.get("more_body", False)
+
+        # MCP's Streamable HTTP endpoint accepts one request or notification
+        # per POST; it rejects JSON-RPC batches before dispatch. Leave a list
+        # to that protocol parser instead of treating its members as calls.
+        body_chunks = [message.get("body", b"") for message in request_messages]
+        if _has_invalid_jsonrpc_id(body_chunks):
+            response = Response(
+                content=json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32600,
+                        "message": f"Invalid Request: id must serialize to at most {MAX_JSONRPC_ID_BYTES} bytes.",
+                    },
+                }, separators=(",", ":")),
+                status_code=400,
+                media_type="application/json",
+            )
+            await response(scope, receive, send)
+            return
+
+        replay_index = 0
+
+        async def replay_receive():
+            nonlocal replay_index
+            if replay_index < len(request_messages):
+                message = request_messages[replay_index]
+                replay_index += 1
+                return message
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+
+class _JsonResponseByteLimitMiddleware:
+    """Apply the final serialized-output ceiling to every JSON ASGI response.
+
+    Tool handlers already retain useful truncation metadata. This outer
+    boundary covers responses built by the MCP SDK and FastAPI itself, which
+    bypass those handler-level wrappers. Only JSON responses are buffered;
+    SSE and other streaming media continue directly to the client.
+    """
+
+    _PREFIX_LIMIT = 4096
+    _MISSING = object()
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _skip_json_whitespace(text: str, position: int) -> int:
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        return position
+
+    @classmethod
+    def _top_level_error_code(cls, text: str, position: int, decoder: json.JSONDecoder):
+        position = cls._skip_json_whitespace(text, position)
+        if position >= len(text) or text[position] != "{":
+            return None
+        position += 1
+
+        while True:
+            position = cls._skip_json_whitespace(text, position)
+            if position >= len(text) or text[position] == "}":
+                return None
+            try:
+                key, position = decoder.raw_decode(text, position)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(key, str):
+                return None
+
+            position = cls._skip_json_whitespace(text, position)
+            if position >= len(text) or text[position] != ":":
+                return None
+            value_position = cls._skip_json_whitespace(text, position + 1)
+            try:
+                value, end = decoder.raw_decode(text, value_position)
+            except json.JSONDecodeError:
+                return None
+            if key == "code":
+                return value if type(value) is int and value < 0 else None
+
+            position = cls._skip_json_whitespace(text, end)
+            if position >= len(text):
+                return None
+            if text[position] == "}":
+                return None
+            if text[position] != ",":
+                return None
+            position += 1
+
+    @classmethod
+    def _top_level_jsonrpc_metadata(cls, prefix: bytes):
+        text = prefix.decode("utf-8", errors="ignore")
+        decoder = json.JSONDecoder()
+        position = cls._skip_json_whitespace(text, 0)
+        if position >= len(text) or text[position] != "{":
+            return None
+        position += 1
+
+        version = cls._MISSING
+        request_id = cls._MISSING
+        error_code = None
+        while True:
+            position = cls._skip_json_whitespace(text, position)
+            if position >= len(text) or text[position] == "}":
+                break
+            try:
+                key, position = decoder.raw_decode(text, position)
+            except json.JSONDecodeError:
+                break
+            if not isinstance(key, str):
+                break
+
+            position = cls._skip_json_whitespace(text, position)
+            if position >= len(text) or text[position] != ":":
+                break
+            value_position = cls._skip_json_whitespace(text, position + 1)
+
+            if key == "error":
+                error_code = cls._top_level_error_code(text, value_position, decoder)
+
+            try:
+                value, end = decoder.raw_decode(text, value_position)
+            except json.JSONDecodeError:
+                # The large value may continue beyond the retained prefix. If
+                # protocol version and ID were already read, they still came
+                # from top-level fields and are sufficient to identify this
+                # as a JSON-RPC response.
+                break
+
+            if key == "jsonrpc":
+                version = value
+            elif key == "id":
+                request_id = value
+
+            position = cls._skip_json_whitespace(text, end)
+            if position >= len(text) or text[position] == "}":
+                break
+            if text[position] != ",":
+                break
+            position += 1
+
+        if version != "2.0" or request_id is cls._MISSING or not _valid_jsonrpc_id(request_id):
+            return None
+        return request_id, error_code
+
+    @classmethod
+    def _oversized_body(cls, prefix: bytes) -> bytes:
+        metadata = cls._top_level_jsonrpc_metadata(prefix)
+        if metadata is not None:
+            request_id, error_code = metadata
+            replacement = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": error_code if error_code is not None else -32603,
+                    "message": "Serialized response exceeded the maximum size.",
+                },
+            }
+        else:
+            replacement = {
+                "detail": "Serialized response exceeded the maximum size."
+            }
+        return json.dumps(replacement, separators=(",", ":")).encode("utf-8")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_start = None
+        chunks = []
+        total_bytes = 0
+        prefix = bytearray()
+        collecting = False
+        oversized = False
+
+        async def bounded_send(message):
+            nonlocal response_start, chunks, total_bytes, prefix, collecting, oversized
+            message_type = message.get("type")
+
+            if message_type == "http.response.start":
+                headers = dict(message.get("headers", []))
+                content_type = headers.get(b"content-type", b"").split(b";", 1)[0].lower()
+                collecting = (
+                    content_type == b"application/json"
+                    or content_type.endswith(b"+json")
+                )
+                if collecting:
+                    response_start = message
+                    chunks = []
+                    total_bytes = 0
+                    prefix = bytearray()
+                    oversized = False
+                    return
+                await send(message)
+                return
+
+            if collecting and message_type == "http.response.body":
+                body = message.get("body", b"")
+                if len(prefix) < self._PREFIX_LIMIT:
+                    prefix.extend(body[: self._PREFIX_LIMIT - len(prefix)])
+                if not oversized:
+                    if total_bytes + len(body) <= MAX_TOOL_RESPONSE_BYTES:
+                        chunks.append(body)
+                        total_bytes += len(body)
+                    else:
+                        oversized = True
+                        chunks.clear()
+
+                if message.get("more_body", False):
+                    return
+
+                if oversized:
+                    body = self._oversized_body(bytes(prefix))
+                    headers = [
+                        (key, value)
+                        for key, value in response_start.get("headers", [])
+                        if key.lower() not in {b"content-length", b"content-encoding"}
+                    ]
+                    headers.append((b"content-length", str(len(body)).encode("ascii")))
+                    response_start = {**response_start, "headers": headers}
+                else:
+                    body = b"".join(chunks)
+
+                await send(response_start)
+                await send({"type": "http.response.body", "body": body, "more_body": False})
+                response_start = None
+                chunks = []
+                total_bytes = 0
+                prefix = bytearray()
+                collecting = False
+                oversized = False
+                return
+
+            await send(message)
+
+        await self.app(scope, receive, bounded_send)
 
 
 def _combine_lifespans(outer_lifespan, mcp_app):
@@ -198,6 +635,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(_JsonResponseByteLimitMiddleware)
 
     app.include_router(router, prefix="/api/v1")
 
@@ -238,7 +676,7 @@ def create_app() -> FastAPI:
     app.add_route(
         "/api/v1/mcp",
         _TransportSecurityMiddleware(
-            _ApiKeyMiddleware(mcp_app),
+            _ApiKeyMiddleware(_JsonRpcRequestIdLimitMiddleware(mcp_app)),
             allowed_hosts=allowed_hosts,
             allowed_origins=allowed_origins,
         ),

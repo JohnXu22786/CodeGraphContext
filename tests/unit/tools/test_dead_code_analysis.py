@@ -73,10 +73,11 @@ def test_report_generator_applies_the_same_exclusions():
         assert guard in src, f"report query missing guard: {guard}"
 
 
-def test_both_implementations_use_an_anonymous_caller():
-    """Having agreed on exclusions, they must also agree on the caller shape."""
+def test_both_implementations_scope_callers_without_restricting_node_type():
+    """The report must scope callers without losing File-sourced edges."""
     report_src = inspect.getsource(report_generator._section_dead_code)
-    assert "NOT ()-[:CALLS|HEURISTIC_CALLS]->(fn)" in report_src
+    assert "OPTIONAL MATCH (caller)-[:CALLS|HEURISTIC_CALLS]->(fn)" in report_src
+    assert "caller.path STARTS WITH $repo_path" in report_src
     assert "(caller)-[:CALLS|HEURISTIC_CALLS]->(func)" in _query_src()
 
 

@@ -57,9 +57,12 @@ def test_kuzu_indexes_typescript_import_rows_without_full_import_name(tmp_path):
 
         finder = CodeFinder(_KuzuDBAdapter(driver))
         deps = finder.find_module_dependencies("react")
+        direct_importers = finder.who_imports_module("react")
 
         assert deps["importers"]
         assert deps["importers"][0]["importer_file_path"].endswith("page.ts")
+        assert direct_importers
+        assert direct_importers[0]["path"].endswith("page.ts")
     finally:
         manager.close_driver()
 

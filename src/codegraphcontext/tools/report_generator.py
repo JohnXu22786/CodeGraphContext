@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 from ..utils.debug_log import info_logger
 
+_MAX_REPORT_SPRING_ENDPOINTS = 100
+
 
 def resolve_report_repo_scope(db_manager: Any, cwd: Optional[Path] = None) -> Optional[str]:
     """Pick a single indexed repository to scope report queries."""
@@ -73,8 +75,9 @@ def resolve_report_repo_scope(db_manager: Any, cwd: Optional[Path] = None) -> Op
 
 def _repo_params(repo_path: Optional[str]) -> Dict[str, Any]:
     if not repo_path:
-        return {}
-    return {"repo_path": repo_path + "/"}
+        return {"repo_path": None}
+    root = Path(repo_path).expanduser().resolve().as_posix().rstrip("/") or "/"
+    return {"repo_path": root if root.endswith("/") else root + "/"}
 
 
 def _run_cypher(driver: Any, query: str, params: Optional[Dict] = None) -> List[Dict]:
@@ -114,7 +117,8 @@ def _section_god_nodes(driver: Any, limit: int = 15, repo_path: Optional[str] = 
     rows = _run_cypher(
         driver,
         """
-        MATCH ()-[:CALLS|HEURISTIC_CALLS]->(target)
+        MATCH (caller)-[:CALLS|HEURISTIC_CALLS]->(target)
+        WHERE $repo_path IS NULL OR caller.path STARTS WITH $repo_path
         WITH target, count(*) AS in_degree
         WHERE in_degree > 1
           AND ($repo_path IS NULL OR target.path STARTS WITH $repo_path)
@@ -123,7 +127,7 @@ def _section_god_nodes(driver: Any, limit: int = 15, repo_path: Optional[str] = 
         ORDER BY in_degree DESC
         LIMIT $limit
         """,
-        {"limit": limit, "repo_path": (repo_path + "/") if repo_path else None},
+        {"limit": limit, **_repo_params(repo_path)},
     )
     if not rows or "_error" in rows[0]:
         return ""
@@ -156,7 +160,7 @@ def _section_complexity(driver: Any, limit: int = 15, repo_path: Optional[str] =
         ORDER BY complexity DESC
         LIMIT $limit
         """,
-        {"limit": limit, "repo_path": (repo_path + "/") if repo_path else None},
+        {"limit": limit, **_repo_params(repo_path)},
     )
     if not rows or "_error" in rows[0]:
         return ""
@@ -193,7 +197,7 @@ def _section_cross_module_calls(driver: Any, limit: int = 20, repo_path: Optiona
                c.confidence_label AS label
         LIMIT $limit
         """,
-        {"limit": limit, "repo_path": (repo_path + "/") if repo_path else None},
+        {"limit": limit, **_repo_params(repo_path)},
     )
     if not rows or "_error" in rows[0]:
         return ""
@@ -239,12 +243,15 @@ def _section_dead_code(driver: Any, limit: int = 20, repo_path: Optional[str] = 
           AND NOT (fn.name STARTS WITH '__' AND fn.name ENDS WITH '__')
           AND NOT fn.name STARTS WITH '_test'
           AND NOT fn.name STARTS WITH 'test_'
-          AND NOT ()-[:CALLS|HEURISTIC_CALLS]->(fn)
+        OPTIONAL MATCH (caller)-[:CALLS|HEURISTIC_CALLS]->(fn)
+        WHERE $repo_path IS NULL OR caller.path STARTS WITH $repo_path
+        WITH fn, count(caller) AS caller_count
+        WHERE caller_count = 0
         RETURN fn.name AS name, fn.path AS path
         ORDER BY fn.path, fn.name
         LIMIT $limit
         """,
-        {"limit": limit, "repo_path": (repo_path + "/") if repo_path else None},
+        {"limit": limit, **_repo_params(repo_path)},
     )
     if not rows or "_error" in rows[0]:
         return ""
@@ -261,21 +268,26 @@ def _section_dead_code(driver: Any, limit: int = 20, repo_path: Optional[str] = 
     return out
 
 
-def _section_spring_endpoints(driver: Any) -> str:
+def _section_spring_endpoints(driver: Any, repo_path: Optional[str] = None) -> str:
     """Spring HTTP endpoints — table of method, path, handler function."""
     rows = _run_cypher(
         driver,
         """
         MATCH (fn:Function)
         WHERE fn.http_method IS NOT NULL
+          AND ($repo_path IS NULL OR fn.path STARTS WITH $repo_path)
         RETURN fn.http_method AS method, fn.http_path AS path,
                fn.name AS handler, fn.path AS file
-        ORDER BY fn.http_path, fn.http_method
+        ORDER BY fn.http_path, fn.http_method, fn.path, fn.line_number, fn.uid
+        LIMIT $limit
         """,
+        {**_repo_params(repo_path), "limit": _MAX_REPORT_SPRING_ENDPOINTS + 1},
     )
     if not rows or "_error" in rows[0] or not rows:
         return ""
 
+    truncated = len(rows) > _MAX_REPORT_SPRING_ENDPOINTS
+    rows = rows[:_MAX_REPORT_SPRING_ENDPOINTS]
     out = _h2("Spring HTTP Endpoints")
     table_rows = []
     for r in rows:
@@ -289,19 +301,23 @@ def _section_spring_endpoints(driver: Any) -> str:
         ])
     out += _table(["HTTP Method", "Path", "Handler", "File"], table_rows)
     out += "\n"
+    if truncated:
+        out += f"_Truncated: showing the first {_MAX_REPORT_SPRING_ENDPOINTS} endpoints._\n\n"
     return out
 
 
-def _section_spring_beans(driver: Any) -> str:
+def _section_spring_beans(driver: Any, repo_path: Optional[str] = None) -> str:
     """Spring bean stereotype summary."""
     rows = _run_cypher(
         driver,
         """
         MATCH (c:Class)
         WHERE c.spring_stereotype IS NOT NULL
+          AND ($repo_path IS NULL OR c.path STARTS WITH $repo_path)
         RETURN c.spring_stereotype AS stereotype, count(*) AS count
         ORDER BY count DESC
         """,
+        _repo_params(repo_path),
     )
     if not rows or "_error" in rows[0] or not rows:
         return ""
@@ -313,18 +329,21 @@ def _section_spring_beans(driver: Any) -> str:
     return out
 
 
-def _section_maven_modules(driver: Any) -> str:
+def _section_maven_modules(driver: Any, repo_path: Optional[str] = None) -> str:
     """Maven module dependency summary."""
     rows = _run_cypher(
         driver,
         """
         MATCH (m:MavenModule)
+        WHERE $repo_path IS NULL OR m.path STARTS WITH $repo_path
         OPTIONAL MATCH (m)-[:MODULE_DEPENDS_ON]->(dep:MavenModule)
+        WHERE $repo_path IS NULL OR dep.path STARTS WITH $repo_path
         RETURN m.artifact_id AS module, m.version AS version,
-               collect(dep.artifact_id) AS internal_deps
+               count(dep) AS internal_dep_count
         ORDER BY m.artifact_id
         LIMIT 30
         """,
+        _repo_params(repo_path),
     )
     if not rows or "_error" in rows[0] or not rows:
         return ""
@@ -332,8 +351,10 @@ def _section_maven_modules(driver: Any) -> str:
     out = _h2("Maven Module Graph")
     table_rows = []
     for r in rows:
-        deps = r.get("internal_deps") or []
-        table_rows.append([r.get("module", "?"), r.get("version", "?"), len(deps)])
+        dependency_count = int(r.get("internal_dep_count") or 0)
+        table_rows.append([
+            r.get("module", "?"), r.get("version", "?"), dependency_count
+        ])
     out += _table(["Module", "Version", "Internal Deps"], table_rows)
     out += "\n"
     return out
@@ -342,42 +363,48 @@ def _section_maven_modules(driver: Any) -> str:
 def _section_suggested_queries() -> str:
     out = _h2("Suggested Cypher Queries")
     out += "_Copy these into `execute_cypher_query` to explore further._\n"
+    out += (
+        "_The examples are repository-scoped except the shared external-library query, "
+        "which requires `global_scope=true`._\n"
+    )
 
     queries = [
         (
             "Callers of a specific function",
             """
-            MATCH (caller)-[:CALLS|HEURISTIC_CALLS]->(fn:Function {name: 'yourFunctionName'})
+            MATCH (caller:Function)-[:CALLS|HEURISTIC_CALLS]->(fn:Function {name: 'yourFunctionName'})
             RETURN caller.name, caller.path LIMIT 20
             """,
         ),
         (
-            "Class hierarchy for a specific class",
+            "Direct parent classes for a specific class",
             """
-            MATCH path = (c:Class {name: 'YourClass'})-[:INHERITS*]->(parent)
-            RETURN [n IN nodes(path) | n.name] AS hierarchy
+            MATCH (c:Class {name: 'YourClass'})-[:INHERITS]->(parent:Class)
+            RETURN c.name AS class, parent.name AS parent
+            ORDER BY parent.uid LIMIT 20
             """,
         ),
         (
             "Most-injected Spring beans",
             """
-            MATCH ()-[:INJECTS]->(bean:Class)
-            RETURN bean.name, count(*) AS injection_count
-            ORDER BY injection_count DESC LIMIT 10
+            MATCH (injector:Function)-[:INJECTS]->(bean:Class)
+            RETURN bean.name AS bean_name, count(*) AS injection_count
+            ORDER BY injection_count DESC, bean_name LIMIT 10
             """,
         ),
         (
-            "All external library dependencies",
+            "Sample of external library dependencies (first 100)",
             """
             MATCH (m:MavenModule)-[:USES_LIBRARY]->(lib:ExternalLibrary)
             RETURN m.artifact_id, lib.group_id, lib.artifact_id, lib.version
-            ORDER BY lib.artifact_id
+            ORDER BY m.artifact_id, lib.group_id, lib.artifact_id, lib.version
+            LIMIT 100
             """,
         ),
         (
             "CALLS edges with low confidence (potential mis-resolutions)",
             """
-            MATCH (a)-[c:CALLS|HEURISTIC_CALLS]->(b)
+            MATCH (a:Function)-[c:CALLS|HEURISTIC_CALLS]->(b:Function)
             WHERE c.confidence_label = 'AMBIGUOUS'
             RETURN a.name, b.name, c.resolution_tier, a.path LIMIT 20
             """,
@@ -431,9 +458,9 @@ def generate_report(
     sections.append(_section_dead_code(driver, repo_path=repo_path))
 
     if include_java:
-        sections.append(_section_spring_endpoints(driver))
-        sections.append(_section_spring_beans(driver))
-        sections.append(_section_maven_modules(driver))
+        sections.append(_section_spring_endpoints(driver, repo_path))
+        sections.append(_section_spring_beans(driver, repo_path))
+        sections.append(_section_maven_modules(driver, repo_path))
 
     sections.append(_section_suggested_queries())
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 # src/codegraphcontext/viz/server.py
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pathlib import Path
 import uvicorn
 import json
@@ -12,6 +13,7 @@ import sys
 import re
 import requests
 import traceback
+from itertools import islice
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
@@ -62,14 +64,36 @@ def is_path_under_static(path: Path, root: Path) -> bool:
         return False
 
 
-def _safe_read_text_file(path: str) -> str:
+def _safe_read_text_page(path: str, offset: int, page_size: int) -> tuple[str, bool]:
+    file_path = Path(path).resolve()
+    if not is_path_allowed(file_path):
+        raise HTTPException(status_code=403, detail="File path is outside allowed roots")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+        handle.read(offset)
+        raw_page = handle.read(page_size + 1)
+
+    content = raw_page[:page_size]
+    has_more = len(raw_page) > page_size
+    line_boundaries = list(re.finditer(r"\r\n|\r|\n", content))
+    if len(line_boundaries) >= MAX_GRAPH_FILE_PAGE_LINES:
+        end_of_line_window = line_boundaries[MAX_GRAPH_FILE_PAGE_LINES - 1].end()
+        if len(content) > end_of_line_window:
+            content = content[:end_of_line_window]
+            has_more = True
+    return content, has_more
+
+
+def _safe_read_text_preview(path: str, max_chars: int) -> tuple[str, bool]:
     file_path = Path(path).resolve()
     if not is_path_allowed(file_path):
         raise HTTPException(status_code=403, detail="File path is outside allowed roots")
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     with open(file_path, "r", encoding="utf-8", errors="replace") as handle:
-        return handle.read()
+        text = handle.read(max_chars + 1)
+    return text[:max_chars], len(text) > max_chars
 
 # CORS: only allow requests from the local visualization frontend.
 # The server binds to 127.0.0.1 (localhost) so only local origins are legitimate.
@@ -87,6 +111,608 @@ app.add_middleware(
 db_manager: Optional[DatabaseManager] = None
 # Path to static directory
 _static_dir: Optional[str] = None
+
+MAX_GRAPH_QUERY_ROWS = 2_000
+MAX_GRAPH_PAGE_SIZE = 50
+MAX_GRAPH_RESULT_OFFSET = 100_000
+MAX_GRAPH_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_GRAPH_PROPERTY_CHARS = 1_024
+MAX_GRAPH_PROPERTY_ITEMS = 100
+MAX_GRAPH_PROPERTY_DEPTH = 4
+MAX_GRAPH_FILE_PREVIEWS = 100
+MAX_GRAPH_FILE_PREVIEW_CHARS = 2_048
+MAX_GRAPH_FILE_PAGE_CHARS = 8_000
+MAX_GRAPH_FILE_PAGE_LINES = 200
+MAX_GRAPH_FILE_OFFSET = 1_000_000
+
+
+def _graph_entity_order_key(variable: str, backend: str) -> str:
+    if backend.lower() in {"kuzu", "kuzudb", "ladybug", "ladybugdb"}:
+        return f"CAST(id({variable}) AS STRING)"
+    return f"id({variable})"
+
+
+def _graph_label_expression(variable: str, backend: str) -> str:
+    if backend.lower() in {"kuzu", "kuzudb", "ladybug", "ladybugdb"}:
+        return f"label({variable})"
+    return f"labels({variable})[0]"
+
+
+def _graph_property_expression(variable: str, field: str, backend: str) -> str:
+    if backend.lower() in {"kuzu", "kuzudb", "ladybug", "ladybugdb"}:
+        return f"struct_extract({variable}, '{field}')"
+    return f"{variable}.{field}"
+
+
+def _graph_node_projection(variable: str, backend: str) -> str:
+    """Project only the scalar graph fields needed by the UI, with bounded text."""
+    substring_start = (
+        1 if backend.lower() in {"kuzu", "kuzudb", "ladybug", "ladybugdb"}
+        else 0
+    )
+    text_fields = (
+        "name", "path", "uid", "lang", "source", "docstring", "context",
+        "class_context",
+    )
+    fields = [
+        f"{field}: substring({_graph_property_expression(variable, field, backend)}, {substring_start}, "
+        f"{MAX_GRAPH_PROPERTY_CHARS})"
+        for field in text_fields
+    ]
+    fields.extend(
+        f"_{field}_total_chars: size({_graph_property_expression(variable, field, backend)})"
+        for field in text_fields
+    )
+    fields.extend((
+        f"_id: id({variable})",
+        f"_label: {_graph_label_expression(variable, backend)}",
+        f"line_number: {_graph_property_expression(variable, 'line_number', backend)}",
+        f"end_line: {_graph_property_expression(variable, 'end_line', backend)}",
+        f"is_dependency: {_graph_property_expression(variable, 'is_dependency', backend)}",
+        f"cyclomatic_complexity: {_graph_property_expression(variable, 'cyclomatic_complexity', backend)}",
+    ))
+    return (
+        f"CASE WHEN {variable} IS NULL THEN NULL ELSE "
+        "{ " + ", ".join(fields) + " } END"
+    )
+
+
+def _graph_relationship_projection(variable: str, source: str, target: str, backend: str) -> str:
+    """Return only bounded relationship identity and endpoint metadata."""
+    relationship_type = (
+        f"label({variable})"
+        if backend.lower() in {"kuzu", "kuzudb", "ladybug", "ladybugdb"}
+        else f"type({variable})"
+    )
+    return (
+        f"CASE WHEN {variable} IS NULL THEN NULL ELSE "
+        f"{{_id: id({variable}), _label: {relationship_type}, "
+        f"_src: id({source}), _dst: id({target})}} END"
+    )
+
+
+def _repository_graph_query(backend: str, offset: int, page_size: int) -> str:
+    """Return a bounded row page without collecting the complete repository graph."""
+    return f"""
+    MATCH (r:Repository {{path: $repo_path}})
+    OPTIONAL MATCH (r)-[:CONTAINS*0..]->(node)
+    WITH DISTINCT r, node
+    OPTIONAL MATCH (node)-[rel]->(target)
+    WHERE target = r OR {_graph_label_expression('target', backend)} = 'Module'
+       OR EXISTS {{ MATCH (r)-[:CONTAINS*0..]->(target) }}
+    RETURN {_graph_node_projection('node', backend)} AS n,
+           {_graph_relationship_projection('rel', 'node', 'target', backend)} AS rel,
+           {_graph_node_projection('target', backend)} AS m
+    ORDER BY {_graph_entity_order_key('node', backend)},
+             {_graph_entity_order_key('rel', backend)},
+             {_graph_entity_order_key('target', backend)}
+    SKIP {offset} LIMIT {page_size + 1}
+    """
+
+
+def _rewrite_bounded_graph_entity_projections(
+    query: str, backend: str
+) -> tuple[Optional[str], bool]:
+    """Replace raw n/rel/m entity returns with bounded map projections.
+
+    Returns ``(query, True)`` when a raw graph entity projection was rewritten,
+    ``(None, True)`` when it used an unsupported shape, and ``(query, False)``
+    when no raw entity aliases were present.
+    """
+    from ..tools.handlers.query_handlers import (
+        _mask_query_literals_and_comments,
+        _match_node_pattern_segments,
+        _top_level_cypher_clauses,
+    )
+
+    masked = _mask_query_literals_and_comments(query)
+    clauses = _top_level_cypher_clauses(masked)
+    identifier = r"(?:`[^`]+`|[A-Za-z_]\w*)"
+    direct_entity_projection = re.compile(
+        rf"\s*(?P<distinct>DISTINCT\s+)?(?P<value>{identifier})"
+        rf"(?:\s+AS\s+(?P<alias>{identifier}))?\s*",
+        re.IGNORECASE,
+    )
+    node_variables = set()
+    for clause in clauses:
+        if clause[0] not in {"MATCH", "OPTIONAL MATCH"}:
+            continue
+        next_clause = next(
+            (later for later in clauses if later[1] > clause[1]),
+            None,
+        )
+        pattern_end = next_clause[1] if next_clause else len(masked)
+        pattern = masked[clause[2]:pattern_end]
+        for segment in _match_node_pattern_segments(pattern):
+            node_variables.update(
+                variable.strip("`")
+                for variable, _labels in segment
+                if variable
+            )
+
+    nullable_expression = rf"(?:{identifier}|NULL)"
+    projection_pattern = re.compile(
+        rf"\s*(?P<distinct>DISTINCT\s+)?(?P<n>{identifier})\s+AS\s+`?n`?\s*,\s*"
+        rf"(?P<rel>{nullable_expression})\s+AS\s+`?rel`?\s*,\s*"
+        rf"(?P<m>{nullable_expression})\s+AS\s+`?m`?\s*",
+        re.IGNORECASE,
+    )
+    raw_entity_alias = re.compile(
+        rf"(?<![\w.`])(?P<value>{identifier})\s+AS\s+`?(?:n|rel|m)`?\b",
+        re.IGNORECASE,
+    )
+    scalar_node_functions = {"count", "elementid", "id", "labels", "type"}
+
+    def has_raw_node_value(projection: str) -> bool:
+        for variable in node_variables:
+            variable_pattern = re.compile(
+                rf"(?<![\w.`])(?:{re.escape(variable)}|`{re.escape(variable)}`)(?![\w`])"
+            )
+            for match in variable_pattern.finditer(projection):
+                suffix = projection[match.end():].lstrip()
+                if suffix.startswith("."):
+                    continue
+                prefix = projection[:match.start()].rstrip()
+                function_match = re.search(r"([A-Za-z_]\w*)\s*\($", prefix)
+                if (
+                    function_match
+                    and function_match.group(1).casefold() in scalar_node_functions
+                ):
+                    continue
+                return True
+        return False
+
+    replacements = []
+    projected_alias_targets = {}
+    found_raw_entity = False
+    return_clauses = [clause for clause in clauses if clause[0] == "RETURN"]
+    for return_clause in return_clauses:
+        next_clause = next(
+            (clause for clause in clauses if clause[1] > return_clause[1]),
+            None,
+        )
+        projection_end = next_clause[1] if next_clause else len(masked)
+        projection = masked[return_clause[2]:projection_end]
+        projection_match = projection_pattern.fullmatch(projection)
+        if not projection_match:
+            direct_match = direct_entity_projection.fullmatch(projection)
+            if (
+                direct_match
+                and direct_match.group("value").strip("`") in node_variables
+            ):
+                if any(
+                    name in {"WITH", "UNWIND", "CALL"}
+                    for name, _, _ in clauses
+                ):
+                    return None, True
+                value = direct_match.group("value")
+                distinct = direct_match.group("distinct") or ""
+                output_alias = direct_match.group("alias") or value
+                replacements.append((
+                    return_clause[2],
+                    projection_end,
+                    f" {distinct}{_graph_node_projection(value, backend)} AS n ",
+                ))
+                projected_alias_targets[value.strip("`")] = "n"
+                projected_alias_targets[output_alias.strip("`")] = "n"
+                found_raw_entity = True
+                continue
+            if has_raw_node_value(projection):
+                return None, True
+            if any(
+                match.group("value").upper() not in {"END", "NULL"}
+                for match in raw_entity_alias.finditer(projection)
+            ):
+                return None, True
+            continue
+
+        n_value = projection_match.group("n")
+        rel_value = projection_match.group("rel")
+        m_value = projection_match.group("m")
+        if rel_value.upper() != "NULL" and (
+            n_value.upper() == "NULL" or m_value.upper() == "NULL"
+        ):
+            return None, True
+
+        bounded_n = _graph_node_projection(n_value, backend)
+        bounded_rel = (
+            "NULL"
+            if rel_value.upper() == "NULL"
+            else _graph_relationship_projection(
+                rel_value, n_value, m_value, backend
+            )
+        )
+        bounded_m = (
+            "NULL"
+            if m_value.upper() == "NULL"
+            else _graph_node_projection(m_value, backend)
+        )
+        distinct = projection_match.group("distinct") or ""
+        replacements.append((
+            return_clause[2],
+            projection_end,
+            f" {distinct}{bounded_n} AS n, {bounded_rel} AS rel, {bounded_m} AS m ",
+        ))
+        projected_alias_targets["n"] = "n"
+        if rel_value.upper() != "NULL":
+            projected_alias_targets["rel"] = "rel"
+        if m_value.upper() != "NULL":
+            projected_alias_targets["m"] = "m"
+        found_raw_entity = True
+
+    if not found_raw_entity:
+        return query, False
+
+    for clause in clauses:
+        if clause[0] != "ORDER BY":
+            continue
+        next_clause = next(
+            (later for later in clauses if later[1] > clause[1]),
+            None,
+        )
+        order_end = next_clause[1] if next_clause else len(masked)
+        order_mask = masked[clause[2]:order_end]
+        order_text = query[clause[2]:order_end]
+        order_replacements = []
+        for alias, target in projected_alias_targets.items():
+            if alias != target:
+                alias_reference = re.compile(
+                    rf"(?<![\w.`])(?:`{re.escape(alias)}`|{re.escape(alias)})(?=\s*\.)",
+                    re.IGNORECASE,
+                )
+                order_replacements.extend(
+                    (match.start(), match.end(), target)
+                    for match in alias_reference.finditer(order_mask)
+                )
+            id_call = re.compile(
+                rf"\bid\s*\(\s*`?{alias}`?\s*\)", re.IGNORECASE
+            )
+            replacement = _graph_property_expression(target, "_id", backend)
+            order_replacements.extend(
+                (match.start(), match.end(), replacement)
+                for match in id_call.finditer(order_mask)
+            )
+        for start, end, replacement in sorted(order_replacements, reverse=True):
+            order_text = order_text[:start] + replacement + order_text[end:]
+        if order_replacements:
+            replacements.append((clause[2], order_end, order_text))
+
+    rewritten = query
+    for start, end, replacement in sorted(replacements, reverse=True):
+        rewritten = rewritten[:start] + replacement + rewritten[end:]
+    return rewritten, True
+
+
+def _bounded_graph_projection_page(
+    query: str,
+    backend: str,
+    offset: int,
+    page_size: int,
+    max_result_limit: int = MAX_GRAPH_QUERY_ROWS,
+) -> tuple[Optional[str], Optional[int]]:
+    """Page a bounded n/rel/m graph query by its complete entity identities.
+
+    The CLI builds a small set of visualization queries with an explicit LIMIT
+    but no ORDER BY. Those queries return every matched node and relationship
+    as n/rel/m aliases, so the API can apply stable backend entity IDs before
+    the existing result cap. Other custom query shapes stay fail-closed.
+    """
+    from ..tools.handlers.query_handlers import (
+        _CYPHER_VARIABLE_LENGTH_RELATIONSHIP_RE,
+        _mask_query_literals_and_comments,
+        _match_node_pattern_segments,
+        _top_level_cypher_clauses,
+    )
+
+    masked = _mask_query_literals_and_comments(query)
+    clauses = _top_level_cypher_clauses(masked)
+    if not clauses or clauses[-1][0] != "LIMIT":
+        return None, None
+    if any(
+        name in {"CALL", "UNWIND", "WITH", "ORDER BY", "SKIP"}
+        for name, _, _ in clauses
+    ):
+        return None, None
+    if _CYPHER_VARIABLE_LENGTH_RELATIONSHIP_RE.search(masked):
+        return None, None
+
+    limit_clause = clauses[-1]
+    limit_match = re.fullmatch(r"\s*(\d+)\s*;?\s*", masked[limit_clause[2]:])
+    if not limit_match:
+        return None, None
+    result_limit = int(limit_match.group(1))
+    if result_limit < 1 or result_limit > max_result_limit:
+        return None, None
+
+    identifier = r"(?:`[^`]+`|[A-Za-z_]\w*)"
+    expression = rf"(?P<value>{identifier})"
+    nullable_expression = rf"(?:{identifier}|NULL)"
+    projection_pattern = re.compile(
+        rf"\s*(?P<distinct>DISTINCT\s+)?{expression}\s+AS\s+`?n`?\s*,\s*"
+        rf"(?P<rel>{nullable_expression})\s+AS\s+`?rel`?\s*,\s*"
+        rf"(?P<m>{nullable_expression})\s+AS\s+`?m`?\s*",
+        re.IGNORECASE,
+    )
+    relationship_variable = re.compile(
+        rf"^\s*({identifier})\s*(?:[:|&]|$)", re.IGNORECASE
+    )
+
+    union_clauses = [clause for clause in clauses if clause[0] == "UNION"]
+    branch_ranges = []
+    branch_start = 0
+    for union in union_clauses:
+        branch_ranges.append((branch_start, union[1]))
+        branch_start = union[2]
+    branch_ranges.append((branch_start, limit_clause[1]))
+    non_null_order_aliases = set()
+    null_order_aliases = set()
+    projection_replacements = []
+
+    for branch_start, branch_end in branch_ranges:
+        branch = masked[branch_start:branch_end]
+        branch_clauses = _top_level_cypher_clauses(branch)
+        if any(
+            name in {"CALL", "UNWIND", "WITH", "ORDER BY", "SKIP", "UNION"}
+            for name, _, _ in branch_clauses
+        ):
+            return None, None
+        returns = [clause for clause in branch_clauses if clause[0] == "RETURN"]
+        matches = [
+            clause for clause in branch_clauses
+            if clause[0] in {"MATCH", "OPTIONAL MATCH"}
+        ]
+        if len(returns) != 1 or not matches:
+            return None, None
+
+        return_clause = returns[0]
+        next_clause = next(
+            (clause for clause in branch_clauses if clause[1] > return_clause[1]),
+            None,
+        )
+        projection_end = next_clause[1] if next_clause else len(branch)
+        projection = branch[return_clause[2]:projection_end]
+        projection_match = projection_pattern.fullmatch(projection)
+        if not projection_match:
+            return None, None
+
+        output_variables = set()
+        projection_values = (
+            projection_match.group("value"),
+            projection_match.group("rel"),
+            projection_match.group("m"),
+        )
+        for alias, value in zip(("n", "rel", "m"), projection_values):
+            if value.upper() != "NULL":
+                output_variables.add(value.strip("`"))
+                non_null_order_aliases.add(alias)
+            else:
+                null_order_aliases.add(alias)
+
+        bound_variables = set()
+        for match_clause in matches:
+            next_clause = next(
+                (clause for clause in branch_clauses if clause[1] > match_clause[1]),
+                None,
+            )
+            pattern_end = next_clause[1] if next_clause else len(branch)
+            pattern = branch[match_clause[2]:pattern_end]
+            if next_clause and next_clause[0] == "WHERE":
+                pattern = branch[match_clause[2]:next_clause[1]]
+            segments = _match_node_pattern_segments(pattern)
+            for segment in segments:
+                for variable, _labels in segment:
+                    if not variable:
+                        return None, None
+                    bound_variables.add(variable.strip("`"))
+            relationship_patterns = re.findall(r"\[([^\]]*)\]", pattern)
+            for relationship in relationship_patterns:
+                variable_match = relationship_variable.match(relationship)
+                if not variable_match:
+                    return None, None
+                bound_variables.add(variable_match.group(1).strip("`"))
+
+        if not bound_variables or bound_variables != output_variables:
+            return None, None
+
+        n_value, rel_value, m_value = projection_values
+        if rel_value.upper() != "NULL" and (
+            n_value.upper() == "NULL" or m_value.upper() == "NULL"
+        ):
+            return None, None
+        bounded_n = _graph_node_projection(n_value, backend)
+        bounded_rel = (
+            "NULL"
+            if rel_value.upper() == "NULL"
+            else _graph_relationship_projection(
+                rel_value, n_value, m_value, backend
+            )
+        )
+        bounded_m = (
+            "NULL"
+            if m_value.upper() == "NULL"
+            else _graph_node_projection(m_value, backend)
+        )
+        bounded_projection = (
+            f"{projection_match.group('distinct') or ''}"
+            f"{bounded_n} AS n, {bounded_rel} AS rel, {bounded_m} AS m"
+        )
+        for alias, value in zip(("n", "rel", "m"), projection_values):
+            sort_key = (
+                _graph_entity_order_key(value.strip("`"), backend)
+                if value.upper() != "NULL"
+                else "NULL"
+            )
+            bounded_projection += f", {sort_key} AS _cgc_sort_{alias}"
+        projection_replacements.append((
+            branch_start + return_clause[2],
+            branch_start + projection_end,
+            f" {bounded_projection} ",
+        ))
+
+    # A key that is NULL in only some UNION branches cannot order the rows
+    # from the other branches. Omitting it would let distinct relationships
+    # with the same endpoints tie and make SKIP continuation lossy.
+    if non_null_order_aliases & null_order_aliases:
+        return None, None
+    page_limit = min(page_size + 1, max(0, result_limit - offset))
+    order = ", ".join(
+        f"_cgc_sort_{alias}"
+        for alias in ("n", "rel", "m")
+        if alias in non_null_order_aliases
+    )
+    if not order:
+        return None, None
+    query_prefix = query[:limit_clause[1]].rstrip()
+    for start, end, replacement in sorted(projection_replacements, reverse=True):
+        query_prefix = (
+            query_prefix[:start] + replacement + query_prefix[end:]
+        )
+    return (
+        f"{query_prefix} ORDER BY {order} SKIP {offset} LIMIT {page_limit}",
+        result_limit,
+    )
+
+def _bound_graph_value(value, depth=0):
+    """Return a JSON-safe, bounded preview and whether any content was omitted."""
+    if isinstance(value, str):
+        if len(value) > MAX_GRAPH_PROPERTY_CHARS:
+            return value[:MAX_GRAPH_PROPERTY_CHARS], True
+        return value, False
+    if isinstance(value, (bytes, bytearray)):
+        preview = bytes(value[: MAX_GRAPH_PROPERTY_CHARS + 1]).decode("utf-8", errors="replace")
+        return preview[:MAX_GRAPH_PROPERTY_CHARS], len(value) > MAX_GRAPH_PROPERTY_CHARS
+    if value is None or isinstance(value, (bool, int, float)):
+        return value, False
+    if isinstance(value, dict):
+        if depth >= MAX_GRAPH_PROPERTY_DEPTH:
+            return {}, bool(value)
+        bounded = {}
+        truncated = False
+        for index, (key, item) in enumerate(value.items()):
+            if index >= MAX_GRAPH_PROPERTY_ITEMS:
+                truncated = True
+                break
+            bounded_key = str(key)[:MAX_GRAPH_PROPERTY_CHARS]
+            bounded[bounded_key], item_truncated = _bound_graph_value(item, depth + 1)
+            truncated = truncated or item_truncated
+        return bounded, truncated
+    if isinstance(value, (list, tuple, set)):
+        if depth >= MAX_GRAPH_PROPERTY_DEPTH:
+            return [], bool(value)
+        items = list(islice(iter(value), MAX_GRAPH_PROPERTY_ITEMS + 1))
+        bounded = []
+        truncated = len(items) > MAX_GRAPH_PROPERTY_ITEMS
+        for item in items[:MAX_GRAPH_PROPERTY_ITEMS]:
+            item, item_truncated = _bound_graph_value(item, depth + 1)
+            bounded.append(item)
+            truncated = truncated or item_truncated
+        return bounded, truncated
+    preview = str(value)
+    return preview[:MAX_GRAPH_PROPERTY_CHARS], len(preview) > MAX_GRAPH_PROPERTY_CHARS
+
+
+def _bound_graph_properties(properties):
+    bounded = {}
+    truncated = []
+    for key, value in properties.items():
+        original_name = str(key)
+        name = original_name[:MAX_GRAPH_PROPERTY_CHARS]
+        preview, was_truncated = _bound_graph_value(value)
+        bounded[name] = preview
+        if was_truncated or len(original_name) > MAX_GRAPH_PROPERTY_CHARS:
+            truncated.append(name)
+    return bounded, truncated
+
+
+def _graph_json_response(data, truncation_reasons):
+    """Return the graph payload under the final serialized HTTP byte limit."""
+    page_metadata = {
+        key: data[key]
+        for key in (
+            "offset",
+            "page_size",
+            "record_count",
+            "result_limit",
+            "has_more",
+            "next_offset",
+            "continuation_limit_reached",
+        )
+        if key in data
+    }
+
+    def render():
+        data["truncated"] = bool(truncation_reasons)
+        data["truncation_reasons"] = sorted(truncation_reasons)
+        return JSONResponse(content=jsonable_encoder(data))
+
+    response = render()
+    if len(response.body) <= MAX_GRAPH_RESPONSE_BYTES:
+        return response
+
+    truncation_reasons.add("serialized_byte_limit")
+    page_size = page_metadata.get("page_size")
+    offset = page_metadata.get("offset")
+    if isinstance(page_size, int) and isinstance(offset, int):
+        page_metadata.update(
+            {
+                "has_more": True,
+                "next_offset": None,
+                "continuation_limit_reached": False,
+                "retry_offset": offset,
+                "retry_page_size": max(1, page_size // 2) if page_size > 1 else None,
+                "retry_required": page_size > 1,
+                "output_limit_unrecoverable": page_size <= 1,
+            }
+        )
+        data.update(page_metadata)
+    data["fileContents"] = {}
+    data["fileContentsTruncated"] = {}
+    response = render()
+    while len(response.body) > MAX_GRAPH_RESPONSE_BYTES:
+        if data["links"]:
+            data["links"] = data["links"][: len(data["links"]) // 2]
+        elif data["nodes"]:
+            data["nodes"] = data["nodes"][: len(data["nodes"]) // 2]
+            node_ids = {node["id"] for node in data["nodes"]}
+            data["links"] = [
+                link for link in data["links"]
+                if link["source"] in node_ids and link["target"] in node_ids
+            ]
+            node_paths = {node.get("file") for node in data["nodes"] if node.get("file")}
+            data["files"] = [path for path in data["files"] if path in node_paths]
+        elif data["files"]:
+            data["files"] = data["files"][: len(data["files"]) // 2]
+        else:
+            data = {
+                "nodes": [],
+                "links": [],
+                "files": [],
+                "fileContents": {},
+                "fileContentsTruncated": {},
+                **page_metadata,
+            }
+        response = render()
+    return response
 
 def set_db_manager(manager: DatabaseManager):
     global db_manager
@@ -141,22 +767,52 @@ def _meta(d: dict, name: str):
 
 
 @app.get("/api/graph")
-async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str] = None):
+async def get_graph(
+    repo_path: Optional[str] = None,
+    cypher_query: Optional[str] = None,
+    global_scope: bool = False,
+    offset: int = 0,
+    page_size: Optional[int] = None,
+):
     if not db_manager:
         raise HTTPException(status_code=500, detail="Database not initialized")
+
+    if offset < 0 or offset >= MAX_GRAPH_RESULT_OFFSET:
+        raise HTTPException(
+            status_code=400,
+            detail=f"offset must be between 0 and {MAX_GRAPH_RESULT_OFFSET - 1}.",
+        )
+    requested_page_size = page_size
+    if requested_page_size is None:
+        requested_page_size = min(MAX_GRAPH_QUERY_ROWS, MAX_GRAPH_PAGE_SIZE)
+    if requested_page_size < 1:
+        raise HTTPException(status_code=400, detail="page_size must be positive.")
+    page_size = min(
+        requested_page_size,
+        MAX_GRAPH_QUERY_ROWS,
+        MAX_GRAPH_PAGE_SIZE,
+        MAX_GRAPH_RESULT_OFFSET - offset,
+    )
+    if page_size < 1:
+        raise HTTPException(status_code=400, detail="page_size must be positive.")
     
     get_eid = _get_eid
+    backend = str(getattr(db_manager, "get_backend_type", lambda: "neo4j")()).lower()
+    session_kwargs = _read_session_kwargs(db_manager)
 
     try:
         nodes_dict = {}
         edges = []
+        stable_custom_order = False
+        query_page_window_applied = False
+        graph_query_result_limit: Optional[int] = None
 
         print(f"DEBUG: Starting get_graph with repo_path={repo_path}", flush=True)
 
         # This endpoint only ever reads. Open the session in READ access mode so
         # the database enforces read-only (Neo4j default_access_mode / FalkorDB
         # GRAPH.RO_QUERY) in addition to the regex guard on any user query.
-        with db_manager.get_driver().session(**_read_session_kwargs(db_manager)) as session:
+        with db_manager.get_driver().session(**session_kwargs) as session:
             if cypher_query:
                 if not _is_read_only_cypher(cypher_query):
                     raise HTTPException(
@@ -167,30 +823,109 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                             "DROP, or CALL apoc are not allowed."
                         ),
                     )
-                print(f"DEBUG: Executing custom query: {cypher_query}", flush=True)
-                result = session.run(cypher_query)
-            elif repo_path:
-                repo_path = str(Path(repo_path).resolve())
+                executed_query = cypher_query
+                query_params = {}
+                from ..tools.handlers.query_handlers import _has_stable_unique_final_order_by
+
+                stable_custom_order = _has_stable_unique_final_order_by(cypher_query)
+                if not global_scope:
+                    if not repo_path:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Custom Cypher queries require repo_path or explicit "
+                                "global_scope=true."
+                            ),
+                        )
+                    from ..tools.handlers.query_handlers import _scope_cypher_query
+
+                    try:
+                        executed_query, query_params = _scope_cypher_query(
+                            cypher_query, repo_path
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if not stable_custom_order:
+                    paged_query, graph_query_result_limit = _bounded_graph_projection_page(
+                        executed_query, backend, offset, page_size
+                    )
+                    if paged_query is not None:
+                        executed_query = paged_query
+                        stable_custom_order = True
+                        query_page_window_applied = True
+                    elif offset:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Paged custom Cypher requires a stable ORDER BY with a unique "
+                                "tie-breaker or a bounded n/rel/m graph projection."
+                            ),
+                        )
+                if not query_page_window_applied:
+                    bounded_query, has_raw_entity_projection = (
+                        _rewrite_bounded_graph_entity_projections(
+                            executed_query, backend
+                        )
+                    )
+                    if has_raw_entity_projection:
+                        if bounded_query is None:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    "Custom graph queries must return graph entities as a "
+                                    "supported n/rel/m projection so properties can be bounded."
+                                ),
+                            )
+                        executed_query = bounded_query
+                print(f"DEBUG: Executing custom query: {executed_query}", flush=True)
+                result = session.run(executed_query, **query_params)
+            elif repo_path and not global_scope:
+                repo_path = Path(repo_path).resolve().as_posix()
                 print(f"DEBUG: Fetching subgraph for: {repo_path}", flush=True)
-                # Get all nodes within the repository scope
-                query = """
-                MATCH (r:Repository {path: $repo_path})
-                OPTIONAL MATCH (r)-[:CONTAINS*0..]->(n)
-                WITH DISTINCT r, COLLECT(DISTINCT n) as repo_nodes
-                UNWIND repo_nodes as node
-                OPTIONAL MATCH (node)-[rel]->(target)
-                WITH r, node, rel, target, repo_nodes
-                WHERE target IN repo_nodes OR target = r
-                RETURN node as n, rel, target as m
-                """
+                query = _repository_graph_query(backend, offset, page_size)
+                query_page_window_applied = True
                 result = session.run(query, repo_path=repo_path)
             else:
+                if not global_scope:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "A repository path or explicit global_scope=true is "
+                            "required to fetch the graph."
+                        ),
+                    )
                 print("DEBUG: Fetching global graph", flush=True)
-                query = "MATCH (n) OPTIONAL MATCH (n)-[rel]->(m) RETURN n, rel, m LIMIT 50000"
+                query = (
+                    "MATCH (n) OPTIONAL MATCH (n)-[rel]->(m) "
+                    f"RETURN {_graph_node_projection('n', backend)} AS n, "
+                    f"{_graph_relationship_projection('rel', 'n', 'm', backend)} AS rel, "
+                    f"{_graph_node_projection('m', backend)} AS m "
+                    f"ORDER BY {_graph_entity_order_key('n', backend)}, "
+                    f"{_graph_entity_order_key('rel', backend)}, "
+                    f"{_graph_entity_order_key('m', backend)} "
+                    f"SKIP {offset} LIMIT {page_size + 1}"
+                )
+                query_page_window_applied = True
                 result = session.run(query)
 
+            result_start = 0 if query_page_window_applied else offset
+            result_rows = list(islice(iter(result), result_start, result_start + page_size + 1))
+            has_more = len(result_rows) > page_size
+            page_rows = result_rows[:page_size]
+            if cypher_query and has_more and not stable_custom_order:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "This custom Cypher result spans multiple pages. Add a stable ORDER BY "
+                        "with a unique tie-breaker before using visualization pagination."
+                    ),
+                )
+
             record_count = 0
-            for record in result:
+            truncation_reasons = set()
+            if has_more:
+                truncation_reasons.add("row_limit")
+            for record in page_rows:
                 record_count += 1
                 # Use .get() to avoid KeyError if the query doesn't return all fields (n, rel, m)
                 for key in ['n', 'm']:
@@ -218,7 +953,14 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                                 
                                 # Extract properties
                                 props = {}
+                                projected_property_totals = {}
                                 if isinstance(node, dict):
+                                    projected_property_totals = {
+                                        key[1:-len("_total_chars")]: value
+                                        for key, value in node.items()
+                                        if key.startswith("_")
+                                        and key.endswith("_total_chars")
+                                    }
                                     props = {k: v for k, v in node.items() if not k.startswith('_')}
                                 else:
                                     for prop_attr in ['properties', '_properties']:
@@ -233,6 +975,19 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                                         try:
                                             props = dict(node.items())
                                         except: pass
+
+                                props, truncated_properties = _bound_graph_properties(props)
+                                for property_name, total_chars in projected_property_totals.items():
+                                    preview = props.get(property_name)
+                                    if (
+                                        isinstance(total_chars, int)
+                                        and isinstance(preview, str)
+                                        and total_chars > len(preview)
+                                        and property_name not in truncated_properties
+                                    ):
+                                        truncated_properties.append(property_name)
+                                if truncated_properties:
+                                    truncation_reasons.add("property_preview")
                                 
                                 # Extract name/label for frontend
                                 # Prefer 'name' property, fallback to 'label', then 'path' or 'Unknown'
@@ -254,7 +1009,8 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                                     "type": str(labels[0]).capitalize() if labels else "Other",
                                     "file": str(props.get('path', props.get('file', ''))),
                                     "val": 4 if (labels and labels[0] in ['Repository', 'Class', 'Interface', 'Trait']) else 2,
-                                    "properties": props
+                                    "properties": props,
+                                    **({"truncatedProperties": truncated_properties} if truncated_properties else {}),
                                 }
                     except Exception as e:
                         print(f"DEBUG: Error parsing node: {e}", file=sys.stderr, flush=True)
@@ -323,15 +1079,25 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
             if n.get("file") and str(n.get("type", "")).lower() == "file":
                 file_paths.append(str(n["file"]))
         file_paths = sorted(list(set(file_paths)))
+        if len(file_paths) > MAX_GRAPH_FILE_PREVIEWS:
+            truncation_reasons.add("file_preview_limit")
+            file_paths = file_paths[:MAX_GRAPH_FILE_PREVIEWS]
 
-        # Read file contents so the frontend never needs a separate API call
+        # Send bounded file previews; full text remains available from /api/file on demand.
         file_contents: dict[str, str] = {}
+        file_contents_truncated: dict[str, bool] = {}
         for fp in file_paths:
             try:
                 resolved = Path(fp).resolve()
                 if not is_path_allowed(resolved):
                     continue
-                file_contents[fp] = _safe_read_text_file(str(resolved))
+                preview, was_truncated = _safe_read_text_preview(
+                    str(resolved), MAX_GRAPH_FILE_PREVIEW_CHARS
+                )
+                file_contents[fp] = preview
+                if was_truncated:
+                    file_contents_truncated[fp] = True
+                    truncation_reasons.add("file_preview")
             except HTTPException:
                 continue
             except Exception:
@@ -342,10 +1108,45 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
             "links": edges,
             "files": file_paths,
             "fileContents": file_contents,
+            "fileContentsTruncated": file_contents_truncated,
+            "offset": offset,
+            "page_size": page_size,
+            "has_more": has_more,
+            "next_offset": (
+                offset + record_count
+                if (
+                    has_more
+                    and offset + record_count < MAX_GRAPH_RESULT_OFFSET
+                    and (
+                        graph_query_result_limit is None
+                        or offset + record_count < graph_query_result_limit
+                    )
+                )
+                else None
+            ),
+            "continuation_limit_reached": (
+                (
+                    has_more and offset + record_count >= MAX_GRAPH_RESULT_OFFSET
+                )
+                or (
+                    graph_query_result_limit is not None
+                    and offset + record_count >= graph_query_result_limit
+                )
+            ),
+            "record_count": record_count,
         }
+        if has_more:
+            response_data["result_limit"] = page_size
+        elif graph_query_result_limit is not None:
+            response_data["result_limit"] = graph_query_result_limit
+        if (
+            graph_query_result_limit is not None
+            and offset + record_count >= graph_query_result_limit
+        ):
+            truncation_reasons.add("query_result_limit")
         
         print(f"API SUCCESS: Returning graph with {len(response_data['nodes'])} nodes and {len(response_data['links'])} links.", file=sys.stderr, flush=True)
-        return response_data
+        return _graph_json_response(response_data, truncation_reasons)
 
     except HTTPException:
         # Preserve intentional HTTP errors (e.g. 400 for forbidden write queries).
@@ -727,9 +1528,40 @@ Suggest 2-3 specific follow-up questions or related areas the user might want to
 
 
 @app.get("/api/file")
-async def get_file(path: str):
+async def get_file(path: str, offset: int = 0, page_size: Optional[int] = None):
     try:
-        return {"content": _safe_read_text_file(path)}
+        if offset < 0 or offset >= MAX_GRAPH_FILE_OFFSET:
+            raise HTTPException(
+                status_code=400,
+                detail=f"offset must be between 0 and {MAX_GRAPH_FILE_OFFSET - 1}.",
+            )
+        requested_page_size = page_size
+        if requested_page_size is None:
+            requested_page_size = MAX_GRAPH_FILE_PAGE_CHARS
+        if requested_page_size < 1:
+            raise HTTPException(status_code=400, detail="page_size must be positive.")
+        effective_page_size = min(
+            requested_page_size,
+            MAX_GRAPH_FILE_PAGE_CHARS,
+            MAX_GRAPH_FILE_OFFSET - offset,
+        )
+        content, has_more = _safe_read_text_page(path, offset, effective_page_size)
+        page_end = offset + len(content)
+        continuation_limit_reached = has_more and page_end >= MAX_GRAPH_FILE_OFFSET
+        return {
+            "content": content,
+            "offset": offset,
+            "page_size": effective_page_size,
+            "line_limit": MAX_GRAPH_FILE_PAGE_LINES,
+            "truncated": has_more,
+            "has_more": has_more,
+            "next_offset": (
+                page_end
+                if has_more and not continuation_limit_reached
+                else None
+            ),
+            "continuation_limit_reached": continuation_limit_reached,
+        }
     except HTTPException:
         raise
     except Exception as e:

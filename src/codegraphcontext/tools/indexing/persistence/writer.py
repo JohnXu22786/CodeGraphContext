@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ....utils.debug_log import info_logger, warning_logger
-from ....utils.git_utils import get_repo_commit_hash
+from ....utils.git_utils import (
+    get_repo_commit_hash,
+    has_git_admin_entry,
+    has_unborn_git_head,
+)
 from ..sanitize import sanitize_props as sanitize_props
 from ..sanitize import sanitize_props_with_secrets
 from ..schema_contract import NODE_LABELS
@@ -379,35 +383,60 @@ class GraphWriter:
         })
 
     def add_repository_to_graph(
-        self, repo_path: Path, is_dependency: bool = False, index_state: str = "ready"
+        self,
+        repo_path: Path,
+        is_dependency: Optional[bool] = False,
+        index_state: str = "ready",
     ) -> None:
         repo_name = repo_path.name
         # Use _normalize_path so the stored path always uses forward slashes,
         # making STARTS WITH queries work on Windows too.
         repo_path_str = _normalize_path(repo_path)
 
-        commit_hash = get_repo_commit_hash(repo_path.resolve())
+        resolved_repo_path = repo_path.resolve()
+        commit_hash = get_repo_commit_hash(resolved_repo_path)
+        clear_commit_hash = not commit_hash and (
+            has_unborn_git_head(resolved_repo_path) or not has_git_admin_entry(resolved_repo_path)
+        )
         indexed_at = datetime.now(timezone.utc).isoformat()
 
         backend = get_backend_type(self.driver, self._db_manager)
         def _work(session):
-            session.run(
-                """
-                MERGE (r:Repository {path: $path})
-                SET r.name = $name,
-                    r.is_dependency = $is_dependency,
-                    r.indexed_at = $indexed_at,
-                    r.index_state = CASE
-                        WHEN r.index_state = 'building' THEN 'building'
-                        ELSE $index_state
-                    END
-                """,
-                path=repo_path_str,
-                name=repo_name,
-                is_dependency=is_dependency,
-                indexed_at=indexed_at,
-                index_state=index_state,
-            )
+            if is_dependency is None:
+                session.run(
+                    """
+                    MERGE (r:Repository {path: $path})
+                    SET r.name = $name,
+                        r.is_dependency = coalesce(r.is_dependency, false),
+                        r.indexed_at = $indexed_at,
+                        r.index_state = CASE
+                            WHEN r.index_state = 'building' THEN 'building'
+                            ELSE $index_state
+                        END
+                    """,
+                    path=repo_path_str,
+                    name=repo_name,
+                    indexed_at=indexed_at,
+                    index_state=index_state,
+                )
+            else:
+                session.run(
+                    """
+                    MERGE (r:Repository {path: $path})
+                    SET r.name = $name,
+                        r.is_dependency = $is_dependency,
+                        r.indexed_at = $indexed_at,
+                        r.index_state = CASE
+                            WHEN r.index_state = 'building' THEN 'building'
+                            ELSE $index_state
+                        END
+                    """,
+                    path=repo_path_str,
+                    name=repo_name,
+                    is_dependency=is_dependency,
+                    indexed_at=indexed_at,
+                    index_state=index_state,
+                )
             if commit_hash:
                 session.run(
                     """
@@ -416,6 +445,14 @@ class GraphWriter:
                     """,
                     path=repo_path_str,
                     commit_hash=commit_hash,
+                )
+            elif clear_commit_hash:
+                session.run(
+                    """
+                    MATCH (r:Repository {path: $path})
+                    SET r.commit_hash = null
+                    """,
+                    path=repo_path_str,
                 )
 
         execute_write_operation(self.driver, backend, _work)
@@ -2711,6 +2748,23 @@ class GraphWriter:
 
         return execute_read_operation(self.driver, backend, _work)
 
+    def get_caller_file_paths_for_files(self, file_paths: List[str]) -> set:
+        """Return callers of any of the supplied files in one graph query."""
+        if not file_paths:
+            return set()
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            result = session.run(
+                "MATCH (caller)-[:CALLS|HEURISTIC_CALLS]->(callee) "
+                "WHERE callee.path IN $paths "
+                "RETURN DISTINCT coalesce(caller.path, '') AS p",
+                paths=[_normalize_path(path) for path in file_paths],
+            )
+            return {record["p"] for record in result if record["p"]}
+
+        return execute_read_operation(self.driver, backend, _work)
+
     def get_importer_file_paths(
         self, names: set[str], repo_path: Path, changed_path: Path
     ) -> set:
@@ -2768,6 +2822,31 @@ class GraphWriter:
                 prefix=prefix,
             )
             return {record["p"] for record in result if record["p"]}
+
+        return execute_read_operation(self.driver, backend, _work)
+
+    def get_repository_path_for_file(self, file_path: str) -> Optional[str]:
+        """Return the most specific repository containing an indexed file."""
+        normalized_file_path = _normalize_path(file_path)
+        backend = get_backend_type(self.driver, self._db_manager)
+
+        def _work(session):
+            result = session.run(
+                "MATCH (r:Repository)-[:CONTAINS*]->(f:File {path: $path}) RETURN DISTINCT r.path AS repo_path",
+                path=normalized_file_path,
+            )
+            paths = [record["repo_path"] for record in result if record["repo_path"]]
+            if not paths:
+                return None
+
+            ancestor_paths = [
+                repo_path
+                for repo_path in paths
+                if normalized_file_path == repo_path or normalized_file_path.startswith(_normalize_prefix(repo_path))
+            ]
+            if ancestor_paths:
+                return max(ancestor_paths, key=len)
+            return paths[0] if len(paths) == 1 else None
 
         return execute_read_operation(self.driver, backend, _work)
 

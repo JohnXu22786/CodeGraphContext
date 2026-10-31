@@ -24,10 +24,12 @@ cgc index ./src/core
 cgc index ./src/main.py
 ```
 
-### Overwriting the Index
-CGC tracks modification timestamps and file hashes to perform incremental scans. To force a full re-index of all files, bypass the cache with the `--force` flag:
+### Refreshing an Existing Index
+`cgc index` skips a repository that is already fully indexed; it does not compare existing files by timestamp or content hash. Use `cgc update` or `cgc index --force` to refresh a repository after external file or configuration changes. A parser or grammar package upgrade requires restarting any long-running CGC process first, so it loads the new parser and grammar objects before rebuilding. These refresh commands remove the old repository graph and rebuild it:
 
 ```bash
+cgc update
+# equivalent full rebuild:
 cgc index --force
 ```
 
