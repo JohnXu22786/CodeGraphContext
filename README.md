@@ -12,8 +12,6 @@
 - 🇮🇳 [தமிழ்](docs/translations/README.ta.md)
 - 🇪🇸 Español (Soon)
 
-🌍 **Help translate CodeGraphContext to your language by raising an issue & PR on [GitHub Issues](https://github.com/JohnXu22786/CodeGraphContext/issues)!**
-
 <p align="center">
   <br>
   <b>Bridge the gap between deep code graphs and AI context.</b>
@@ -28,18 +26,9 @@
     <img src="https://img.shields.io/github/license/JohnXu22786/CodeGraphContext?style=flat-square" alt="License">
   </a>
   <img src="https://img.shields.io/badge/MCP-Compatible-green?style=flat-square" alt="MCP Compatible">
-  <a href="https://discord.gg/VCwUdCnn">
-    <img src="https://img.shields.io/discord/1421769154507309150?label=Discord&logo=discord&logoColor=white&style=flat-square">
-  </a>
   <br><br>
   <a href="https://github.com/JohnXu22786/CodeGraphContext/stargazers">
     <img src="https://img.shields.io/github/stars/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Stars">
-  </a>
-  <a href="https://github.com/JohnXu22786/CodeGraphContext/network/members">
-    <img src="https://img.shields.io/github/forks/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Forks">
-  </a>
-  <a href="https://github.com/JohnXu22786/CodeGraphContext/issues">
-    <img src="https://img.shields.io/github/issues-raw/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="Issues">
   </a>
   <a href="https://github.com/JohnXu22786/CodeGraphContext/pulls">
     <img src="https://img.shields.io/github/issues-pr/JohnXu22786/CodeGraphContext?style=flat-square&logo=github" alt="PRs">
@@ -54,19 +43,10 @@
   <a href="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml">
     <img src="https://github.com/JohnXu22786/CodeGraphContext/actions/workflows/e2e-tests.yml/badge.svg" alt="E2E Tests">
   </a>
-  <a href="http://codegraphcontext.vercel.app/">
-    <img src="https://img.shields.io/badge/website-up-brightgreen?style=flat-square" alt="Website">
-  </a>
-  <a href="https://codegraphcontext.vercel.app/">
-    <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue?style=flat-square" alt="Docs">
-  </a>
-  <a href="https://youtu.be/KYYSdxhg1xU">
-    <img src="https://img.shields.io/badge/YouTube-Watch%20Demo-red?style=flat-square&logo=youtube" alt="YouTube Demo">
-  </a>
 </p>
 
 
-A powerful **MCP server** and **CLI toolkit** that indexes local code into a graph database to provide context to AI assistants and developers. Use it as a standalone CLI for comprehensive code analysis or connect it to your favorite AI IDE via MCP for AI-powered code understanding.
+CodeGraphContext indexes local repositories into a graph you can explore from the CLI or expose to an MCP client. This independently maintained project focuses on branch-aware local indexes, reviewable graph snapshots, and query results with inspectable evidence. [Read the source lineage and retained notices](UPSTREAM.md).
 
 ---
 
@@ -82,58 +62,67 @@ A powerful **MCP server** and **CLI toolkit** that indexes local code into a gra
 
 ---
 
-## ✨ Experience CGC
+## CodeGraphContext: a local code graph for people and agents
 
+CodeGraphContext (CGC) indexes a repository into a graph of symbols and relationships, then makes that graph available through the CLI and MCP. This repository is independently maintained, with a focus on safe local indexing, inspectable graph changes, and evidence-aware results. It builds on the existing CodeGraphContext project and retains its MIT license and author attribution.
 
-### 👨🏻‍💻 Installation and CLI
-> Install in seconds with pip and unlock a powerful CLI for code graph analysis.
-![Install and unlock the CLI instantly](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/install&cli.gif)
+CGC is operated through the CLI and MCP, with an optional graph visualization command; it is not a shipped desktop application. The visuals below are conceptual examples of the information its commands and tools can return, not product screenshots.
 
+### What this project focuses on
 
-### 🛠️ Indexing in Seconds
-> The CLI intelligently parses your tree-sitter nodes to build the graph.
-![Indexing using an MCP client](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Indexing.gif)
+- **Keep checkouts distinct.** In default per-repository mode, Git branches, detached checkouts, and linked worktrees receive separate local indexes. Explicit shared contexts remain available when desired.
+- **Review graph changes.** Save a graph snapshot and compare it with a later index using `cgc snapshot` and `cgc diff`. Comparisons reject stale or incomplete generations and mismatched repositories or contexts.
+- **See how findings were derived.** Relationship and analysis results can include confidence labels, provenance, reasons, and bounded source evidence; ambiguous resolutions remain visible as ambiguous.
+- **Keep queries scoped and manageable.** Repository filters and result limits help keep graph queries focused. Use the local CLI directly or connect an MCP client to the server.
 
-### 🤖 Powering your AI Assistant
-> Use natural language to query complex call-chains via MCP.
-![Using the MCP server](https://github.com/JohnXu22786/CodeGraphContext/blob/main/images/Usecase.gif)
+### Illustrative feature views
 
----
+These are **illustrative mocks with sample data**, not screenshots of a shipped graphical interface.
 
-## Why CodeGraphContext?
+<p align="center">
+  <img src="images/product/branch-indexes.svg" alt="Illustrative mock showing separate local graph indexes for a main branch, a feature branch, and a linked worktree." width="800">
+</p>
+<p align="center"><em>Illustrative mock — sample repository and branch names. Default per-repository indexing isolates branch and worktree state.</em></p>
 
-CodeGraphContext is built for the moment when plain text search stops being enough. It turns a repository into a graph of files, symbols, calls, inheritance, imports, and relationships so you can move from "where is this defined?" to "how does this actually connect?" without jumping between tools.
+<p align="center">
+  <img src="images/product/graph-diff.svg" alt="Illustrative mock of a graph snapshot comparison showing added and removed symbols and relationships." width="800">
+</p>
+<p align="center"><em>Illustrative mock — sample graph changes. Use <code>cgc snapshot save</code> and <code>cgc diff --against</code> to compare compatible saved and current indexes.</em></p>
 
-```mermaid
-flowchart LR
-  A[Source code] --> B[Tree-sitter and SCIP indexers]
-  B --> C[Graph database]
-  C --> D[CLI queries]
-  C --> E[MCP server]
-  D --> F[Direct analysis]
-  E --> G[AI assistants with repo context]
+<p align="center">
+  <img src="images/product/evidence-query.svg" alt="Illustrative mock of a repository-scoped query result with evidence, confidence, and an ambiguous relationship called out." width="800">
+</p>
+<p align="center"><em>Illustrative mock — sample query output. Results can carry source evidence and confidence metadata; the example values are fictional.</em></p>
+
+### A short local workflow
+
+```bash
+# Install the current package and index a repository
+python -m pip install codegraphcontext-fork
+cgc index /path/to/your/repository
+
+# Save a point-in-time graph and compare it later
+cgc snapshot save --name before-change
+cgc diff --against before-change
+
+# Configure an MCP client, or use the graph tools directly from the CLI
+cgc mcp setup
 ```
 
-### Comparison at a glance
-
-| Approach | Best for | Tradeoff |
-| --- | --- | --- |
-| `grep` / file search | Exact string lookup | Misses relationships and code structure |
-| RAG over code chunks | Natural-language retrieval | Can lose symbol-level precision |
-| CodeGraphContext | Repository-wide reasoning | Requires an indexing step |
+Snapshots are most useful with supported embedded backends that can report a verified completed generation. Shared or remote backends without a durable completion marker are treated as incomplete for diffing. CGC does not migrate an explicitly selected shared database into branch-isolated storage. See the [indexing guide](docs/docs/guides/indexing.md) and [MCP tool reference](docs/MCP_TOOLS.md) for details.
 
 ### Common use cases
 
-- Trace call chains across files and packages.
-- Understand class hierarchies, imports, and module boundaries.
-- Find dead code, hotspots, and unexpected dependencies.
-- Give an AI assistant the same structural context a maintainer would use.
+- Trace callers, callees, and call chains across files.
+- Explore imports, inheritance, module boundaries, and dependencies.
+- Review graph changes between saved index states.
+- Give an MCP-connected assistant repository structure alongside bounded source evidence.
 
 ### FAQ
 
-- **Do I need a remote service?** No. CGC works locally with embedded backends or with external graph databases when you want them.
-- **Is it only for one language?** No. It supports a broad mix of mainstream languages and keeps expanding.
-- **Can I use it with an AI assistant?** Yes. That is one of the main reasons the MCP server exists.
+- **Does CGC require a hosted service?** No. It can use a local embedded graph database; remote backends are optional.
+- **Does it include a desktop application?** No. The supported workflows are the CLI and MCP server; `cgc visualize` can open an optional graph view. The feature visuals here are conceptual mocks.
+- **Can it be used by an AI assistant?** Yes. Configure an MCP client with `cgc mcp setup`, or use the CLI without an assistant.
 
 ---
 
@@ -141,12 +130,11 @@ flowchart LR
 - **Version:** 0.7.0
 - **Authors:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **License:** MIT License (See [LICENSE](LICENSE) for details)
-- **Website:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
 
 ---
 
-## 👨‍💻 Maintainer
-**CodeGraphContext** is created and actively maintained by:
+## 👨‍💻 Original project author
+The existing CodeGraphContext project was created by:
 
 **Shashank Shekhar Singh**  
 - 📧 Email: [shashankshekharsingh1205@gmail.com](mailto:shashankshekharsingh1205@gmail.com)
@@ -154,7 +142,7 @@ flowchart LR
 - 🔗 LinkedIn: [Shashank Shekhar Singh](https://www.linkedin.com/in/shashank-shekhar-singh-a67282228/)
 - 🌐 Website: [codegraphcontext.vercel.app](https://codegraphcontext.vercel.app/)
 
-*Contributions and feedback are always welcome! Feel free to reach out for questions, suggestions, or collaboration opportunities.*
+Source lineage and retained notices are documented in [UPSTREAM.md](UPSTREAM.md).
 
 ---
 
@@ -305,9 +293,9 @@ Optional database backends can be installed separately with `codegraphcontext-fo
 
 ### 🚀 Installation & Quick Start
 
-> Install this fork in a dedicated Python virtual environment. The upstream `codegraphcontext` distribution and this fork’s `codegraphcontext-fork` distribution both install the `codegraphcontext` import package, so do not install them into the same environment. The CLI commands remain `cgc` and `codegraphcontext`.
+> Install this distribution in a dedicated Python virtual environment. The upstream `codegraphcontext` distribution and the `codegraphcontext-fork` distribution both install the `codegraphcontext` import package, so do not install them into the same environment. The CLI commands remain `cgc` and `codegraphcontext`.
 
-The `codegraphcontext-fork` package is not published on PyPI yet. The install command below will work after the 0.7.0 publication.
+Version 0.7.0 is published on PyPI. Use the isolated environment below to avoid conflicts with another distribution that installs the same import package.
 
 The commands below use Bash on macOS/Linux. In PowerShell, activate the environment with `.\.venv\Scripts\Activate.ps1`; in Command Prompt, use `.venv\Scripts\activate.bat`.
 
@@ -356,7 +344,7 @@ cgc mcp setup
 cgc mcp start
 ```
 
-After the 0.7.0 release is published, `pip install codegraphcontext-fork` will install the package. If you are developing parser-heavy features and want the optional parsing extras too, install with `pip install -e ".[dev,parsing]"`.
+For parser-heavy development, install the optional parsing extras with `pip install -e ".[dev,parsing]"`.
 
 ---
 
@@ -364,7 +352,7 @@ After the 0.7.0 release is published, `pip install codegraphcontext-fork` will i
 
 Run CodeGraphContext without installing Python — pull the image and start indexing:
 
-The fork-owned GHCR package is not published yet. As part of the first image publication, the owner will set the package visibility to Public; anonymous pulls will be available after that change takes effect.
+The public container image is available from GitHub Container Registry; anonymous pulls are supported.
 
 ### Quick Start
 ```bash
@@ -432,7 +420,7 @@ python --version
 
 ### Step 1: Install CodeGraphContext
 
-The `codegraphcontext-fork` package is not published on PyPI yet. Use the install command below after the 0.7.0 publication.
+Version 0.7.0 is published on PyPI. The commands below install it into an isolated environment.
 
 ```bash
 python -m venv .venv

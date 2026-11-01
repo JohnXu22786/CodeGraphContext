@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Graph snapshot comparison</title>
+  <desc id="desc">Illustrative sample terminal-style view of a graph diff with added and removed symbols and relationships.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#1b2d46"/></linearGradient></defs>
+  <rect width="1200" height="620" rx="28" fill="url(#bg)"/>
+  <rect x="36" y="30" width="1128" height="48" rx="12" fill="#f6c453"/>
+  <text x="60" y="61" fill="#30220a" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="800" letter-spacing=".8">ILLUSTRATIVE MOCK  •  SAMPLE DATA</text>
+  <text x="58" y="132" fill="#f4f7fb" font-family="Inter,Arial,sans-serif" font-size="34" font-weight="750">Compare graph states, not just file lists</text>
+  <text x="58" y="168" fill="#a8bbd3" font-family="Inter,Arial,sans-serif" font-size="18">A saved snapshot can be compared with a compatible current index.</text>
+  <rect x="58" y="205" width="1084" height="342" rx="18" fill="#0c1420" stroke="#334965" stroke-width="2"/>
+  <circle cx="88" cy="237" r="7" fill="#fa7185"/><circle cx="112" cy="237" r="7" fill="#f6c453"/><circle cx="136" cy="237" r="7" fill="#65d8bd"/>
+  <text x="170" y="243" fill="#8398b2" font-family="Inter,Arial,sans-serif" font-size="14">cgc diff --against before-change</text>
+  <rect x="82" y="269" width="1036" height="52" rx="10" fill="#18283b"/>
+  <text x="104" y="302" fill="#deebfa" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="17">sample-payments  ·  snapshot: before-change  →  current index</text>
+  <g font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="17">
+    <rect x="82" y="339" width="1036" height="44" rx="8" fill="#102a28"/>
+    <text x="104" y="367" fill="#69e0ad" font-weight="700">+ NODE</text><text x="210" y="367" fill="#d8e6f5">TaxRule.apply_rate</text><text x="535" y="367" fill="#93a9c3">src/tax/rules.py</text>
+    <rect x="82" y="392" width="1036" height="44" rx="8" fill="#102a28"/>
+    <text x="104" y="420" fill="#69e0ad" font-weight="700">+ EDGE</text><text x="210" y="420" fill="#d8e6f5">InvoiceService → TaxRule.apply_rate</text><text x="690" y="420" fill="#93a9c3">CALLS</text>
+    <rect x="82" y="445" width="1036" height="44" rx="8" fill="#301e2c"/>
+    <text x="104" y="473" fill="#ff8295" font-weight="700">− NODE</text><text x="210" y="473" fill="#d8e6f5">LegacyTax.lookup</text><text x="535" y="473" fill="#93a9c3">src/tax/legacy.py</text>
+  </g>
+  <text x="82" y="522" fill="#90a6bf" font-family="Inter,Arial,sans-serif" font-size="14">Fictional symbols and paths shown for illustration; counts are omitted.</text>
+  <text x="58" y="580" fill="#92a5bd" font-family="Inter,Arial,sans-serif" font-size="14">Diffs require compatible repository/context identities and a verified complete generation.</text>
+</svg>
