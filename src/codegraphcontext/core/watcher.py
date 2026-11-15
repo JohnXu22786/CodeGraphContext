@@ -1219,13 +1219,14 @@ class CodeWatcher:
                 "generation_db_path": generation_db_path,
                 "generation_identity": generation_identity,
             }
+        if not guard_repository_identity:
+            generation_kwargs["guard_repository_identity"] = False
         handler = RepositoryEventHandler(
             self.graph_builder,
             path_obj,
             perform_initial_scan=perform_initial_scan,
             sync_on_start=sync_on_start,
             cgcignore_path=cgcignore_path,
-            guard_repository_identity=guard_repository_identity,
             **generation_kwargs,
         )
 
