@@ -277,7 +277,10 @@ def test_incremental_graph_matches_clean_rebuild_after_file_and_branch_batches(
     builder = GraphBuilder(_DBM(driver), _JM(), loop)
     handler = None
     try:
-        handler = RepositoryEventHandler(builder, repo, perform_initial_scan=True)
+        handler = RepositoryEventHandler(
+            builder, repo, perform_initial_scan=True,
+            guard_repository_identity=False,
+        )
 
         def assert_matches_clean_build(label: str, build_index: int) -> None:
             nonlocal manager, driver, builder
@@ -585,7 +588,10 @@ def test_watcher_clears_commit_metadata_after_switch_to_unborn_branch(tmp_path: 
     builder = GraphBuilder(_DBM(driver), _JM(), loop)
     handler = None
     try:
-        handler = RepositoryEventHandler(builder, repo, perform_initial_scan=True)
+        handler = RepositoryEventHandler(
+            builder, repo, perform_initial_scan=True,
+            guard_repository_identity=False,
+        )
         assert _graph_semantics(driver, repo)["repository"][0][1]
 
         _git(repo, "switch", "--orphan", "unborn")
@@ -628,7 +634,10 @@ def test_watcher_clears_commit_metadata_after_git_metadata_removed(tmp_path: Pat
     builder = GraphBuilder(_DBM(driver), _JM(), loop)
     handler = None
     try:
-        handler = RepositoryEventHandler(builder, repo, perform_initial_scan=True)
+        handler = RepositoryEventHandler(
+            builder, repo, perform_initial_scan=True,
+            guard_repository_identity=False,
+        )
         assert _graph_semantics(driver, repo)["repository"][0][1]
 
         shutil.rmtree(repo / ".git")
@@ -676,7 +685,10 @@ def test_watcher_reconciles_after_linked_worktree_gitdir_removed(tmp_path: Path)
         with patch("codegraphcontext.core.watcher.Observer") as observer_cls:
             observer_cls.return_value.schedule.side_effect = lambda *args, **kwargs: object()
             watcher = CodeWatcher(builder)
-            watcher.watch_directory(str(repo), perform_initial_scan=True)
+            watcher.watch_directory(
+                str(repo), perform_initial_scan=True,
+                guard_repository_identity=False,
+            )
             handler = watcher.handlers[str(repo.resolve())]
 
         assert _graph_semantics(driver, repo)["repository"][0][1]
@@ -1163,7 +1175,10 @@ def test_watcher_refreshes_commit_metadata_for_same_tree_branch_switch(tmp_path:
         builder = GraphBuilder(_DBM(driver), _JM(), loop)
         with patch("codegraphcontext.core.watcher.Observer") as observer_cls:
             watcher = CodeWatcher(builder)
-            watcher.watch_directory(str(repo), perform_initial_scan=True)
+            watcher.watch_directory(
+                str(repo), perform_initial_scan=True,
+                guard_repository_identity=False,
+            )
             handler = watcher.handlers[str(repo.resolve())]
         scheduled_paths = {
             call.args[1]
@@ -1244,7 +1259,10 @@ def test_watcher_registers_refs_created_after_pack_refs(tmp_path: Path):
         builder = GraphBuilder(_DBM(driver), _JM(), loop)
         with patch("codegraphcontext.core.watcher.Observer") as observer_cls:
             watcher = CodeWatcher(builder)
-            watcher.watch_directory(str(repo), perform_initial_scan=True)
+            watcher.watch_directory(
+                str(repo), perform_initial_scan=True,
+                guard_repository_identity=False,
+            )
             handler = watcher.handlers[str(repo.resolve())]
 
         refs_dir = handler.git_metadata_dirs[-1] / "refs"

@@ -63,15 +63,18 @@ class RepositoryEventHandler(FileSystemEventHandler):
         sync_on_start: bool = False,
         generation_db_path: str = None,
         generation_identity: dict = None,
+        guard_repository_identity: bool = True,
     ):
         super().__init__()
         self.graph_builder = graph_builder
         self.repo_path = repo_path.resolve()
         # Watchers must stay bound to the checkout they were created for even
         # when generation markers are disabled (for example, with a remote or
-        # explicitly shared database). Otherwise a branch/worktree switch can
-        # route subsequent file events into the old index.
+        # A branch/worktree switch can otherwise route subsequent file events
+        # into the old index. Shared-index callers can explicitly disable the
+        # guard when they intend one graph to follow the checkout.
         self._bound_repository_identity = repository_identity(self.repo_path)
+        self._guard_repository_identity = guard_repository_identity
         self._bound_identity_key = (
             self._bound_repository_identity.storage_key
             if self._bound_repository_identity is not None
@@ -770,6 +773,10 @@ class RepositoryEventHandler(FileSystemEventHandler):
 
     def _identity_matches_bound_index(self) -> bool:
         """Reject events after this checkout switches to another index identity."""
+        if not getattr(self, "_guard_repository_identity", True):
+            # Explicitly shared indexes can follow a checkout across branches;
+            # isolated per-branch contexts keep this guard enabled.
+            return True
         # A few lightweight callers construct handlers with __new__ and seed
         # only the fields under test; production handlers always bind in init.
         bound_key = getattr(self, "_bound_identity_key", None)
@@ -1195,6 +1202,7 @@ class CodeWatcher:
         sync_on_start: bool = False,
         generation_db_path: str = None,
         generation_identity: dict = None,
+        guard_repository_identity: bool = True,
     ):
         path_obj = Path(path).resolve()
         path_str = str(path_obj)
@@ -1217,6 +1225,7 @@ class CodeWatcher:
             perform_initial_scan=perform_initial_scan,
             sync_on_start=sync_on_start,
             cgcignore_path=cgcignore_path,
+            guard_repository_identity=guard_repository_identity,
             **generation_kwargs,
         )
 
