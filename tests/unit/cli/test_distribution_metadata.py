@@ -168,7 +168,8 @@ def test_bundle_upgrade_examples_require_dedicated_environment():
         content = (repo_root / relative_path).read_text(encoding="utf-8")
         section = content.split("### Version Mismatch", 1)[1].split("\n## ", 1)[0]
 
-        assert "not published on PyPI" in section, relative_path
+        assert "is available on PyPI" in section, relative_path
+        assert "not published on PyPI" not in section, relative_path
         assert "dedicated virtual environment" in section, relative_path
         assert "share the `codegraphcontext` import and CLI files" in section, relative_path
         assert "python -m pip install --upgrade codegraphcontext-fork" in section, relative_path
@@ -242,12 +243,8 @@ def test_docker_build_context_includes_package_provenance_markdown():
         assert filename in docker_copy.split(), filename
 
 
-def test_ghcr_docs_explain_public_visibility_step():
+def test_ghcr_docs_reflect_published_public_image():
     repo_root = Path(__file__).resolve().parents[3]
-    english_note = (
-        "As part of the first image publication, the owner will set the package visibility to Public; "
-        "anonymous pulls will be available after that change takes effect."
-    )
     for relative_path in (
         "README.md",
         "docs/DOCKER.md",
@@ -255,12 +252,12 @@ def test_ghcr_docs_explain_public_visibility_step():
         "docs/docs/guides/side-by-side-installations.md",
     ):
         content = (repo_root / relative_path).read_text(encoding="utf-8")
-        assert "not published yet" in content, relative_path
-        assert english_note in content, relative_path
+        assert "ghcr.io/johnxu22786/codegraphcontext" in content, relative_path
+        assert "anonymous pulls" in content, relative_path
+        assert "not published yet" not in content, relative_path
 
     chinese = (repo_root / "docs/translations/README.zh-CN.md").read_text(encoding="utf-8")
-    assert "目前尚未发布" in chinese
-    assert "首次发布镜像时，所有者会将软件包可见性设为公开；此更改生效后即可匿名拉取。" in chinese
+    assert "fork 的 GHCR 镜像已发布且为公开软件包；无需登录即可拉取。" in chinese
 
 
 def test_runtime_pip_install_hints_require_isolated_environment_guidance():
@@ -297,44 +294,46 @@ def test_bundle_quickref_support_link_uses_fork_issue_tracker():
     assert "https://github.com/CodeGraphContext/CodeGraphContext/issues" not in content
 
 
-def test_unpublished_package_install_examples_are_labeled_for_publication():
+def test_published_package_install_guidance_is_current():
     repo_root = Path(__file__).resolve().parents[3]
     expected_notes = {
-        "README.md": "not published on PyPI yet",
-        ".cursor/skills/codegraphcontext/SKILL.md": "After 0.7.0 is published on PyPI",
-        "docs/docs/getting-started/installation.md": "not published on PyPI yet",
-        "docs/docs/getting-started/mcp-setup.md": "currently unpublished",
-        "docs/CI_INTEGRATION.md": "not published on PyPI yet",
-        "src/codegraphcontext/cli/main.py": "after 0.7.0 is published on PyPI",
-        "src/codegraphcontext/utils/tree_sitter_manager.py": "after 0.7.0 is published on PyPI",
-        "docs/BUNDLE_QUICKREF.md": "not published on PyPI yet",
-        "docs/docs/guides/bundles.md": "not published on PyPI yet",
-        "scripts/create-bundle.sh": "After the 0.7.0 PyPI publication",
-        "scripts/post_install_fix.sh": "after 0.7.0 is published on PyPI",
-        "extensions/vscode/src/mcp/client.ts": "After the 0.7.0 PyPI publication",
-        "docs/translations/README.ja.md": "まだ公開されていません",
-        "docs/translations/README.kor.md": "아직 PyPI에 게시되지 않았습니다",
-        "docs/translations/README.ru-RU.md": "ещё не опубликован в PyPI",
-        "docs/translations/README.ta.md": "இன்னும் PyPI-இல் வெளியிடப்படவில்லை",
-        "docs/translations/README.uk.md": "ще не опубліковано в PyPI",
-        "docs/translations/README.zh-CN.md": "目前尚未在 PyPI 发布",
-        "website/src/components/HeroSection.tsx": "not published yet",
-        "website/src/components/InstallationSection.tsx": "not published yet",
-        "website/src/components/BundleRegistrySection.tsx": "not published yet",
+        "README.md": "Version 0.7.0 is available on PyPI.",
+        ".cursor/skills/codegraphcontext/SKILL.md": "Version 0.7.0 is available on PyPI",
+        "docs/docs/getting-started/installation.md": "Version 0.7.0 of `codegraphcontext-fork` is available on PyPI.",
+        "docs/docs/getting-started/mcp-setup.md": "Version 0.7.0 of `codegraphcontext-fork` is available on PyPI",
+        "docs/CI_INTEGRATION.md": "Version 0.7.0 of `codegraphcontext-fork` is available on PyPI.",
+        "src/codegraphcontext/cli/main.py": "Version 0.7.0 is available on PyPI",
+        "src/codegraphcontext/utils/tree_sitter_manager.py": "Version 0.7.0 is available on PyPI",
+        "docs/BUNDLE_QUICKREF.md": "`codegraphcontext-fork` 0.7.0 is available on PyPI.",
+        "docs/docs/guides/bundles.md": "`codegraphcontext-fork` 0.7.0 is available on PyPI.",
+        "scripts/create-bundle.sh": "Version 0.7.0 is available on PyPI",
+        "scripts/post_install_fix.sh": "pip install codegraphcontext-fork in a dedicated virtual environment",
+        "extensions/vscode/src/mcp/client.ts": "Version 0.7.0 is available on PyPI",
+        "docs/translations/README.ja.md": "0.7.0 は PyPI で公開されています",
+        "docs/translations/README.kor.md": "PyPI에서 제공됩니다",
+        "docs/translations/README.ru-RU.md": "уже опубликован в PyPI",
+        "docs/translations/README.ta.md": "PyPI-இல் வெளியிடப்பட்டுள்ளது",
+        "docs/translations/README.uk.md": "опубліковано на PyPI",
+        "docs/translations/README.zh-CN.md": "`codegraphcontext-fork` 0.7.0 已在 PyPI 发布。",
+        "website/src/components/HeroSection.tsx": "Version 0.7.0 is available on PyPI",
+        "website/src/components/InstallationSection.tsx": "Version 0.7.0 is available on PyPI",
+        "website/src/components/BundleRegistrySection.tsx": "Version 0.7.0 is available on PyPI",
     }
 
     for relative_path, expected_note in expected_notes.items():
         content = (repo_root / relative_path).read_text(encoding="utf-8")
         assert expected_note in content, relative_path
+        assert "not published on PyPI yet" not in content, relative_path
+        assert "after the 0.7.0 PyPI publication" not in content, relative_path
 
 
 def test_secondary_readme_install_examples_are_labeled_near_commands():
     repo_root = Path(__file__).resolve().parents[3]
     pipx_notes = {
-        "README.md": "The `pipx` example below works after the 0.7.0 PyPI publication",
-        "docs/translations/README.ja.md": "以下の `pipx` 設定は 0.7.0 の PyPI 公開後に利用できます。",
-        "docs/translations/README.ta.md": "கீழே உள்ள `pipx` அமைப்பு 0.7.0 PyPI-இல் வெளியிடப்பட்ட பிறகு கிடைக்கும்.",
-        "docs/translations/README.zh-CN.md": "下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用",
+        "README.md": "Version 0.7.0 is available on PyPI",
+        "docs/translations/README.ja.md": "PyPI で公開されている 0.7.0 の `pipx` 設定を利用できます。",
+        "docs/translations/README.ta.md": "PyPI-இல் வெளியிடப்பட்ட 0.7.0-க்கான கீழே உள்ள `pipx` அமைப்பைப் பயன்படுத்தலாம்.",
+        "docs/translations/README.zh-CN.md": "PyPI 已发布的 0.7.0 可使用下面的 `pipx` 配置",
     }
 
     for relative_path, expected_note in pipx_notes.items():
@@ -354,4 +353,4 @@ def test_secondary_readme_install_examples_are_labeled_near_commands():
     assert len(install_lines) == 2
     secondary_install_context = "\n".join(lines for lines in tamil_lines[install_lines[1] - 6 : install_lines[1]])
     assert "இந்த நிறுவல் கட்டளை" in secondary_install_context
-    assert "0.7.0 PyPI-இல் வெளியிடப்பட்ட பிறகு" in secondary_install_context
+    assert "0.7.0 PyPI-இல் வெளியிடப்பட்டுள்ளது" in secondary_install_context

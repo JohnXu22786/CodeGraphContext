@@ -385,7 +385,7 @@ const HeroSection = () => {
           A powerful CLI toolkit and MCP server that instantly indexes your local code into a fully navigable graph for AI assistants.
         </p>
         <p className="text-sm text-gray-500 max-w-2xl mx-auto mb-12">
-          Install the fork in a dedicated Python environment; upstream and fork distributions share the <code>codegraphcontext</code> import namespace. The PyPI package is not published yet, so this command will work after the 0.7.0 publication.
+          Install the fork in a dedicated Python environment; upstream and fork distributions share the <code>codegraphcontext</code> import namespace. Version 0.7.0 is available on PyPI; use this command in a dedicated Python environment.
         </p>
 
         <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto items-center justify-center mb-24">

@@ -39,7 +39,7 @@ check_requirements() {
     
     if ! command -v cgc &> /dev/null; then
         print_error "cgc is not installed. Use a dedicated virtual environment; upstream and fork share the codegraphcontext import and CLI names, and installing both together can overwrite them."
-        print_error "After the 0.7.0 PyPI publication, install with: pip install codegraphcontext-fork"
+        print_error "Version 0.7.0 is available on PyPI; install with: pip install codegraphcontext-fork"
         print_error "Isolated install guide: https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/getting-started/installation.md"
         exit 1
     fi

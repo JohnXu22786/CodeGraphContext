@@ -67,20 +67,18 @@ class RepositoryEventHandler(FileSystemEventHandler):
         super().__init__()
         self.graph_builder = graph_builder
         self.repo_path = repo_path.resolve()
-        self._bound_repository_identity = (
-            repository_identity(self.repo_path)
-            if generation_db_path and generation_identity
-            else None
-        )
+        # Watchers must stay bound to the checkout they were created for even
+        # when generation markers are disabled (for example, with a remote or
+        # explicitly shared database). Otherwise a branch/worktree switch can
+        # route subsequent file events into the old index.
+        self._bound_repository_identity = repository_identity(self.repo_path)
         self._bound_identity_key = (
             self._bound_repository_identity.storage_key
             if self._bound_repository_identity is not None
             else None
         )
-        if (
-            generation_identity
-            and generation_identity.get("kind") in {"git", "non-git"}
-            and generation_identity.get("storage_key") != self._bound_identity_key
+        if generation_identity and generation_identity.get("kind") in {"git", "non-git"} and (
+            generation_identity.get("storage_key") != self._bound_identity_key
         ):
             raise RuntimeError(
                 "Watcher database identity changed while resolving the context; "

@@ -22,7 +22,7 @@ The wizard will locate configuration files for Claude Desktop, Cursor, and other
 
 If you prefer to configure your workspace manually, refer to the client configurations below.
 
-MCP clients start the configured executable directly and do not inherit an activated virtual environment from your terminal. The `codegraphcontext-fork` package is currently unpublished, so the `pipx` examples below will work after version 0.7.0 is published to PyPI. Until then, install the checkout in a dedicated virtual environment and use the absolute path to its `cgc` executable in the client configuration. The client must be able to find `pipx` on its own `PATH` after publication.
+MCP clients start the configured executable directly and do not inherit an activated virtual environment from your terminal. Version 0.7.0 of `codegraphcontext-fork` is available on PyPI; the `pipx` examples below install it in an isolated environment. The client must be able to find `pipx` on its own `PATH`. For a local checkout, install it in a dedicated virtual environment and use the absolute path to its `cgc` executable in the client configuration.
 
 ### Claude Desktop
 
@@ -133,6 +133,6 @@ You can verify it by prompting the assistant:
 ## 4. Connection Troubleshooting
 
 If the tools do not load:
-1. **Command Resolution**: The client does not inherit your terminal's active `.venv`. Use an absolute path to the executable in that environment (for example, `/path/to/project/.venv/bin/cgc` or `C:\\path\\to\\project\\.venv\\Scripts\\cgc.exe`). After 0.7.0 is published, you can use the `pipx` configurations above if `pipx` is on the client's own `PATH`.
+1. **Command Resolution**: The client does not inherit your terminal's active `.venv`. Use an absolute path to the executable in that environment (for example, `/path/to/project/.venv/bin/cgc` or `C:\\path\\to\\project\\.venv\\Scripts\\cgc.exe`). You can use the `pipx` configurations above if `pipx` is on the client's own `PATH`.
 2. **Process Integrity**: Test the configured command and arguments from the client's environment. It should listen on standard input/output (stdin/stdout) for JSON-RPC messages and not exit immediately.
 3. **Database Selection**: Ensure your default database is configured and has indexed data. Run `cgc doctor` to verify configuration.

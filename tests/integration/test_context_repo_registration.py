@@ -24,6 +24,10 @@ def _env(home: Path):
     env["DEFAULT_DATABASE"] = "kuzudb"
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
     env.pop("CGC_CONTEXT_MODE", None)
+    # The Actions job may choose a runtime backend globally. This regression
+    # exercises the named context's configured database and must be hermetic.
+    env.pop("CGC_RUNTIME_DB_TYPE", None)
+    env.pop("CGC_RUNTIME_DB_PATH", None)
     return env
 
 
@@ -42,7 +46,37 @@ def _linked_repos(home: Path, ctx_name: str):
     return ctx.get("repos") or []
 
 
-def test_reindex_of_skipped_repo_still_registers_in_context(tmp_path: Path):
+def _mark_generation_current(repo: Path, env):
+    """Model a verified populated index so the CLI reaches its skip guard."""
+    script = """
+from pathlib import Path
+import sys
+from codegraphcontext.cli.cli_helpers import _initialize_services
+from codegraphcontext.cli.snapshot_commands import effective_snapshot_identity
+from codegraphcontext.core.index_generation import write_generation_state
+repo = Path(sys.argv[1])
+services = _initialize_services("proj", cwd=repo)
+db_manager, _, _, context = services
+identity, _ = effective_snapshot_identity(context, repo)
+write_generation_state(
+    db_manager.db_path,
+    identity,
+    state="complete",
+    generation_id=f"{identity['storage_key']}:uncommitted",
+)
+db_manager.close_driver()
+"""
+    subprocess.run(
+        [sys.executable, "-c", script, str(repo)],
+        cwd=repo,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_reindex_of_deregistered_repo_restores_context_registration(tmp_path: Path):
     home = tmp_path / "home"; home.mkdir()
     repo = tmp_path / "repo"; repo.mkdir()
     (repo / "a.py").write_text("def f():\n    pass\n", encoding="utf-8")
@@ -65,12 +99,13 @@ def test_reindex_of_skipped_repo_still_registers_in_context(tmp_path: Path):
     cfg_file.write_text(yaml.safe_dump(cfg))
     assert _linked_repos(home, "proj") == []
 
-    # Second index hits the "already indexed. Skipping." early return —
-    # registration must have happened BEFORE it.
+    # Restore a valid completion marker for the populated shared context, so
+    # this invocation exercises the already-indexed skip path exactly.
+    _mark_generation_current(repo, env)
     out = _run(f"{CGC} index {shlex.quote(str(repo))} --context proj", env)
     assert "Skipping" in out or "already indexed" in out, out
     assert _linked_repos(home, "proj"), (
-        "the skip guard returned before registration — #1317 regressed:\n" + out
+        "the skip guard returned before restoring named-context registration:\n" + out
     )
 
 

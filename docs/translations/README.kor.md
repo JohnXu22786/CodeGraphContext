@@ -207,7 +207,7 @@ _프로젝트에서 CodeGraphContext를 사용하고 계시다면, PR을 생성�
 
 > 주의: 업스트림 배포판 `codegraphcontext`와 이 포크의 `codegraphcontext-fork`는 같은 `codegraphcontext` Python 가져오기 네임스페이스에 파일을 설치합니다. 전용 Python 가상 환경에 설치하고 같은 환경에 둘 다 설치하지 마세요. CLI 명령은 `cgc`와 `codegraphcontext`를 유지합니다.
 
-`codegraphcontext-fork` 패키지는 아직 PyPI에 게시되지 않았습니다. 아래 설치 명령은 0.7.0이 게시된 후 사용할 수 있습니다.
+`codegraphcontext-fork` 패키지는 PyPI에서 제공됩니다. 아래 설치 명령은 0.7.0이 게시된 후 사용할 수 있습니다.
 
 아래 명령은 macOS/Linux의 Bash 기준입니다. PowerShell에서는 `.\.venv\Scripts\Activate.ps1`, 명령 프롬프트에서는 `.venv\Scripts\activate.bat`를 실행해 가상 환경을 활성화하세요.
 ### 핵심 도구 모음 설치

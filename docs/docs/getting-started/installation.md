@@ -8,7 +8,7 @@ CodeGraphContext (CGC) is packaged as a standard Python utility. The CLI and ser
 
 The upstream `codegraphcontext` distribution and this fork’s `codegraphcontext-fork` distribution share the `codegraphcontext` import namespace. Use a dedicated Python environment for this fork; never install both distributions into the same environment. The `uvx` and `pipx` commands below create isolated environments automatically. For runtime state and MCP registration isolation, also follow [Run the fork beside upstream](../guides/side-by-side-installations.md).
 
-The `codegraphcontext-fork` package is not published on PyPI yet. The `uvx`, `pipx`, and `pip` commands on this page will work after the 0.7.0 publication.
+Version 0.7.0 of `codegraphcontext-fork` is available on PyPI. The `uvx`, `pipx`, and `pip` commands below install it into isolated environments.
 
 ### Method A: Execution via `uvx` (Recommended)
 If you use [uv](https://github.com/astral-sh/uv), you can run the CGC CLI on demand without installing it globally:

@@ -98,7 +98,7 @@ const InstallationSection = () => {
                 Use a dedicated virtual environment: upstream and fork distributions share the <code>codegraphcontext</code> import namespace.
               </p>
               <p className="text-xs font-mono text-gray-400 mt-2 max-w-xl mx-auto">
-                The PyPI package is not published yet; this install command will work after the 0.7.0 publication.
+                Version 0.7.0 is available on PyPI; install it in a dedicated Python environment.
               </p>
             </div>
           </GlassCard>

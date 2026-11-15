@@ -297,7 +297,7 @@ _如果你正在项目中使用 CodeGraphContext，欢迎提交 PR 并添加到�
 
 > 注意：上游发行包 `codegraphcontext` 与本 fork 的发行包 `codegraphcontext-fork` 会安装到同一个 Python 导入命名空间 `codegraphcontext`。请在专用 Python 虚拟环境中安装本 fork，不要在同一环境中安装这两个发行包。CLI 命令仍为 `cgc` 和 `codegraphcontext`。
 
-`codegraphcontext-fork` 软件包目前尚未在 PyPI 发布。以下安装命令将在 0.7.0 发布后可用。
+`codegraphcontext-fork` 0.7.0 已在 PyPI 发布。以下安装命令会将其安装到隔离环境中。
 
 以下命令适用于 macOS/Linux 的 Bash。在 PowerShell 中运行 `.\.venv\Scripts\Activate.ps1` 激活环境；在 Windows 命令提示符中运行 `.venv\Scripts\activate.bat`。
 
@@ -353,7 +353,7 @@ cgc mcp start
 
 无需安装 Python 即可运行 CodeGraphContext —— 拉取镜像并开始索引：
 
-fork 所属的 GHCR 软件包目前尚未发布。首次发布镜像时，所有者会将软件包可见性设为公开；此更改生效后即可匿名拉取。
+fork 的 GHCR 镜像已发布且为公开软件包；无需登录即可拉取。
 
 ### 快速开始
 ```bash
@@ -422,7 +422,7 @@ python --version
 
 ### 步骤 1：安装 CodeGraphContext
 
-`codegraphcontext-fork` 软件包目前尚未在 PyPI 发布。请在 0.7.0 发布后运行以下安装命令。
+`codegraphcontext-fork` 0.7.0 已在 PyPI 发布。以下安装命令会将其安装到隔离环境中。
 
 ```bash
 python -m venv .venv
@@ -595,7 +595,7 @@ codegraphcontext find pattern "Auth" --viz
 
 ## MCP 客户端配置
 
-`codegraphcontext mcp setup` 命令尝试自动配置你的 IDE/CLI。如果你选择不使用自动设置，或者你的工具不受支持，你可以进行手动配置。桌面客户端不会继承已激活的虚拟环境，因此在终端激活 `.venv` 不会让客户端自动找到其中的命令。下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用；发布前，请填写独立虚拟环境中 `cgc` 可执行文件的绝对路径。客户端自己的 `PATH` 中也必须能找到 `pipx`。
+`codegraphcontext mcp setup` 命令尝试自动配置你的 IDE/CLI。如果你选择不使用自动设置，或者你的工具不受支持，你可以进行手动配置。桌面客户端不会继承已激活的虚拟环境，因此在终端激活 `.venv` 不会让客户端自动找到其中的命令。PyPI 已发布的 0.7.0 可使用下面的 `pipx` 配置；你也可以填写独立虚拟环境中 `cgc` 可执行文件的绝对路径。客户端自己的 `PATH` 中也必须能找到 `pipx`。
 
 将以下服务端配置添加到客户端的设置文件中（例如 VS Code 的 `settings.json` 或 `.claude.json`）：
 
@@ -641,7 +641,7 @@ CGC_OUTPUT_FORMAT=gcf codegraphcontext mcp start
 
 或将其添加到你的 MCP 客户端配置中：
 
-下面的 `pipx` 配置将在 0.7.0 发布到 PyPI 后可用。
+PyPI 已发布的 0.7.0 可使用下面的 `pipx` 配置。
 
 ```json
 {

@@ -2014,7 +2014,7 @@ def doctor():
         console.print("\n[cyan]Common fixes:[/cyan]")
         console.print("  • For Neo4j issues: Run 'cgc neo4j setup'")
         console.print(
-            "  • For missing packages, after 0.7.0 is published on PyPI run: "
+            "  • For missing packages, Version 0.7.0 is available on PyPI; install it with "
             "pip install codegraphcontext-fork in a dedicated virtual environment."
         )
         console.print(

@@ -10,7 +10,7 @@ from codegraphcontext import server as server_module
 from codegraphcontext.cli import config_manager
 
 
-def _isolated_workspace(tmp_path, monkeypatch):
+def _isolated_workspace(tmp_path, monkeypatch, *, use_global_runtime_db=True):
     """Set every runtime/config/database path inside this test's temp tree."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -19,7 +19,10 @@ def _isolated_workspace(tmp_path, monkeypatch):
 
     monkeypatch.setenv("CGC_HOME", str(cgc_home))
     monkeypatch.setenv("CGC_RUNTIME_DB_TYPE", "kuzudb")
-    monkeypatch.setenv("CGC_RUNTIME_DB_PATH", str(cgc_home / "global-db"))
+    if use_global_runtime_db:
+        monkeypatch.setenv("CGC_RUNTIME_DB_PATH", str(cgc_home / "global-db"))
+    else:
+        monkeypatch.delenv("CGC_RUNTIME_DB_PATH", raising=False)
     monkeypatch.setenv("CGC_REPO_CONTEXT_DIR", ".codegraphcontext")
     monkeypatch.setenv("CGC_ALLOWED_ROOTS", str(workspace))
     monkeypatch.setenv("CGC_IGNORE_PROJECT_ENV", "1")
@@ -242,7 +245,9 @@ async def test_delete_and_graph_listing_tools_use_real_mcp_behavior(tmp_path, mo
 @pytest.mark.asyncio
 async def test_context_discovery_and_switch_tools_use_real_mcp_behavior(tmp_path, monkeypatch):
     """Context discovery and switching must stay within allowed roots and use discovered local databases."""
-    workspace, server = _isolated_workspace(tmp_path, monkeypatch)
+    workspace, server = _isolated_workspace(
+        tmp_path, monkeypatch, use_global_runtime_db=False
+    )
     target = workspace / "target-repo"
     target.mkdir()
     _write_repo_context(target)

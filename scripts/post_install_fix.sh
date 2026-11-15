@@ -150,10 +150,10 @@ else
         echo "Isolated install guide: https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/getting-started/installation.md"
         if [[ "$OS" == "Windows_NT" ]]; then
             echo "❌ cgc not found in expected Windows locations. Please reinstall:"
-            echo "   pip install codegraphcontext-fork in a dedicated virtual environment (after 0.7.0 is published on PyPI)"
+            echo "   pip install codegraphcontext-fork in a dedicated virtual environment"
         else
             echo "❌ cgc not found in ~/.local/bin. Please reinstall:"
-            echo "   pip install codegraphcontext-fork in a dedicated virtual environment (after 0.7.0 is published on PyPI)"
+            echo "   pip install codegraphcontext-fork in a dedicated virtual environment"
         fi
     fi
 fi
