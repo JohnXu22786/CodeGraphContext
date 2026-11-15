@@ -228,7 +228,7 @@ _あなたのプロジェクトで CodeGraphContext を使用している場合�
 
 > 注意：上流版の配布名 `codegraphcontext` と、このフォークの `codegraphcontext-fork` は同じ `codegraphcontext` インポート名前空間にファイルをインストールします。必ず専用の Python 仮想環境にインストールし、同じ環境には両方を入れないでください。CLI コマンドは `cgc` と `codegraphcontext` のままです。
 
-PyPI の `codegraphcontext-fork` はまだ公開されていません。以下のインストールコマンドは 0.7.0 の公開後に利用できます。
+`codegraphcontext-fork` 0.7.0 は PyPI で公開されています。以下のインストールコマンドを専用環境で利用できます。
 
 以下のコマンドは macOS/Linux の Bash 用です。PowerShell では `.\.venv\Scripts\Activate.ps1`、コマンド プロンプトでは `.venv\Scripts\activate.bat` を実行して仮想環境を有効にします。
 
@@ -358,7 +358,7 @@ codegraphcontext find pattern "Auth" --viz
 
 ## MCP クライアントの設定
 
-`codegraphcontext mcp setup` コマンドは IDE / CLI の自動設定を試みます。自動セットアップを使わない場合や、対応していないツールを使う場合は、手動で設定できます。デスクトップクライアントは有効化した仮想環境を引き継がないため、端末で `.venv` を有効にしても、そのコマンドをクライアントから実行できるとは限りません。以下の `pipx` 設定は 0.7.0 の PyPI 公開後に利用できます。公開までは、専用仮想環境にある `cgc` 実行ファイルの絶対パスを指定してください。クライアント自身の `PATH` から `pipx` を見つけられる必要があります。
+`codegraphcontext mcp setup` コマンドは IDE / CLI の自動設定を試みます。自動セットアップを使わない場合や、対応していないツールを使う場合は、手動で設定できます。デスクトップクライアントは有効化した仮想環境を引き継がないため、端末で `.venv` を有効にしても、そのコマンドをクライアントから実行できるとは限りません。PyPI で公開されている 0.7.0 の `pipx` 設定を利用できます。専用仮想環境の `cgc` 実行ファイルを直接指定する方法もあります。クライアント自身の `PATH` から `pipx` を見つけられる必要があります。
 
 クライアントの設定ファイル（VS Code の `settings.json` や `.claude.json` など）に、次のサーバー設定を追加してください。
 

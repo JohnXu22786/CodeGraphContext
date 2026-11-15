@@ -25,6 +25,15 @@ jobs:
         working-directory: docs
         run: mkdocs build --clean
 
+      - name: Check external Pages deploy key
+        env:
+          PAGES_DEPLOY_KEY: ${{ secrets.ACTIONS_DEPLOY_KEY }}
+        run: |
+          if [ -z "$PAGES_DEPLOY_KEY" ]; then
+            echo "::error::ACTIONS_DEPLOY_KEY is not configured. Add a write-enabled SSH deploy key to CodeGraphContext/codegraphcontext.github.io and store its private key as the ACTIONS_DEPLOY_KEY Actions secret in this repository."
+            exit 1
+          fi
+
       - name: Deploy to codegraphcontext.github.io
         uses: peaceiris/actions-gh-pages@v4
         with:

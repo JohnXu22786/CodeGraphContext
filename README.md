@@ -352,7 +352,7 @@ For parser-heavy development, install the optional parsing extras with `pip inst
 
 Run CodeGraphContext without installing Python — pull the image and start indexing:
 
-The public container image is available from GitHub Container Registry; anonymous pulls are supported.
+The public fork image is published on GHCR and supports anonymous pulls.
 
 ### Quick Start
 ```bash
@@ -593,7 +593,7 @@ You can tell CodeGraphContext to ignore specific files and directories by creati
 
 ## MCP Client Configuration
 
-The `codegraphcontext mcp setup` command attempts to automatically configure your IDE/CLI. If you choose not to use the automatic setup, or if your tool is not supported, you can configure it manually. Desktop clients do not inherit the active virtual environment from your terminal. Before publication, use the absolute path to `cgc` in your dedicated virtual environment. The `pipx` example below works after the 0.7.0 PyPI publication and requires `pipx` on the client's own `PATH`.
+The `codegraphcontext mcp setup` command attempts to automatically configure your IDE/CLI. If you choose not to use the automatic setup, or if your tool is not supported, you can configure it manually. Desktop clients do not inherit the active virtual environment from your terminal. Version 0.7.0 is available on PyPI. Use the absolute path to `cgc` in your dedicated virtual environment, or use the `pipx` example below if `pipx` is on the client's own `PATH`.
 
 Add the following server configuration to your client's settings file (e.g., VS Code's `settings.json` or `.claude.json`):
 
@@ -639,7 +639,7 @@ CGC_OUTPUT_FORMAT=gcf codegraphcontext mcp start
 
 Or add it to your MCP client config:
 
-The `pipx` example below works after the 0.7.0 PyPI publication.
+Version 0.7.0 is available on PyPI; the `pipx` example below requires `pipx` on the client's own `PATH`.
 
 ```json
 {

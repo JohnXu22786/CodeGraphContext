@@ -8,7 +8,7 @@ Running CodeGraphContext via Docker is the easiest way to use the tool without s
 
 Pull the latest fork image from GitHub Container Registry (GHCR):
 
-The fork-owned GHCR package is not published yet. As part of the first image publication, the owner will set the package visibility to Public; anonymous pulls will be available after that change takes effect.
+The public fork image is published on GHCR and supports anonymous pulls.
 
 ```bash
 docker pull ghcr.io/johnxu22786/codegraphcontext:latest

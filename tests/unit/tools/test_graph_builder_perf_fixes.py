@@ -1209,7 +1209,9 @@ class TestWatcherMemoryClear:
     def test_initial_scan_clears_all_file_data(self):
         import inspect
         from codegraphcontext.core.watcher import RepositoryEventHandler
-        source = inspect.getsource(RepositoryEventHandler._initial_scan)
+        # The public method is now a lock/generation wrapper; the scan and
+        # memory release live in the locked implementation.
+        source = inspect.getsource(RepositoryEventHandler._initial_scan_locked)
         assert "all_file_data.clear()" in source, \
             "RepositoryEventHandler._initial_scan must call all_file_data.clear() after linking"
 
@@ -1219,6 +1221,7 @@ class TestWatcherMemoryClear:
 
         watcher = RepositoryEventHandler.__new__(RepositoryEventHandler)
         watcher.all_file_data = []
+        watcher._update_lock = threading.RLock()
         watcher.repo_path = Path("/fake")
         watcher.imports_map = {}
 

@@ -36,7 +36,7 @@ def _missing_tree_sitter_error(import_error: ImportError) -> ImportError:
         "share the codegraphcontext import and CLI names, and installing both "
         "together can overwrite them. See the isolated install guide: "
         "https://github.com/JohnXu22786/CodeGraphContext/blob/main/docs/docs/getting-started/installation.md. "
-        "after 0.7.0 is published on PyPI, run: "
+        "Version 0.7.0 is available on PyPI; install the published package with: "
         "pip install 'codegraphcontext-fork[parsing]'"
     )
 

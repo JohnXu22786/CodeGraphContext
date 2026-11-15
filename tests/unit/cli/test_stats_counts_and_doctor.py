@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 import pytest
 
+from codegraphcontext import core as core_module
 from codegraphcontext.cli import cli_helpers, config_manager, main as cli_main
 from codegraphcontext.cli.main import app
 
@@ -248,8 +249,9 @@ def test_report_accepts_a_repo_flag():
 def test_doctor_kuzu_install_guidance_matches_platform_marker(
     monkeypatch, platform, version, unsupported
 ):
-    monkeypatch.setattr(cli_main.sys, "platform", platform)
-    monkeypatch.setattr(cli_main.sys, "version_info", version)
+    # sys is a process-global module. Replacing its attributes changes Rich,
+    # Click and unrelated stdlib behavior during the command invocation.
+    monkeypatch.setattr(core_module, "sys", SimpleNamespace(platform=platform, version_info=version))
     monkeypatch.setattr(config_manager, "load_config", lambda: {"DEFAULT_DATABASE": "kuzudb"})
     monkeypatch.setattr("importlib.util.find_spec", lambda _name: None)
     monkeypatch.setattr(config_manager, "ensure_first_run_bootstrap", lambda: None)

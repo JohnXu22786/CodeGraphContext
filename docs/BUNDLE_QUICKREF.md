@@ -255,7 +255,7 @@ cgc load large-bundle.cgc 2>&1 | tee import.log
 
 ### Version Mismatch
 
-`codegraphcontext-fork` 0.7.0 is not published on PyPI yet. After publication, activate the dedicated virtual environment described in the [installation guide](docs/getting-started/installation.md) before upgrading. The fork and upstream distributions share the `codegraphcontext` import and CLI files, so installing into the upstream environment can overwrite them.
+`codegraphcontext-fork` 0.7.0 is available on PyPI. Activate the dedicated virtual environment described in the [installation guide](docs/getting-started/installation.md) before upgrading. The fork and upstream distributions share the `codegraphcontext` import and CLI files, so installing into the upstream environment can overwrite them.
 
 ```bash
 # Check your CGC version

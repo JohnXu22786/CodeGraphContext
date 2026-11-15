@@ -3,7 +3,7 @@
 `cgc analyze complexity` can act as a quality gate in CI (#1333): it has
 machine-readable output on a clean stdout and an opt-in non-zero exit code.
 
-The `codegraphcontext-fork` package is not published on PyPI yet. The install step below will work after the 0.7.0 publication.
+Version 0.7.0 of `codegraphcontext-fork` is available on PyPI. The install step below uses the published package.
 
 ## GitHub Actions example
 
